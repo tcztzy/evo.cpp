@@ -1,0 +1,11 @@
+evo2c
+Copyright 2026 evo2c contributors
+
+This product is an independent implementation informed by the Evo 2 and
+Vortex projects from Arc Institute and their contributors, distributed under
+the Apache License 2.0.
+
+Architecture and validation design also draw on public engineering techniques
+documented by llama.cpp and ds4. No source code from those projects is included
+in this initial scaffold.
+

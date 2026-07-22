@@ -1,0 +1,13 @@
+/build*/
+/cmake-build-*/
+/.cache/
+/.clangd/
+/.venv/
+__pycache__/
+*.evo2
+*.pt
+*.pt.part*
+*.npy
+*.prof
+.DS_Store
+
