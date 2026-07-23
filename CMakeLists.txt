@@ -46,6 +46,7 @@ add_library(
   src/cli.cpp
   src/cpu_reference.cpp
   src/crc32.cpp
+  src/fp8.cpp
   src/mapped_file.cpp
   src/model_format.cpp
   src/sampler.cpp
@@ -227,6 +228,11 @@ if(BUILD_TESTING)
   evo2c_configure_target(evo2c-cpu-reference-tests)
   add_test(NAME cpu_reference COMMAND evo2c-cpu-reference-tests)
 
+  add_executable(evo2c-fp8-tests tests/test_fp8.cpp)
+  target_link_libraries(evo2c-fp8-tests PRIVATE evo2c_core)
+  evo2c_configure_target(evo2c-fp8-tests)
+  add_test(NAME fp8 COMMAND evo2c-fp8-tests)
+
   add_test(
     NAME cpu_reference_vectors
     COMMAND ${Python3_EXECUTABLE}
@@ -283,9 +289,36 @@ if(BUILD_TESTING)
       ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools"
       SKIP_RETURN_CODE 77)
 
+  add_test(
+    NAME triton_fp8_oracle
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_triton_fp8.py)
+  set_tests_properties(
+    triton_fp8_oracle
+    PROPERTIES
+      ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools"
+      LABELS "gpu;cuda"
+      SKIP_RETURN_CODE 77)
+
+  add_test(
+    NAME vortex_reference_contract
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_vortex_reference.py)
+  set_tests_properties(
+    vortex_reference_contract
+    PROPERTIES
+      ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools"
+      SKIP_RETURN_CODE 77)
+
   if(EVO2C_CUDA)
     add_test(NAME cuda_smoke COMMAND evo2c-cuda-smoke)
     add_test(NAME cuda_ops COMMAND evo2c-cuda-ops-tests)
+    add_test(
+      NAME fp8_sass
+      COMMAND ${CMAKE_COMMAND}
+        -DEVO2C_CUDA_BINARY=$<TARGET_FILE:evo2c-cuda-ops-tests>
+        -DEVO2C_CUOBJDUMP=${CUDAToolkit_BIN_DIR}/cuobjdump
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/fp8_sass_contract.cmake)
     add_test(NAME cuda_hyena COMMAND evo2c-cuda-hyena-tests)
     add_test(NAME cuda_attention COMMAND evo2c-cuda-attention-tests)
     add_test(
@@ -304,6 +337,7 @@ if(BUILD_TESTING)
         --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/cuda_pipeline)
     set_tests_properties(cuda_smoke PROPERTIES LABELS "gpu;cuda")
     set_tests_properties(cuda_ops PROPERTIES LABELS "gpu;cuda")
+    set_tests_properties(fp8_sass PROPERTIES LABELS "gpu;cuda")
     set_tests_properties(cuda_hyena PROPERTIES LABELS "gpu;cuda")
     set_tests_properties(cuda_attention PROPERTIES LABELS "gpu;cuda")
     set_tests_properties(
