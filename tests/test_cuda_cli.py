@@ -248,6 +248,35 @@ def main() -> int:
             "distinct execution paths"
         )
 
+    q8_capacity = run_checked(
+        [
+            str(args.binary),
+            "-m",
+            str(model),
+            "-p",
+            "AC",
+            "-n",
+            "1",
+            "--ctx",
+            "131072",
+            "--gpu",
+            "0,1,2,3",
+            "--top-k",
+            "1",
+        ]
+    )
+    q8_metrics = metrics(q8_capacity)
+    q8_cache_bytes = sum(
+        int(stage["cache_bytes"]) for stage in q8_metrics["gpus"]
+    )
+    if (
+        q8_metrics["kv_cache"] != "q8_paged"
+        or q8_cache_bytes < 8 * 524288
+    ):
+        raise AssertionError(
+            "Q8 metrics do not include all eight lazily allocated first pages"
+        )
+
     rejected_layer = subprocess.run(
         [
             *long_prompt_command,

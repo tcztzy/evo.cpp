@@ -66,7 +66,7 @@ T14|x|若纯 BF16 未过 V13，实现 software E4M3 projection cast/scale 与 ch
 T15|x|优化 software-QGMMA padded tiling与四卡 stage 并发加载；输出前后基准，无正确性回退|V9,V10,V11,V16,V17
 T16|x|固定 8192-token activation arena + state-preserving chunked prefill；真实 40B 验证 ctx=32768 且跨块|V10,V13,V14,V16
 T17|x|实现 paged Q8 KV、量化 attention 数值门；真实 40B 验证 ctx=131072|V9,V10,V14,V16
-T18|.|评估 1M context：显存/attention 计算量/host-offload；可行则 smoke，否→瓶颈与硬件下限报告|V13,V14,V16
+T18|x|评估 1M context：显存/attention 计算量/host-offload；可行则 smoke，否→瓶颈与硬件下限报告|V13,V14,V16
 T19|.|README：构建、转换、gpu02 运行、限制、复现命令；全套 CPU+GPU regression|V12,V16,I.build,I.convert,I.cli,I.remote
 
 ## §B BUGS
@@ -100,3 +100,5 @@ B26|2026-07-23|the first paged-KV build named both the cache device member and a
 B27|2026-07-23|an ad-hoc real-model logit comparator used gpu02's older host Python, where `math.prod` is unavailable, instead of the pinned Python 3.12 exposed only inside Apptainer|V18 remote-script contract rejects bare host `python3`; the dependency-free comparator has an executable contract and production comparisons run with pinned container Python
 B28|2026-07-23|final local verification again tried to build an absent preconfigured directory, showing that B24's remote-only ordering contract did not provide an executable local entrypoint|V16 `scripts/local_test.sh` always configures before build and CTest; its ordering is fixed by the script contract
 B29|2026-07-23|the first local verification entrypoint passed an unused plural `EVO2C_SANITIZERS` option, so requesting the sanitizer suite would have silently produced an unsanitized build|V16 local script passes the exact `EVO2C_SANITIZE` project option; the script contract rejects the plural spelling
+B30|2026-07-23|an ad-hoc gpu02 memory probe assumed `rg` was installed on the Rocky 8 host, so the read-only diagnostic failed while the 1M inference continued normally|V18 remote-script contract rejects optional host `rg`; probes use baseline `grep` or structured NVIDIA queries
+B31|2026-07-23|after Q8 pages became lazy, metrics retained the load-time cache-byte snapshot and omitted physical pages allocated during prefill, understating actual KV memory|V16 pipeline refreshes per-layer cache accounting after inference; the four-GPU CLI test requires all eight lazy first pages in reported bytes

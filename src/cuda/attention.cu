@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <utility>
 
 #include <cuda_bf16.h>
 #include <math_constants.h>
@@ -111,7 +112,30 @@ Status validate_cache(const KvCache &cache, const int device) {
       return {ErrorCode::kInvalidArgument,
               "paged Q8 KV cache dimensions overflow"};
     }
-    for (const auto &page : cache.q8_pages) {
+    const std::size_t populated_pages =
+        cache.length == 0 ? 0 : 1 + (cache.length - 1) / cache.page_tokens;
+    for (std::size_t index = 0; index < page_count; ++index) {
+      const auto &page = cache.q8_pages[index];
+      const bool any_valid = page.key.valid() || page.value.valid() ||
+                             page.key_scale.valid() ||
+                             page.value_scale.valid();
+      const bool all_valid = page.key.valid() && page.value.valid() &&
+                             page.key_scale.valid() &&
+                             page.value_scale.valid();
+      if (any_valid != all_valid || (index < populated_pages && !all_valid)) {
+        return {ErrorCode::kInvalidArgument,
+                "paged Q8 KV physical page metadata is invalid"};
+      }
+      if (!all_valid) {
+        if (cache.host_key_pages[index] != nullptr ||
+            cache.host_value_pages[index] != nullptr ||
+            cache.host_key_scale_pages[index] != nullptr ||
+            cache.host_value_scale_pages[index] != nullptr) {
+          return {ErrorCode::kInvalidArgument,
+                  "unallocated Q8 KV page has non-null host metadata"};
+        }
+        continue;
+      }
       for (const auto *const buffer : {&page.key, &page.value}) {
         auto status = buffer_size(*buffer, page_bytes, device,
                                   "paged Q8 KV payload");
@@ -123,6 +147,13 @@ Status validate_cache(const KvCache &cache, const int device) {
                                   "paged Q8 KV scale");
         if (!status.ok())
           return status;
+      }
+      if (cache.host_key_pages[index] != page.key.data() ||
+          cache.host_value_pages[index] != page.value.data() ||
+          cache.host_key_scale_pages[index] != page.key_scale.data() ||
+          cache.host_value_scale_pages[index] != page.value_scale.data()) {
+        return {ErrorCode::kInvalidArgument,
+                "paged Q8 KV host pointer metadata is invalid"};
       }
     }
     for (const auto *const table :
@@ -297,6 +328,20 @@ __global__ void q8_kv_append_kernel(
         static_cast<std::int8_t>(key_quantized);
     value_pages[page][output_base + dimension] =
         static_cast<std::int8_t>(value_quantized);
+  }
+}
+
+__global__ void set_q8_page_kernel(
+    std::int8_t **const key_pages, std::int8_t **const value_pages,
+    float **const key_scale_pages, float **const value_scale_pages,
+    const std::size_t index, std::int8_t *const key,
+    std::int8_t *const value, float *const key_scale,
+    float *const value_scale) {
+  if (blockIdx.x == 0 && threadIdx.x == 0) {
+    key_pages[index] = key;
+    value_pages[index] = value;
+    key_scale_pages[index] = key_scale;
+    value_scale_pages[index] = value_scale;
   }
 }
 
@@ -517,58 +562,21 @@ Status KvCache::allocate_q8_paged(
             "paged Q8 KV page table dimensions overflow"};
   }
 
-  q8_pages.reserve(page_count);
-  host_key_pages.reserve(page_count);
-  host_value_pages.reserve(page_count);
-  host_key_scale_pages.reserve(page_count);
-  host_value_scale_pages.reserve(page_count);
-  for (std::size_t index = 0; index < page_count; ++index) {
-    q8_pages.emplace_back();
-    auto &page = q8_pages.back();
-    status = page.key.allocate(device, page_bytes);
-    if (!status.ok())
-      return status;
-    status = page.value.allocate(device, page_bytes);
-    if (!status.ok())
-      return status;
-    status = page.key_scale.allocate(device, scale_bytes);
-    if (!status.ok())
-      return status;
-    status = page.value_scale.allocate(device, scale_bytes);
-    if (!status.ok())
-      return status;
-    host_key_pages.push_back(
-        static_cast<std::int8_t *>(page.key.data()));
-    host_value_pages.push_back(
-        static_cast<std::int8_t *>(page.value.data()));
-    host_key_scale_pages.push_back(
-        static_cast<float *>(page.key_scale.data()));
-    host_value_scale_pages.push_back(
-        static_cast<float *>(page.value_scale.data()));
-  }
+  q8_pages.resize(page_count);
+  host_key_pages.assign(page_count, nullptr);
+  host_value_pages.assign(page_count, nullptr);
+  host_key_scale_pages.assign(page_count, nullptr);
+  host_value_scale_pages.assign(page_count, nullptr);
   for (auto *const table :
        {&key_page_table, &value_page_table, &key_scale_page_table,
         &value_scale_page_table}) {
     status = table->allocate(device, table_bytes);
     if (!status.ok())
       return status;
+    status = table->zero(stream);
+    if (!status.ok())
+      return status;
   }
-  status = key_page_table.copy_from_host(host_key_pages.data(), table_bytes,
-                                         stream);
-  if (!status.ok())
-    return status;
-  status = value_page_table.copy_from_host(host_value_pages.data(), table_bytes,
-                                           stream);
-  if (!status.ok())
-    return status;
-  status = key_scale_page_table.copy_from_host(
-      host_key_scale_pages.data(), table_bytes, stream);
-  if (!status.ok())
-    return status;
-  status = value_scale_page_table.copy_from_host(
-      host_value_scale_pages.data(), table_bytes, stream);
-  if (!status.ok())
-    return status;
 
   type = KvCacheType::kQ8Paged;
   device_id = device;
@@ -577,6 +585,66 @@ Status KvCache::allocate_q8_paged(
   heads = head_count;
   head_dim = dimensions_per_head;
   page_tokens = tokens_per_page;
+  return Status::Ok();
+}
+
+Status ensure_q8_pages(KvCache *const cache, const std::size_t token_end,
+                       const Stream &stream) {
+  if (cache == nullptr || cache->type != KvCacheType::kQ8Paged ||
+      token_end == 0 || token_end > cache->capacity ||
+      stream.device() != cache->device_id) {
+    return {ErrorCode::kInvalidArgument,
+            "paged Q8 KV physical allocation arguments are invalid"};
+  }
+  std::size_t scale_elements = 0;
+  std::size_t page_elements = 0;
+  std::size_t page_bytes = 0;
+  std::size_t scale_bytes = 0;
+  if (!multiply(cache->page_tokens, cache->heads, &scale_elements) ||
+      !multiply(scale_elements, cache->head_dim, &page_elements) ||
+      !multiply(page_elements, sizeof(std::int8_t), &page_bytes) ||
+      !multiply(scale_elements, sizeof(float), &scale_bytes)) {
+    return {ErrorCode::kInvalidArgument,
+            "paged Q8 KV physical page dimensions overflow"};
+  }
+  const std::size_t required_pages =
+      1 + (token_end - 1) / cache->page_tokens;
+  for (std::size_t index = 0; index < required_pages; ++index) {
+    if (cache->q8_pages[index].key.valid())
+      continue;
+    Q8KvPage candidate;
+    auto status = candidate.key.allocate(cache->device_id, page_bytes);
+    if (!status.ok())
+      return status;
+    status = candidate.value.allocate(cache->device_id, page_bytes);
+    if (!status.ok())
+      return status;
+    status = candidate.key_scale.allocate(cache->device_id, scale_bytes);
+    if (!status.ok())
+      return status;
+    status = candidate.value_scale.allocate(cache->device_id, scale_bytes);
+    if (!status.ok())
+      return status;
+    auto *const key = static_cast<std::int8_t *>(candidate.key.data());
+    auto *const value = static_cast<std::int8_t *>(candidate.value.data());
+    auto *const key_scale = static_cast<float *>(candidate.key_scale.data());
+    auto *const value_scale =
+        static_cast<float *>(candidate.value_scale.data());
+    set_q8_page_kernel<<<1, 1, 0, stream.get()>>>(
+        static_cast<std::int8_t **>(cache->key_page_table.data()),
+        static_cast<std::int8_t **>(cache->value_page_table.data()),
+        static_cast<float **>(cache->key_scale_page_table.data()),
+        static_cast<float **>(cache->value_scale_page_table.data()), index, key,
+        value, key_scale, value_scale);
+    status = launch_status("set paged Q8 KV page pointer kernel");
+    if (!status.ok())
+      return status;
+    cache->q8_pages[index] = std::move(candidate);
+    cache->host_key_pages[index] = key;
+    cache->host_value_pages[index] = value;
+    cache->host_key_scale_pages[index] = key_scale;
+    cache->host_value_scale_pages[index] = value_scale;
+  }
   return Status::Ok();
 }
 
@@ -786,6 +854,9 @@ Status bf16_kv_append(const DeviceBuffer &key, const DeviceBuffer &value,
   if (!status.ok())
     return status;
   if (cache->type == KvCacheType::kQ8Paged) {
+    status = ensure_q8_pages(cache, cache->length + tokens, stream);
+    if (!status.ok())
+      return status;
     std::size_t blocks = 0;
     if (!multiply(tokens, cache->heads, &blocks) ||
         blocks >

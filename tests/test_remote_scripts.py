@@ -32,6 +32,13 @@ def main() -> int:
             "V18: gpu02 scripts must use the pinned container Python instead "
             f"of the older host interpreter: {script.name}"
         )
+        assert (
+            re.search(r"(?m)(?:^|[|;&(])[ \t]*rg(?:[ \t]|$)", script_text)
+            is None
+        ), (
+            "V18: gpu02 host scripts may not assume optional ripgrep is "
+            f"installed: {script.name}"
+        )
 
     build = (
         args.source_dir / "scripts" / "gpu02_build.sh"

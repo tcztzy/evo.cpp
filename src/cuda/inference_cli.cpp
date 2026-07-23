@@ -617,6 +617,7 @@ Status run_inference_cli(const CliOptions &options,
   if (!status.ok()) {
     return status;
   }
+  model.refresh_cache_bytes();
   print_metrics(metrics, memory, model.stages(), model.uses_q8_kv_cache());
   return Status::Ok();
 }

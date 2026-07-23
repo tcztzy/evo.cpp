@@ -1155,8 +1155,7 @@ Status SingleGpuModel::load(const ModelFile &model, const int device,
   impl_->arena_capacity = std::min(
       context_capacity, impl_->config.test_fixture ? kTestFixtureArenaTokens
                                                   : kMaximumArenaTokens);
-  impl_->q8_kv_cache = !impl_->config.test_fixture &&
-                       context_capacity >= kQ8KvContextThreshold;
+  impl_->q8_kv_cache = context_capacity >= kQ8KvContextThreshold;
   status = select_device(device);
   if (!status.ok())
     return status;
@@ -1422,8 +1421,7 @@ Status PipelineModel::load(const ModelFile &model,
       context_capacity, candidate->config.test_fixture
                             ? kTestFixtureArenaTokens
                             : kMaximumArenaTokens);
-  candidate->q8_kv_cache = !candidate->config.test_fixture &&
-                           context_capacity >= kQ8KvContextThreshold;
+  candidate->q8_kv_cache = context_capacity >= kQ8KvContextThreshold;
   const std::size_t stage_count = devices.size();
   const std::size_t base_layers = candidate->config.layers / stage_count;
   const std::size_t extra_layers = candidate->config.layers % stage_count;
@@ -1568,6 +1566,15 @@ const RuntimeModelConfig &PipelineModel::config() const noexcept {
 
 const std::vector<StageAssignment> &PipelineModel::stages() const noexcept {
   return impl_->assignments;
+}
+
+void PipelineModel::refresh_cache_bytes() noexcept {
+  for (std::size_t index = 0; index < impl_->stages.size(); ++index) {
+    auto &assignment = impl_->assignments[index];
+    assignment.cache_bytes = 0;
+    for (const auto &layer : impl_->stages[index]->layers)
+      assignment.cache_bytes += layer_cache_bytes(layer);
+  }
 }
 
 std::size_t PipelineModel::position() const noexcept { return impl_->position; }

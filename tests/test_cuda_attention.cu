@@ -375,9 +375,41 @@ void test_chunked_prefill(const int device, const evo2c::cuda::Stream &stream) {
         "chunked prefill respects cached causal prefix");
 }
 
+void test_rope_position_1m(const int device,
+                           const evo2c::cuda::Stream &stream) {
+  constexpr std::size_t tokens = 1;
+  constexpr std::size_t heads = 2;
+  constexpr std::size_t head_dim = 32;
+  constexpr std::size_t width = heads * head_dim;
+  constexpr std::size_t position = 1048575;
+  constexpr float position_scale = 128.0F;
+  auto query = quantize_bf16(values(width, 227, 41.0F));
+  auto key = quantize_bf16(values(width, 233, 43.0F));
+  std::vector<float> inverse_frequency(head_dim / 2);
+  for (std::size_t index = 0; index < inverse_frequency.size(); ++index) {
+    inverse_frequency[index] =
+        std::pow(1.0e6F, -2.0F * static_cast<float>(index) /
+                            static_cast<float>(head_dim));
+  }
+  auto query_device = upload_bf16(device, query, stream);
+  auto key_device = upload_bf16(device, key, stream);
+  auto frequency_device = upload_f32(device, inverse_frequency, stream);
+  require(evo2c::cuda::bf16_apply_rope(
+              &query_device, &key_device, frequency_device, tokens, heads,
+              head_dim, position, position_scale, stream),
+          "apply RoPE at final 1M context position");
+  rope_reference(&query, &key, tokens, heads, head_dim, inverse_frequency,
+                 position, position_scale);
+  check(all_close(download_bf16(query_device, width, stream), query, 0.002F,
+                  0.002F) &&
+            all_close(download_bf16(key_device, width, stream), key, 0.002F,
+                      0.002F),
+        "RoPE position 1048575 matches the CPU reference");
+}
+
 void test_q8_paged_cache(const int device,
                          const evo2c::cuda::Stream &stream) {
-  constexpr std::size_t tokens = 7;
+  constexpr std::size_t tokens = 6;
   constexpr std::size_t capacity = tokens + 1;
   constexpr std::size_t heads = 2;
   constexpr std::size_t head_dim = 32;
@@ -399,12 +431,15 @@ void test_q8_paged_cache(const int device,
                                   page_tokens, stream),
           "allocate paged Q8 KV cache");
   check(cache.quantized() && cache.device_id == device &&
-            cache.q8_pages.size() == 3,
-        "Q8 KV cache records its device and expected three physical pages");
+            cache.q8_pages.size() == 3 &&
+            std::none_of(cache.q8_pages.begin(), cache.q8_pages.end(),
+                         [](const auto &page) { return page.key.valid(); }),
+        "Q8 KV cache records three logical pages without eager payloads");
+  const std::size_t empty_bytes = cache.allocated_bytes();
   const std::size_t bf16_bytes =
       capacity * width * sizeof(__nv_bfloat16) * 2;
-  check(cache.allocated_bytes() < bf16_bytes,
-        "paged Q8 KV cache is smaller than equivalent BF16 storage");
+  check(empty_bytes < bf16_bytes,
+        "empty paged Q8 table is smaller than equivalent BF16 storage");
 
   evo2c::cuda::AttentionWorkspace workspace;
   evo2c::cuda::DeviceBuffer output;
@@ -416,6 +451,11 @@ void test_q8_paged_cache(const int device,
               qkv, frequency, tokens, heads, head_dim, position_scale, &cache,
               &workspace, &output, stream),
           "paged Q8 MHA prefill");
+  check(cache.q8_pages[0].key.valid() && cache.q8_pages[1].key.valid() &&
+            !cache.q8_pages[2].key.valid() &&
+            cache.allocated_bytes() > empty_bytes &&
+            cache.allocated_bytes() < bf16_bytes,
+        "Q8 prefill allocates only the two touched physical pages");
 
   std::vector<float> query;
   std::vector<float> key;
@@ -445,6 +485,9 @@ void test_q8_paged_cache(const int device,
               next_qkv, frequency, heads, head_dim, position_scale, &cache,
               &decode_workspace, &decode_output, stream),
           "paged Q8 MHA decode across a page boundary");
+  check(cache.q8_pages[2].key.valid() &&
+            cache.allocated_bytes() < bf16_bytes,
+        "paged Q8 decode allocates the newly touched third page");
   std::vector<float> next_query;
   std::vector<float> next_key;
   std::vector<float> next_value;
@@ -584,6 +627,7 @@ int main() {
     for (const std::size_t tokens : {1U, 2U, 7U, 128U})
       test_context(device, stream, tokens);
     test_chunked_prefill(device, stream);
+    test_rope_position_1m(device, stream);
     test_q8_paged_cache(device, stream);
     test_actual_head_shape(device, stream);
     test_context_8192(device, stream);

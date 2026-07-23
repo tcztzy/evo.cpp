@@ -43,7 +43,10 @@ is independently quantized as
 payload and F32 scale are stored in fixed 16384-token pages. The attention
 kernel selects a page for each source, dequantizes its elements into F32, and
 retains the same F32 dot-product, online-softmax, and value-accumulator
-semantics as the BF16 path.
+semantics as the BF16 path. The device page tables cover the full logical
+context at load time, while physical payload/scale pages are allocated on first
+append. Thus `--ctx` reserves addressability rather than eagerly consuming the
+maximum KV memory.
 
 The activation arena is capped separately from context capacity, so the CLI
 feeds prompts in bounded chunks. Chunked prefill uses the existing cache length

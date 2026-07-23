@@ -207,3 +207,69 @@ the paged-cache boundary test and comparator contract. Four optional external
 PyTorch/Triton/Vortex tests reported their declared skip status. Local Release
 and ASan/UBSan builds each passed all 18 entries, with three dependency-gated
 oracles skipped.
+
+## T18 1M context capacity and compute boundary
+
+Binary
+`f9924b96ba784f312158b986f73a02fb5718a0aadcb1704d08779f0df2cceb67`
+ran the real 40B model with `--ctx 1048576`, the same 16-byte prompt and
+two-byte greedy generation used by T17. It selected `q8_paged`, exited zero,
+and emitted `AC`. Its output and 2×512 logits are byte-identical to the 131K
+Q8 run, with SHA256
+`472e73d796e20aa8ff9059e6316f218e0322548f661ec4dc267507ed66317404`
+and
+`b087bfa8823f088d8de6bd05663afed2e23b636240ac66614a5af5e0a8ae70ff`.
+The direct BF16 comparison again passed with minimum cosine
+0.9999995896399383, exact top-1 and output bytes. A separate CUDA operator
+test checks RoPE at position 1,048,575 against the CPU reference.
+
+The canonical artifact directory is
+`$HOME/evo2c-artifacts/t18-ctx1048576-q8-short-f9924b96`. Its 1,184-byte
+`metrics.log` has SHA256
+`19d82de81977896539bb00f77154eb0d3d34b8d7b6cf1f54f8267cf4c7f71614`;
+the 926-byte BF16 comparison has SHA256
+`f44700e37e057366707d68be15fda5c047b1b1fdec33d558f8bf4a802ac69a4c`.
+Model loading took 55.571 seconds, 16-token prefill took 2.049 seconds
+(7.807 tokens/s), and one measured decode took 0.605 seconds
+(1.652 tokens/s). These rates were observed while unrelated jobs kept several
+GPUs busy and are not replacements for the uncontended T13 benchmark.
+
+The 1M page tables contain 64 logical pages per attention layer, but only the
+first page was physically needed by this short run. Final cache accounting was
+574,820,352, 571,183,104, 574,427,136, and 570,789,888 bytes on stages 0–3.
+This includes one 276,824,064-byte Q8 page for each of the two attention layers
+on a stage plus its Hyena state. The declared owned allocations
+weights+cache+arena were 22,819,570,176, 22,800,040,448, 21,359,289,856, and
+21,356,570,112 bytes. Global `cudaMemGetInfo` deltas are not process-isolated
+when other jobs allocate or exit, so these component totals are the reliable
+per-process accounting under contention.
+
+For a completely populated 1M cache:
+
+| Stage | Full Q8 cache | Weights + cache + arena |
+|---:|---:|---:|
+| 0 | 35,454,652,416 B | 57,699,402,240 B (53.737 GiB) |
+| 1 | 35,451,015,168 B | 57,679,872,512 B (53.719 GiB) |
+| 2 | 35,454,259,200 B | 56,239,121,920 B (52.377 GiB) |
+| 3 | 35,450,621,952 B | 56,236,402,176 B (52.374 GiB) |
+
+Each stage owns two of the eight MHA layers. One 16384-token page for one layer
+uses `2*16384*64*128` int8 payload bytes plus `2*16384*64*4` scale bytes,
+or 264 MiB. Sixty-four pages therefore use 16.5 GiB/layer and 33 GiB/stage.
+The equivalent BF16 totals would be 83.37–84.74 GiB/stage including weights
+and arena, beyond an 80GB A800; Q8 is required. The Q8 totals fit when gpu02 is
+otherwise idle, while lazy allocation also allowed this smoke to run when GPU2
+had only about 31 GiB free.
+
+Full-prefix compute is the remaining boundary. At `N=1048576`, one attention
+layer has `N*(N+1)/2 = 549,756,338,176` causal query/source pairs. Across
+64 heads, the current scalar online kernel directly reads 16,896 Q8/scale bytes
+and performs about 32,768 multiply/add FLOPs per pair. Across all eight MHA
+layers this is about 74.3 PB of direct reads and 144.1 PFLOP. Even an idealized
+2 TB/s bound is over ten hours when the four batch-1 pipeline stages execute
+sequentially, before exponentials, launch overhead, Hyena layers, and
+projections. Consequently T18 validates 1M addressability and incremental
+decode, not a full 1M prefill. Host offload is not selected: the resident Q8
+cache fits idle hardware, while PCIe replay of the quadratic read volume would
+be slower. A useful full 1M prefill requires query-tiled, shared-K/V
+FlashAttention-style kernels.

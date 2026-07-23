@@ -29,8 +29,9 @@ The quality-gated production target is batch 1 with `--ctx 8192`. A real 40B
 `--ctx 32768`. A real 40B `--ctx 131072` smoke has also allocated and exercised
 the paged Q8 KV path. Its two rows of logits retained at least
 0.999999589 cosine similarity to the BF16-cache baseline with exact top-1 and
-output bytes. This is a capacity and numerical smoke, not a claim that a full
-131072-token prefix has been prefetched.
+output bytes. The same binary path has passed a real `--ctx 1048576` capacity
+smoke. These are capacity and numerical smokes, not claims that full 131072- or
+1048576-token prefixes have been prefetched.
 
 ## gpu02 quick start
 
@@ -82,7 +83,9 @@ apptainer exec --nv -B "$nix_root:/nix:ro" "$image" \
 ```
 
 Long-context cache selection is automatic. `--ctx` below 131072 uses
-contiguous BF16 KV; `--ctx 131072` or greater uses 16384-token Q8 pages:
+contiguous BF16 KV; `--ctx 131072` or greater uses 16384-token Q8 pages.
+Logical page tables cover the requested capacity, while physical pages are
+allocated only when appended tokens first touch them:
 
 ```sh
 apptainer exec --nv -B "$nix_root:/nix:ro" "$image" \
@@ -92,7 +95,24 @@ apptainer exec --nv -B "$nix_root:/nix:ro" "$image" \
 ```
 
 The final `evo2c_metrics` record names the selected `kv_cache` format and
-reports cache bytes per pipeline stage.
+reports the currently allocated cache bytes per pipeline stage. Set
+`--ctx 1048576` on the same command for the verified 1M-capacity path.
+
+A completely populated 1M Q8 cache is projected at 33 GiB per GPU because each
+pipeline stage owns two attention layers. With weights, non-attention state,
+and the fixed activation arena, the four stages require 52.37–53.74 GiB each
+before CUDA runtime overhead, so they fit on otherwise idle A800 80GB cards.
+The corresponding BF16 stage totals would require 83.37–84.74 GiB and do not
+fit.
+
+Capacity is not prefill throughput. The current online attention kernel does
+quadratic work and does not tile multiple queries over a shared K/V tile. A
+full 1M causal prefill across the eight attention layers contains
+549,756,338,176 causal query/source pairs per layer, about 144.1 PFLOP and
+74.3 PB of direct Q8 K/V reads in the current kernel. Host offload would worsen
+that repeated-read bottleneck. Use 1M capacity for sequences that grow
+incrementally; a practical full 1M prefill still needs a tiled FlashAttention-
+style Q8 kernel.
 
 For the official long-prompt semantics, prefill 3000 bytes in parallel and
 teacher-force the remainder through the caches:

@@ -131,6 +131,7 @@ public:
 
   [[nodiscard]] const RuntimeModelConfig &config() const noexcept;
   [[nodiscard]] const std::vector<StageAssignment> &stages() const noexcept;
+  void refresh_cache_bytes() noexcept;
   [[nodiscard]] std::size_t position() const noexcept;
   [[nodiscard]] std::size_t activation_capacity() const noexcept;
   [[nodiscard]] bool uses_q8_kv_cache() const noexcept;
