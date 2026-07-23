@@ -36,7 +36,7 @@ def main() -> int:
         ],
         check=True,
     )
-    subprocess.run(
+    result = subprocess.run(
         [
             str(args.binary),
             str(model),
@@ -45,9 +45,9 @@ def main() -> int:
             str(expected_layer),
             str(dump),
         ],
-        check=True,
+        check=False,
     )
-    return 0
+    return result.returncode
 
 
 if __name__ == "__main__":

@@ -43,6 +43,39 @@ Status synchronize_device() {
   return cuda_status(cudaDeviceSynchronize(), "cudaDeviceSynchronize");
 }
 
+Status enable_peer_access(const int device, const int peer_device) {
+  if (device == peer_device) {
+    return {ErrorCode::kInvalidArgument,
+            "CUDA peer access requires two distinct devices"};
+  }
+  auto status = select_device(device);
+  if (!status.ok())
+    return status;
+  status = select_device(peer_device);
+  if (!status.ok())
+    return status;
+  int supported = 0;
+  status = cuda_status(cudaDeviceCanAccessPeer(&supported, device, peer_device),
+                       "cudaDeviceCanAccessPeer");
+  if (!status.ok())
+    return status;
+  if (supported == 0) {
+    return {ErrorCode::kUnsupported,
+            "CUDA device " + std::to_string(device) +
+                " cannot access peer device " + std::to_string(peer_device) +
+                "; 4-GPU layer pipeline requires P2P access"};
+  }
+  status = select_device(device);
+  if (!status.ok())
+    return status;
+  const cudaError_t error = cudaDeviceEnablePeerAccess(peer_device, 0);
+  if (error == cudaErrorPeerAccessAlreadyEnabled) {
+    static_cast<void>(cudaGetLastError());
+    return Status::Ok();
+  }
+  return cuda_status(error, "cudaDeviceEnablePeerAccess");
+}
+
 Stream::~Stream() { reset(); }
 
 Stream::Stream(Stream &&other) noexcept
@@ -189,6 +222,27 @@ Status DeviceBuffer::copy_to_host(void *const destination,
   return cuda_status(cudaMemcpyAsync(destination, data_, bytes,
                                      cudaMemcpyDeviceToHost, stream.get()),
                      "cudaMemcpyAsync device-to-host");
+}
+
+Status DeviceBuffer::copy_from_peer(const DeviceBuffer &source,
+                                    const std::size_t bytes,
+                                    const Stream &stream) {
+  if (data_ == nullptr || source.data_ == nullptr || !stream.valid() ||
+      stream.device() != device_ || source.device_ == device_) {
+    return {ErrorCode::kInvalidArgument,
+            "copy_from_peer requires allocated buffers on distinct devices "
+            "and a destination-device stream"};
+  }
+  if (bytes > bytes_ || bytes > source.bytes_) {
+    return {ErrorCode::kInvalidArgument,
+            "copy_from_peer exceeds a device buffer capacity"};
+  }
+  auto status = select_device(device_);
+  if (!status.ok())
+    return status;
+  return cuda_status(cudaMemcpyPeerAsync(data_, device_, source.data_,
+                                         source.device_, bytes, stream.get()),
+                     "cudaMemcpyPeerAsync stage boundary");
 }
 
 Status DeviceBuffer::zero(const Stream &stream) {

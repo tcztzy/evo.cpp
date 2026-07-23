@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <initializer_list>
 #include <limits>
 #include <set>
 #include <string>
@@ -284,6 +285,37 @@ struct Arena final {
   MlpWorkspace mlp;
 };
 
+std::size_t total_bytes(
+    const std::initializer_list<const DeviceBuffer *> buffers) noexcept {
+  std::size_t total = 0;
+  for (const auto *const buffer : buffers)
+    total += buffer->bytes();
+  return total;
+}
+
+std::size_t layer_weight_bytes(const Layer &layer) noexcept {
+  return total_bytes(
+      {&layer.pre_norm, &layer.post_norm, &layer.projection,
+       &layer.output_weight, &layer.output_bias, &layer.short_filter,
+       &layer.inner_filter, &layer.direct, &layer.log_poles, &layer.residues,
+       &layer.inverse_frequency, &layer.l1, &layer.l2, &layer.l3});
+}
+
+std::size_t layer_cache_bytes(const Layer &layer) noexcept {
+  return total_bytes({&layer.short_cache.state, &layer.inner_cache.state,
+                      &layer.iir_cache.state, &layer.kv_cache.key,
+                      &layer.kv_cache.value});
+}
+
+std::size_t arena_bytes(const Arena &arena) noexcept {
+  return total_bytes({&arena.token_ids, &arena.hidden, &arena.residual,
+                      &arena.normalized, &arena.projection,
+                      &arena.short_filtered, &arena.x2, &arena.x1, &arena.value,
+                      &arena.mixer_scratch, &arena.mixer_output, &arena.logits,
+                      &arena.blas_workspace, &arena.mlp.first,
+                      &arena.mlp.second, &arena.mlp.gated, &arena.mlp.blas});
+}
+
 } // namespace
 
 Status read_runtime_model_config(const ModelFile &model,
@@ -415,12 +447,14 @@ struct SingleGpuModel::Impl final {
   RuntimeModelConfig config;
   int device{-1};
   std::size_t context_capacity{0};
+  std::size_t layer_offset{0};
   std::size_t position{0};
   bool loaded{false};
   bool state_valid{false};
   Stream stream;
   BlasLt blas;
   DeviceBuffer embedding;
+  DeviceBuffer unembed;
   DeviceBuffer final_norm;
   std::vector<Layer> layers;
   Arena arena;
@@ -751,34 +785,14 @@ struct SingleGpuModel::Impl final {
     return write_npy(dump.path, values, rows, config.width);
   }
 
-  [[nodiscard]] Status forward(const std::vector<TokenId> &tokens,
-                               const bool prefill,
-                               std::vector<float> *const logits,
-                               const std::optional<LayerDump> &dump) {
-    if (!loaded || logits == nullptr || tokens.empty() ||
-        tokens.size() > context_capacity) {
-      return {ErrorCode::kInvalidArgument,
-              "model forward arguments are invalid"};
-    }
-    if (prefill) {
-      auto status = prepare_prefill(tokens.size());
-      if (!status.ok())
-        return status;
-    } else if (!state_valid || tokens.size() != 1 ||
-               position >= context_capacity) {
-      return {ErrorCode::kInvalidArgument,
-              "decode requires a valid prefill and free context capacity"};
-    }
-    if (dump.has_value() && dump->layer >= config.layers)
-      return {ErrorCode::kInvalidArgument, "layer dump index is out of range"};
-    auto status = embed(tokens);
-    if (!status.ok()) {
-      state_valid = false;
-      return status;
-    }
-    const std::size_t rows = tokens.size();
-    for (std::size_t index = 0; index < layers.size(); ++index) {
-      Layer &layer = layers[index];
+  [[nodiscard]] Status
+  run_blocks(const std::size_t rows, const bool prefill,
+             const std::optional<LayerDump> &dump = std::nullopt) {
+    auto status = Status::Ok();
+    for (std::size_t local_index = 0; local_index < layers.size();
+         ++local_index) {
+      const std::size_t index = layer_offset + local_index;
+      Layer &layer = layers[local_index];
       status = bf16_rms_norm(arena.hidden, layer.pre_norm, rows, config.width,
                              config.epsilon, &arena.normalized, stream);
       if (!status.ok())
@@ -817,9 +831,41 @@ struct SingleGpuModel::Impl final {
           break;
       }
     }
+    if (!status.ok())
+      return {status.code(), "model block forward: " + status.message()};
+    return Status::Ok();
+  }
+
+  [[nodiscard]] Status forward(const std::vector<TokenId> &tokens,
+                               const bool prefill,
+                               std::vector<float> *const logits,
+                               const std::optional<LayerDump> &dump) {
+    if (!loaded || logits == nullptr || tokens.empty() ||
+        tokens.size() > context_capacity) {
+      return {ErrorCode::kInvalidArgument,
+              "model forward arguments are invalid"};
+    }
+    if (prefill) {
+      auto status = prepare_prefill(tokens.size());
+      if (!status.ok())
+        return status;
+    } else if (!state_valid || tokens.size() != 1 ||
+               position >= context_capacity) {
+      return {ErrorCode::kInvalidArgument,
+              "decode requires a valid prefill and free context capacity"};
+    }
+    if (dump.has_value() && dump->layer >= config.layers)
+      return {ErrorCode::kInvalidArgument, "layer dump index is out of range"};
+    auto status = embed(tokens);
     if (!status.ok()) {
       state_valid = false;
-      return {status.code(), "model block forward: " + status.message()};
+      return status;
+    }
+    const std::size_t rows = tokens.size();
+    status = run_blocks(rows, prefill, dump);
+    if (!status.ok()) {
+      state_valid = false;
+      return status;
     }
     status = bf16_rms_norm(arena.hidden, final_norm, rows, config.width,
                            config.epsilon, &arena.normalized, stream);
@@ -882,13 +928,11 @@ Status SingleGpuModel::load(const ModelFile &model, const int device,
                          device, impl_->stream, &impl_->embedding);
   if (!status.ok())
     return status;
-  const TensorInfo *unembed = nullptr;
-  status =
-      checked_tensor(model, "unembed.weight", TensorDType::kBF16,
-                     {impl_->config.vocab_size, impl_->config.width}, &unembed);
+  status = upload_tensor(model, "unembed.weight", TensorDType::kBF16,
+                         {impl_->config.vocab_size, impl_->config.width},
+                         device, impl_->stream, &impl_->unembed);
   if (!status.ok())
     return status;
-  static_cast<void>(unembed);
   status = upload_tensor(model, "norm.scale", TensorDType::kF32,
                          {impl_->config.width}, device, impl_->stream,
                          &impl_->final_norm);
@@ -932,5 +976,289 @@ std::size_t SingleGpuModel::position() const noexcept {
   return impl_->position;
 }
 int SingleGpuModel::device() const noexcept { return impl_->device; }
+
+struct PipelineModel::Impl final {
+  RuntimeModelConfig config;
+  std::size_t context_capacity{0};
+  std::size_t position{0};
+  bool loaded{false};
+  bool state_valid{false};
+  std::vector<StageAssignment> assignments;
+  std::vector<std::unique_ptr<SingleGpuModel::Impl>> stages;
+
+  [[nodiscard]] Status enable_stage_peers() const {
+    std::set<std::pair<int, int>> enabled;
+    for (std::size_t index = 0; index < assignments.size(); ++index) {
+      const int source = assignments[index].device;
+      const int destination =
+          assignments[(index + 1) % assignments.size()].device;
+      for (const auto pair :
+           {std::pair{source, destination}, std::pair{destination, source}}) {
+        if (!enabled.insert(pair).second)
+          continue;
+        auto status = enable_peer_access(pair.first, pair.second);
+        if (!status.ok())
+          return status;
+      }
+    }
+    return Status::Ok();
+  }
+
+  [[nodiscard]] Status transfer_hidden(SingleGpuModel::Impl *const source,
+                                       SingleGpuModel::Impl *const destination,
+                                       const std::size_t rows) const {
+    std::size_t elements = 0;
+    std::size_t bytes = 0;
+    if (!multiply(rows, config.width, &elements) ||
+        !multiply(elements, sizeof(__nv_bfloat16), &bytes)) {
+      return {ErrorCode::kInvalidArgument,
+              "stage-boundary activation dimensions overflow"};
+    }
+    auto status = source->stream.synchronize();
+    if (!status.ok())
+      return {status.code(),
+              "synchronize source pipeline stage: " + status.message()};
+    status = destination->arena.hidden.copy_from_peer(
+        source->arena.hidden, bytes, destination->stream);
+    if (!status.ok()) {
+      return {status.code(), "P2P activation transfer from CUDA device " +
+                                 std::to_string(source->device) + " to " +
+                                 std::to_string(destination->device) + ": " +
+                                 status.message()};
+    }
+    return Status::Ok();
+  }
+
+  [[nodiscard]] Status forward(const std::vector<TokenId> &tokens,
+                               const bool prefill,
+                               std::vector<float> *const logits,
+                               const std::optional<LayerDump> &dump) {
+    if (!loaded || logits == nullptr || tokens.empty() ||
+        tokens.size() > context_capacity) {
+      return {ErrorCode::kInvalidArgument,
+              "pipeline model forward arguments are invalid"};
+    }
+    if (prefill) {
+      position = 0;
+      state_valid = false;
+      for (auto &stage : stages) {
+        auto status = stage->prepare_prefill(tokens.size());
+        if (!status.ok())
+          return {status.code(), "prepare pipeline stage on CUDA device " +
+                                     std::to_string(stage->device) + ": " +
+                                     status.message()};
+      }
+    } else if (!state_valid || tokens.size() != 1 ||
+               position >= context_capacity) {
+      return {ErrorCode::kInvalidArgument,
+              "pipeline decode requires a valid prefill and free context "
+              "capacity"};
+    }
+    if (dump.has_value() && dump->layer >= config.layers)
+      return {ErrorCode::kInvalidArgument, "layer dump index is out of range"};
+
+    auto status = stages.front()->embed(tokens);
+    if (!status.ok()) {
+      state_valid = false;
+      return status;
+    }
+    const std::size_t rows = tokens.size();
+    for (std::size_t stage_index = 0; stage_index < stages.size();
+         ++stage_index) {
+      if (stage_index != 0) {
+        status = transfer_hidden(stages[stage_index - 1].get(),
+                                 stages[stage_index].get(), rows);
+        if (!status.ok())
+          break;
+      }
+      status = stages[stage_index]->run_blocks(rows, prefill, dump);
+      if (!status.ok()) {
+        status = {status.code(),
+                  "pipeline stage " + std::to_string(stage_index) + " [" +
+                      std::to_string(assignments[stage_index].layer_begin) +
+                      "," + std::to_string(assignments[stage_index].layer_end) +
+                      "): " + status.message()};
+        break;
+      }
+    }
+    if (status.ok() && stages.size() > 1) {
+      status = transfer_hidden(stages.back().get(), stages.front().get(), rows);
+    }
+    if (!status.ok()) {
+      state_valid = false;
+      return status;
+    }
+
+    auto &head = *stages.front();
+    status =
+        bf16_rms_norm(head.arena.hidden, head.final_norm, rows, config.width,
+                      config.epsilon, &head.arena.normalized, head.stream);
+    if (status.ok()) {
+      status =
+          bf16_linear(head.blas, head.arena.normalized, head.embedding, nullptr,
+                      rows, config.width, config.vocab_size, &head.arena.logits,
+                      &head.arena.blas_workspace, head.stream);
+    }
+    if (!status.ok()) {
+      state_valid = false;
+      return {status.code(), "pipeline final projection: " + status.message()};
+    }
+    std::vector<__nv_bfloat16> raw(rows * config.vocab_size);
+    status = head.arena.logits.copy_to_host(
+        raw.data(), raw.size() * sizeof(raw[0]), head.stream);
+    if (status.ok())
+      status = head.stream.synchronize();
+    if (!status.ok()) {
+      state_valid = false;
+      return status;
+    }
+    logits->clear();
+    logits->reserve(raw.size());
+    for (const auto value : raw)
+      logits->push_back(__bfloat162float(value));
+    position = prefill ? rows : position + 1;
+    state_valid = true;
+    return Status::Ok();
+  }
+};
+
+PipelineModel::PipelineModel() : impl_(std::make_unique<Impl>()) {}
+PipelineModel::~PipelineModel() = default;
+PipelineModel::PipelineModel(PipelineModel &&) noexcept = default;
+PipelineModel &PipelineModel::operator=(PipelineModel &&) noexcept = default;
+
+Status PipelineModel::load(const ModelFile &model,
+                           const std::vector<int> &devices,
+                           const std::size_t context_capacity,
+                           const bool allow_test_fixture) {
+  if (impl_->loaded || context_capacity == 0 || devices.size() != 4) {
+    return {ErrorCode::kInvalidArgument,
+            "pipeline load requires exactly four devices, nonzero context, "
+            "and an unloaded model"};
+  }
+  const std::set<int> unique_devices(devices.begin(), devices.end());
+  if (unique_devices.size() != devices.size()) {
+    return {ErrorCode::kInvalidArgument,
+            "pipeline CUDA device list contains duplicates"};
+  }
+
+  auto candidate = std::make_unique<Impl>();
+  auto status =
+      read_runtime_model_config(model, allow_test_fixture, &candidate->config);
+  if (!status.ok())
+    return status;
+  candidate->context_capacity = context_capacity;
+  const std::size_t stage_count = devices.size();
+  const std::size_t base_layers = candidate->config.layers / stage_count;
+  const std::size_t extra_layers = candidate->config.layers % stage_count;
+  std::size_t layer_begin = 0;
+  candidate->assignments.reserve(stage_count);
+  candidate->stages.reserve(stage_count);
+  for (std::size_t index = 0; index < stage_count; ++index) {
+    const std::size_t layer_count =
+        base_layers + (index < extra_layers ? 1 : 0);
+    const std::size_t layer_end = layer_begin + layer_count;
+    candidate->assignments.push_back(
+        {devices[index], layer_begin, layer_end, 0, 0, 0});
+    auto stage = std::make_unique<SingleGpuModel::Impl>();
+    stage->config = candidate->config;
+    stage->device = devices[index];
+    stage->context_capacity = context_capacity;
+    stage->layer_offset = layer_begin;
+    status = select_device(stage->device);
+    if (!status.ok())
+      return status;
+    status = stage->stream.create();
+    if (!status.ok())
+      return status;
+    status = stage->blas.create();
+    if (!status.ok())
+      return status;
+    stage->layers.reserve(layer_count);
+    candidate->stages.push_back(std::move(stage));
+    layer_begin = layer_end;
+  }
+  status = candidate->enable_stage_peers();
+  if (!status.ok())
+    return status;
+
+  auto &head = *candidate->stages.front();
+  status =
+      upload_tensor(model, "embedding_layer.weight", TensorDType::kBF16,
+                    {candidate->config.vocab_size, candidate->config.width},
+                    head.device, head.stream, &head.embedding);
+  if (!status.ok())
+    return status;
+  status =
+      upload_tensor(model, "unembed.weight", TensorDType::kBF16,
+                    {candidate->config.vocab_size, candidate->config.width},
+                    head.device, head.stream, &head.unembed);
+  if (!status.ok())
+    return status;
+  status = upload_tensor(model, "norm.scale", TensorDType::kF32,
+                         {candidate->config.width}, head.device, head.stream,
+                         &head.final_norm);
+  if (!status.ok())
+    return status;
+
+  for (std::size_t stage_index = 0; stage_index < stage_count; ++stage_index) {
+    auto &stage = *candidate->stages[stage_index];
+    const auto &assignment = candidate->assignments[stage_index];
+    for (std::size_t index = assignment.layer_begin;
+         index < assignment.layer_end; ++index) {
+      stage.layers.emplace_back();
+      status = stage.load_layer(model, index, &stage.layers.back());
+      if (!status.ok()) {
+        return {status.code(),
+                "load block " + std::to_string(index) + " on CUDA device " +
+                    std::to_string(stage.device) + ": " + status.message()};
+      }
+    }
+    status = stage.allocate_arena();
+    if (!status.ok()) {
+      return {status.code(), "allocate arena on CUDA device " +
+                                 std::to_string(stage.device) + ": " +
+                                 status.message()};
+    }
+    auto &memory = candidate->assignments[stage_index];
+    for (const auto &layer : stage.layers) {
+      memory.weight_bytes += layer_weight_bytes(layer);
+      memory.cache_bytes += layer_cache_bytes(layer);
+    }
+    memory.arena_bytes = arena_bytes(stage.arena);
+  }
+  candidate->assignments.front().weight_bytes +=
+      total_bytes({&head.embedding, &head.unembed, &head.final_norm});
+  for (auto &stage : candidate->stages) {
+    status = stage->stream.synchronize();
+    if (!status.ok())
+      return status;
+  }
+  candidate->loaded = true;
+  impl_ = std::move(candidate);
+  return Status::Ok();
+}
+
+Status PipelineModel::prefill(const std::vector<TokenId> &tokens,
+                              std::vector<float> *const logits,
+                              const std::optional<LayerDump> &dump) {
+  return impl_->forward(tokens, true, logits, dump);
+}
+
+Status PipelineModel::decode(const TokenId token,
+                             std::vector<float> *const logits) {
+  return impl_->forward(std::vector<TokenId>{token}, false, logits,
+                        std::nullopt);
+}
+
+const RuntimeModelConfig &PipelineModel::config() const noexcept {
+  return impl_->config;
+}
+
+const std::vector<StageAssignment> &PipelineModel::stages() const noexcept {
+  return impl_->assignments;
+}
+
+std::size_t PipelineModel::position() const noexcept { return impl_->position; }
 
 } // namespace evo2c::cuda

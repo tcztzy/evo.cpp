@@ -167,6 +167,19 @@ if(EVO2C_CUDA)
       target_compile_options(
         evo2c-cuda-model-tests PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Werror>)
     endif()
+
+    add_executable(evo2c-cuda-pipeline-tests tests/test_cuda_pipeline.cu)
+    target_link_libraries(evo2c-cuda-pipeline-tests PRIVATE evo2c_cuda)
+    set_target_properties(
+      evo2c-cuda-pipeline-tests
+      PROPERTIES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+    target_compile_options(
+      evo2c-cuda-pipeline-tests
+      PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra,-Wconversion,-Wshadow>)
+    if(EVO2C_WARNINGS_AS_ERRORS)
+      target_compile_options(
+        evo2c-cuda-pipeline-tests PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Werror>)
+    endif()
   endif()
 endif()
 
@@ -259,6 +272,13 @@ if(BUILD_TESTING)
         --binary $<TARGET_FILE:evo2c-cuda-model-tests>
         --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_tiny_model.py
         --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/cuda_model)
+    add_test(
+      NAME cuda_pipeline
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cuda_model.py
+        --binary $<TARGET_FILE:evo2c-cuda-pipeline-tests>
+        --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_tiny_model.py
+        --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/cuda_pipeline)
     set_tests_properties(cuda_smoke PROPERTIES LABELS "gpu;cuda")
     set_tests_properties(cuda_ops PROPERTIES LABELS "gpu;cuda")
     set_tests_properties(cuda_hyena PROPERTIES LABELS "gpu;cuda")
@@ -267,6 +287,12 @@ if(BUILD_TESTING)
       cuda_model
       PROPERTIES
         LABELS "gpu;cuda"
+        ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools")
+    set_tests_properties(
+      cuda_pipeline
+      PROPERTIES
+        LABELS "gpu;cuda;multi_gpu"
+        SKIP_RETURN_CODE 77
         ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools")
   endif()
 endif()

@@ -43,6 +43,15 @@ struct LayerDump final {
   std::string path;
 };
 
+struct StageAssignment final {
+  int device{-1};
+  std::size_t layer_begin{0};
+  std::size_t layer_end{0};
+  std::size_t weight_bytes{0};
+  std::size_t cache_bytes{0};
+  std::size_t arena_bytes{0};
+};
+
 [[nodiscard]] Status read_runtime_model_config(const ModelFile &model,
                                                bool allow_test_fixture,
                                                RuntimeModelConfig *config);
@@ -69,6 +78,36 @@ public:
   [[nodiscard]] const RuntimeModelConfig &config() const noexcept;
   [[nodiscard]] std::size_t position() const noexcept;
   [[nodiscard]] int device() const noexcept;
+
+private:
+  friend class PipelineModel;
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
+
+class PipelineModel final {
+public:
+  PipelineModel();
+  ~PipelineModel();
+
+  PipelineModel(const PipelineModel &) = delete;
+  PipelineModel &operator=(const PipelineModel &) = delete;
+  PipelineModel(PipelineModel &&) noexcept;
+  PipelineModel &operator=(PipelineModel &&) noexcept;
+
+  [[nodiscard]] Status load(const ModelFile &model,
+                            const std::vector<int> &devices,
+                            std::size_t context_capacity,
+                            bool allow_test_fixture = false);
+
+  [[nodiscard]] Status
+  prefill(const std::vector<TokenId> &tokens, std::vector<float> *logits,
+          const std::optional<LayerDump> &dump = std::nullopt);
+  [[nodiscard]] Status decode(TokenId token, std::vector<float> *logits);
+
+  [[nodiscard]] const RuntimeModelConfig &config() const noexcept;
+  [[nodiscard]] const std::vector<StageAssignment> &stages() const noexcept;
+  [[nodiscard]] std::size_t position() const noexcept;
 
 private:
   struct Impl;

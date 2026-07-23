@@ -55,7 +55,7 @@ T6|x|实现 CUDA tensor/runtime、cuBLASLt BF16 linear、RMSNorm/MLP/fused eleme
 T7|x|实现 HCS/HCM/HCL CUDA prefill+decode、FIR/IIR caches、cuFFT path|V4,V5,V9,V10
 T8|x|实现 MHA RoPE、online-softmax causal attention、BF16 KV cache、cached decode|V4,V9,V10,V14
 T9|x|组装 embedding+50 blocks+final norm/unembed、layer dump、tiny synthetic E2E|V3,V4,V9,I.debug
-T10|.|实现 4×A800 layer pipeline、P2P transfers、per-stage arena/weight placement|V11,V12
+T10|x|实现 4×A800 layer pipeline、P2P transfers、per-stage arena/weight placement|V11,V12
 T11|.|连通 gpu02 后复核环境；Apptainer build；下载/合并 checkpoint；远端转换并记录 SHA|V6,V11,V16,I.remote
 T12|.|生成 7B/40B Python BF16 与可得官方 FP8/NIM vectors；逐算子→逐层→logits 对齐|V8,V9,V10,V13,I.vector
 T13|.|gpu02 跑 40B ctx=8192 score+greedy generation；修正质量；达成显存/确定性/官方 prompt gates|V10,V11,V13,V15,V16,I.cli,I.score

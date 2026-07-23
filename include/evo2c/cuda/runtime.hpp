@@ -14,6 +14,7 @@ namespace evo2c::cuda {
 [[nodiscard]] Status cublas_status(cublasStatus_t error, const char *operation);
 [[nodiscard]] Status select_device(int device);
 [[nodiscard]] Status synchronize_device();
+[[nodiscard]] Status enable_peer_access(int device, int peer_device);
 
 class Stream final {
 public:
@@ -53,6 +54,8 @@ public:
                                       const Stream &stream);
   [[nodiscard]] Status copy_to_host(void *destination, std::size_t bytes,
                                     const Stream &stream) const;
+  [[nodiscard]] Status copy_from_peer(const DeviceBuffer &source,
+                                      std::size_t bytes, const Stream &stream);
   [[nodiscard]] Status zero(const Stream &stream);
 
   [[nodiscard]] void *data() noexcept { return data_; }
