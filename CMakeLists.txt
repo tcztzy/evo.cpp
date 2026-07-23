@@ -41,7 +41,13 @@ function(evo2c_configure_target target)
   endif()
 endfunction()
 
-add_library(evo2c_core STATIC src/status.cpp src/version.cpp)
+add_library(
+  evo2c_core STATIC
+  src/crc32.cpp
+  src/mapped_file.cpp
+  src/model_format.cpp
+  src/status.cpp
+  src/version.cpp)
 target_include_directories(
   evo2c_core
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
@@ -88,6 +94,18 @@ if(BUILD_TESTING)
   evo2c_configure_target(evo2c-core-tests)
   add_test(NAME core COMMAND evo2c-core-tests)
 
+  add_executable(evo2c-model-format-tests tests/test_model_format.cpp)
+  target_link_libraries(evo2c-model-format-tests PRIVATE evo2c_core)
+  evo2c_configure_target(evo2c-model-format-tests)
+  add_test(NAME model_format COMMAND evo2c-model-format-tests)
+  add_test(
+    NAME model_inspect_contract
+    COMMAND ${CMAKE_COMMAND}
+      -DEVO2C_FIXTURE_WRITER=$<TARGET_FILE:evo2c-model-format-tests>
+      -DEVO2C_INSPECT_BINARY=$<TARGET_FILE:evo2c-inspect>
+      -DEVO2C_FIXTURE_PATH=${CMAKE_CURRENT_BINARY_DIR}/Testing/tiny.evo2
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/model_inspect_contract.cmake)
+
   add_test(
     NAME cli_contract
     COMMAND ${CMAKE_COMMAND}
@@ -106,4 +124,3 @@ if(BUILD_TESTING)
     set_tests_properties(cuda_smoke PROPERTIES LABELS "gpu;cuda")
   endif()
 endif()
-

@@ -40,7 +40,6 @@ execute_process(
 if(inspect_result EQUAL 0)
   message(FATAL_ERROR "evo2c-inspect without a model silently succeeded")
 endif()
-if(NOT inspect_error MATCHES "unsupported: model inspection is not implemented yet")
+if(NOT inspect_error MATCHES "invalid_argument: usage: evo2c-inspect")
   message(FATAL_ERROR "evo2c-inspect failure was not actionable: ${inspect_error}${inspect_output}")
 endif()
-
