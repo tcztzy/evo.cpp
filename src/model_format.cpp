@@ -30,8 +30,8 @@ Status format_error(const std::string& message) {
 }
 
 std::uint16_t read_u16(const std::uint8_t* data) noexcept {
-  return static_cast<std::uint16_t>(data[0]) |
-         static_cast<std::uint16_t>(static_cast<std::uint16_t>(data[1]) << 8U);
+  return static_cast<std::uint16_t>(static_cast<unsigned int>(data[0]) |
+                                    (static_cast<unsigned int>(data[1]) << 8U));
 }
 
 std::uint32_t read_u32(const std::uint8_t* data) noexcept {
@@ -549,4 +549,3 @@ std::string metadata_value_text(const MetadataEntry& entry) {
 }
 
 }  // namespace evo2c
-

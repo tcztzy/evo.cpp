@@ -14,6 +14,23 @@ from typing import Any
 VORTEX_COMMIT = "8b00afebeac745d1f31e7e2788f0e0e39fa47637"
 
 
+def equivalent(left: Any, right: Any) -> bool:
+    """Compare fixtures while tolerating libm last-bit drift across Python releases."""
+    if isinstance(left, float) and isinstance(right, (int, float)):
+        return math.isclose(left, right, rel_tol=1e-14, abs_tol=1e-14)
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(
+            equivalent(left[key], right[key]) for key in left
+        )
+    if isinstance(left, list):
+        return len(left) == len(right) and all(
+            equivalent(a, b) for a, b in zip(left, right, strict=True)
+        )
+    return left == right
+
+
 def values(count: int, offset: int, divisor: float) -> list[float]:
     return [((((index + offset) * 37 + 11) % 29) - 14) / divisor for index in range(count)]
 
@@ -279,7 +296,7 @@ def main() -> int:
     generated = build_vectors()
     if args.check is not None:
         existing = json.loads(args.check.read_text(encoding="utf-8"))
-        if existing != generated:
+        if not equivalent(existing, generated):
             print(f"reference fixture is stale: {args.check}", file=sys.stderr)
             return 1
     encoded = json.dumps(generated, indent=2, sort_keys=True) + "\n"

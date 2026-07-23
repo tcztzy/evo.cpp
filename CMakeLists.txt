@@ -81,16 +81,51 @@ if(EVO2C_CUDA)
   endif()
   find_package(CUDAToolkit 12 REQUIRED)
 
+  add_library(
+    evo2c_cuda STATIC
+    src/cuda/ops.cu
+    src/cuda/runtime.cu)
+  target_include_directories(
+    evo2c_cuda
+    PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+  target_link_libraries(
+    evo2c_cuda
+    PUBLIC evo2c_core CUDA::cudart CUDA::cublas CUDA::cublasLt CUDA::cufft)
+  set_target_properties(
+    evo2c_cuda
+    PROPERTIES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+  target_compile_options(
+    evo2c_cuda
+    PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr;--extended-lambda;-Xcompiler=-Wall,-Wextra,-Wconversion,-Wshadow>)
+  if(EVO2C_WARNINGS_AS_ERRORS)
+    target_compile_options(evo2c_cuda PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Werror>)
+  endif()
+
   add_executable(evo2c-cuda-smoke src/cuda/smoke.cu)
   target_link_libraries(
     evo2c-cuda-smoke
-    PRIVATE CUDA::cudart CUDA::cublasLt CUDA::cufft)
+    PRIVATE evo2c_cuda)
   set_target_properties(
     evo2c-cuda-smoke
     PROPERTIES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
   target_compile_options(
     evo2c-cuda-smoke
     PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>)
+
+  if(BUILD_TESTING)
+    add_executable(evo2c-cuda-ops-tests tests/test_cuda_ops.cu)
+    target_link_libraries(evo2c-cuda-ops-tests PRIVATE evo2c_cuda)
+    set_target_properties(
+      evo2c-cuda-ops-tests
+      PROPERTIES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+    target_compile_options(
+      evo2c-cuda-ops-tests
+      PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra,-Wconversion,-Wshadow>)
+    if(EVO2C_WARNINGS_AS_ERRORS)
+      target_compile_options(
+        evo2c-cuda-ops-tests PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Werror>)
+    endif()
+  endif()
 endif()
 
 if(BUILD_TESTING)
@@ -110,6 +145,11 @@ if(BUILD_TESTING)
   target_link_libraries(evo2c-frontend-tests PRIVATE evo2c_core)
   evo2c_configure_target(evo2c-frontend-tests)
   add_test(NAME frontend COMMAND evo2c-frontend-tests)
+
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
+    target_link_libraries(evo2c-model-format-tests PRIVATE stdc++fs)
+    target_link_libraries(evo2c-frontend-tests PRIVATE stdc++fs)
+  endif()
 
   add_executable(evo2c-cpu-reference-tests tests/test_cpu_reference.cpp)
   target_link_libraries(evo2c-cpu-reference-tests PRIVATE evo2c_core)
@@ -167,6 +207,8 @@ if(BUILD_TESTING)
 
   if(EVO2C_CUDA)
     add_test(NAME cuda_smoke COMMAND evo2c-cuda-smoke)
+    add_test(NAME cuda_ops COMMAND evo2c-cuda-ops-tests)
     set_tests_properties(cuda_smoke PROPERTIES LABELS "gpu;cuda")
+    set_tests_properties(cuda_ops PROPERTIES LABELS "gpu;cuda")
   endif()
 endif()
