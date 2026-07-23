@@ -16,6 +16,7 @@ an offline converter, and reproducible reference vectors.
 - Exact Transformer Engine 2.3 E4M3FN projection scales extracted from the
   checkpoint.
 - Software H100-QGMMA accumulation on A800, with one-byte cached E4M3 weights.
+- Parallel per-GPU stage loading and static E4M3 weight preparation.
 - `EVO2C` v1 mmap model validation before any CUDA allocation.
 - CPU, CUDA, SASS, converter, four-GPU CLI, and official continuation gates.
 

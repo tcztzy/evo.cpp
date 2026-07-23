@@ -63,7 +63,7 @@ T11|x|连通 gpu02 后复核环境；Apptainer build；下载/合并 checkpoint�
 T12|x|生成 7B/40B Python BF16 与可得官方 FP8/NIM vectors；逐算子→逐层→logits 对齐|V8,V9,V10,V13,I.vector
 T13|x|gpu02 跑 40B ctx=8192 score+greedy generation；修正质量；达成显存/确定性/官方 prompt gates|V10,V11,V13,V15,V16,V19,I.cli,I.score
 T14|x|若纯 BF16 未过 V13，实现 software E4M3 projection cast/scale 与 checkpoint FP8 metadata 提取|V2,V6,V13,V17,I.model
-T15|~|优化 software-QGMMA tiling、fused kernels、CUDA graphs、stage transfer；输出基准，无正确性回退|V9,V10,V11,V16,V17
+T15|x|优化 software-QGMMA padded tiling与四卡 stage 并发加载；输出前后基准，无正确性回退|V9,V10,V11,V16,V17
 T16|.|实现 paged Q8 KV + chunked prefill；依次验证 ctx=32768/131072|V10,V13,V14,V16
 T17|.|评估 1M context：显存/host-offload/耗时；可行则 smoke，否→量化瓶颈与硬件下限报告|V13,V14,V16
 T18|.|README：构建、转换、gpu02 运行、限制、复现命令；全套 CPU+GPU regression|V12,V16,I.build,I.convert,I.cli,I.remote

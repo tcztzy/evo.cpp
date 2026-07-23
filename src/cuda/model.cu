@@ -6,7 +6,9 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <fstream>
+#include <future>
 #include <initializer_list>
 #include <limits>
 #include <set>
@@ -1405,39 +1407,58 @@ Status PipelineModel::load(const ModelFile &model,
   if (!status.ok())
     return status;
 
-  for (std::size_t stage_index = 0; stage_index < stage_count; ++stage_index) {
-    auto &stage = *candidate->stages[stage_index];
-    const auto &assignment = candidate->assignments[stage_index];
+  auto load_stage = [&model, pipeline = candidate.get()](
+                        const std::size_t stage_index) -> Status {
+    auto &stage = *pipeline->stages[stage_index];
+    const auto &assignment = pipeline->assignments[stage_index];
     for (std::size_t index = assignment.layer_begin;
          index < assignment.layer_end; ++index) {
       stage.layers.emplace_back();
-      status = stage.load_layer(model, index, &stage.layers.back());
-      if (!status.ok()) {
-        return {status.code(),
+      auto stage_status = stage.load_layer(model, index, &stage.layers.back());
+      if (!stage_status.ok()) {
+        return {stage_status.code(),
                 "load block " + std::to_string(index) + " on CUDA device " +
-                    std::to_string(stage.device) + ": " + status.message()};
+                    std::to_string(stage.device) + ": " +
+                    stage_status.message()};
       }
     }
-    status = stage.allocate_arena();
-    if (!status.ok()) {
-      return {status.code(), "allocate arena on CUDA device " +
-                                 std::to_string(stage.device) + ": " +
-                                 status.message()};
+    auto stage_status = stage.allocate_arena();
+    if (!stage_status.ok()) {
+      return {stage_status.code(), "allocate arena on CUDA device " +
+                                       std::to_string(stage.device) + ": " +
+                                       stage_status.message()};
     }
-    auto &memory = candidate->assignments[stage_index];
+    auto &memory = pipeline->assignments[stage_index];
     for (const auto &layer : stage.layers) {
       memory.weight_bytes += layer_weight_bytes(layer);
       memory.cache_bytes += layer_cache_bytes(layer);
     }
     memory.arena_bytes = arena_bytes(stage.arena);
+    return stage.stream.synchronize();
+  };
+  std::vector<std::future<Status>> stage_loads;
+  stage_loads.reserve(stage_count);
+  try {
+    for (std::size_t stage_index = 0; stage_index < stage_count;
+         ++stage_index) {
+      stage_loads.push_back(std::async(std::launch::async, load_stage,
+                                       stage_index));
+    }
+    for (std::size_t stage_index = 0; stage_index < stage_count;
+         ++stage_index) {
+      status = stage_loads[stage_index].get();
+      if (!status.ok()) {
+        return {status.code(),
+                "load pipeline stage " + std::to_string(stage_index) + ": " +
+                    status.message()};
+      }
+    }
+  } catch (const std::exception &error) {
+    return {ErrorCode::kInternal,
+            "parallel pipeline load failed: " + std::string{error.what()}};
   }
   candidate->assignments.front().weight_bytes +=
       total_bytes({&head.embedding, &head.unembed, &head.final_norm});
-  for (auto &stage : candidate->stages) {
-    status = stage->stream.synchronize();
-    if (!status.ok())
-      return status;
-  }
   candidate->loaded = true;
   impl_ = std::move(candidate);
   return Status::Ok();

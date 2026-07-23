@@ -114,3 +114,29 @@ The final gpu02 build passed all 25 CTest entries; four optional
 PyTorch/Triton/Vortex reference tests reported the declared skip status.
 Local Release and ASan/UBSan builds each passed all 17 entries, with their
 three dependency-gated oracle tests skipped.
+
+## T15 loading optimization
+
+Binary
+`f0a09d4af1cc2d73c665157b8e7e5b9b14abb014c7f81971c895565bf30776ff`
+loads and statically quantizes the four independent pipeline stages
+concurrently. The observed real-model initialization comparisons were:
+
+| Workload | Sequential load | Parallel load | Change |
+|---|---:|---:|---:|
+| 16-token score under contention | 66.814 s | 56.186 s | -15.9% |
+| Official prompt-0 10-token generation | 60.290 s | 55.801 s | -7.4% |
+
+The score JSON remained byte-identical with SHA256
+`84c5463f62bd0c0244518a1a9b19c7d453bd84de6486569618c9bc599ceb8906`.
+The long-prompt continuation also remained byte-identical with SHA256
+`d5c1771dd559cf6b0e17a4b0bbc354ac212e98331c0e2dbbff238535e56ce213`.
+Artifacts are in
+`$HOME/evo2c-artifacts/t15-parallel-load-score-f0a09d4a` and
+`$HOME/evo2c-artifacts/t15-parallel-load-p0-10-f0a09d4a`.
+
+The long-prompt run overlapped unrelated jobs using 60–70 GiB on GPUs 1–3,
+so its prefill/decode throughput is not used as a kernel comparison. The
+previous uncontended packed-kernel throughput table remains the reproducible
+compute baseline. The parallel-loading build again passed all 25 gpu02 CTest
+entries and both 17-entry local Release/Sanitizer suites.

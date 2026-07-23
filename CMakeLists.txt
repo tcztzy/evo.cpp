@@ -74,6 +74,7 @@ if(EVO2C_CUDA)
       "EVO2C_CUDA=ON but no CUDA compiler was found. Install CUDA 12.x or configure with -DEVO2C_CUDA=OFF for CPU-only tests.")
   endif()
   enable_language(CUDA)
+  find_package(Threads REQUIRED)
   set(CMAKE_CUDA_STANDARD 17)
   set(CMAKE_CUDA_STANDARD_REQUIRED ON)
   set(CMAKE_CUDA_EXTENSIONS OFF)
@@ -94,7 +95,13 @@ if(EVO2C_CUDA)
     PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
   target_link_libraries(
     evo2c_cuda
-    PUBLIC evo2c_core CUDA::cudart CUDA::cublas CUDA::cublasLt CUDA::cufft)
+    PUBLIC
+      evo2c_core
+      Threads::Threads
+      CUDA::cudart
+      CUDA::cublas
+      CUDA::cublasLt
+      CUDA::cufft)
   set_target_properties(
     evo2c_cuda
     PROPERTIES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
