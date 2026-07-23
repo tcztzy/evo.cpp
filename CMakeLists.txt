@@ -115,6 +115,22 @@ if(EVO2C_CUDA)
     evo2c-cuda-smoke
     PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>)
 
+  add_executable(evo2c-cuda-probe tools/cuda_model_probe.cu)
+  target_link_libraries(evo2c-cuda-probe PRIVATE evo2c_cuda)
+  set_target_properties(
+    evo2c-cuda-probe
+    PROPERTIES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+  target_compile_options(
+    evo2c-cuda-probe
+    PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra,-Wconversion,-Wshadow>)
+  if(EVO2C_WARNINGS_AS_ERRORS)
+    target_compile_options(
+      evo2c-cuda-probe PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Werror>)
+  endif()
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
+    target_link_libraries(evo2c-cuda-probe PRIVATE stdc++fs)
+  endif()
+
   if(BUILD_TESTING)
     add_executable(evo2c-cuda-ops-tests tests/test_cuda_ops.cu)
     target_link_libraries(evo2c-cuda-ops-tests PRIVATE evo2c_cuda)
@@ -218,6 +234,13 @@ if(BUILD_TESTING)
       --binary $<TARGET_FILE:evo2c-cpu-reference-tests>
       --fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/cpu_ops.json
       --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_cpu_vectors.py)
+  add_test(
+    NAME model_vector_comparator
+    COMMAND ${CMAKE_COMMAND} -E env
+      PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools
+      ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_model_vectors.py)
+  set_tests_properties(model_vector_comparator PROPERTIES SKIP_RETURN_CODE 77)
   add_test(
     NAME model_inspect_contract
     COMMAND ${CMAKE_COMMAND}

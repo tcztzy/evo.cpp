@@ -57,7 +57,7 @@ T8|x|实现 MHA RoPE、online-softmax causal attention、BF16 KV cache、cached 
 T9|x|组装 embedding+50 blocks+final norm/unembed、layer dump、tiny synthetic E2E|V3,V4,V9,I.debug
 T10|x|实现 4×A800 layer pipeline、P2P transfers、per-stage arena/weight placement|V11,V12
 T11|x|连通 gpu02 后复核环境；Apptainer build；下载/合并 checkpoint；远端转换并记录 SHA|V6,V11,V16,I.remote
-T12|.|生成 7B/40B Python BF16 与可得官方 FP8/NIM vectors；逐算子→逐层→logits 对齐|V8,V9,V10,V13,I.vector
+T12|x|生成 7B/40B Python BF16 与可得官方 FP8/NIM vectors；逐算子→逐层→logits 对齐|V8,V9,V10,V13,I.vector
 T13|.|gpu02 跑 40B ctx=8192 score+greedy generation；修正质量；达成显存/确定性/官方 prompt gates|V10,V11,V13,V15,V16,I.cli,I.score
 T14|.|若纯 BF16 未过 V13，实现 software E4M3 projection cast/scale 与 checkpoint FP8 metadata 提取|V2,V6,V13,I.model
 T15|.|优化 fused kernels、CUDA graphs、double-buffered stage transfer；输出基准，无正确性回退|V9,V10,V11,V16
@@ -68,3 +68,5 @@ T18|.|README：构建、转换、gpu02 运行、限制、复现命令；全套 C
 ## §B BUGS
 id|date|cause|fix
 B1|2026-07-23|40B config copied the obsolete pre-fix RoPE base `1e11`; official Vortex and checkpoint `inv_freq` use `1e6`|V4 + converter config drift test
+B2|2026-07-23|official attention checkpoint rows are head-major `[head,QKV,dim]`; runtime split assumed projection-major `[QKV,head,dim]`|layout-aware QKV split + real 40B layer vectors
+B3|2026-07-23|native RMSNorm delayed BF16 rounding and applied output bias after GEMM; Vortex rounds each RMS expression and fuses bias into the matmul epilogue|Vortex-order BF16 RMSNorm + column-major cuBLASLt bias epilogue

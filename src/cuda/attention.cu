@@ -97,17 +97,29 @@ Status validate_cache(const KvCache &cache, const int device) {
 __global__ void
 split_qkv_kernel(const __nv_bfloat16 *const qkv, __nv_bfloat16 *const query,
                  __nv_bfloat16 *const key, __nv_bfloat16 *const value,
-                 const std::size_t token_width, const std::size_t elements) {
+                 const std::size_t heads, const std::size_t head_dim,
+                 const std::size_t token_width, const std::size_t elements,
+                 const bool head_major) {
   for (std::size_t index =
            static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
        index < elements;
        index += static_cast<std::size_t>(blockDim.x) * gridDim.x) {
     const std::size_t token = index / token_width;
     const std::size_t within = index % token_width;
-    const std::size_t source = token * token_width * 3 + within;
-    query[index] = qkv[source];
-    key[index] = qkv[source + token_width];
-    value[index] = qkv[source + token_width * 2];
+    if (head_major) {
+      const std::size_t head = within / head_dim;
+      const std::size_t dimension = within % head_dim;
+      const std::size_t source =
+          token * token_width * 3 + head * 3 * head_dim + dimension;
+      query[index] = qkv[source];
+      key[index] = qkv[source + head_dim];
+      value[index] = qkv[source + head_dim * 2];
+    } else {
+      const std::size_t source = token * token_width * 3 + within;
+      query[index] = qkv[source];
+      key[index] = qkv[source + token_width];
+      value[index] = qkv[source + token_width * 2];
+    }
   }
 }
 
@@ -292,9 +304,12 @@ Status AttentionWorkspace::allocate(const int device,
 Status bf16_split_qkv(const DeviceBuffer &qkv, const std::size_t tokens,
                       const std::size_t heads, const std::size_t head_dim,
                       DeviceBuffer *const query, DeviceBuffer *const key,
-                      DeviceBuffer *const value, const Stream &stream) {
+                      DeviceBuffer *const value, const Stream &stream,
+                      const QkvLayout layout) {
   if (query == nullptr || key == nullptr || value == nullptr ||
-      !stream.valid()) {
+      !stream.valid() ||
+      (layout != QkvLayout::kProjectionMajor &&
+       layout != QkvLayout::kHeadMajor)) {
     return {ErrorCode::kInvalidArgument,
             "QKV split requires three outputs and an initialized stream"};
   }
@@ -340,7 +355,8 @@ Status bf16_split_qkv(const DeviceBuffer &qkv, const std::size_t tokens,
       static_cast<const __nv_bfloat16 *>(qkv.data()),
       static_cast<__nv_bfloat16 *>(query->data()),
       static_cast<__nv_bfloat16 *>(key->data()),
-      static_cast<__nv_bfloat16 *>(value->data()), token_width, elements);
+      static_cast<__nv_bfloat16 *>(value->data()), heads, head_dim, token_width,
+      elements, layout == QkvLayout::kHeadMajor);
   return launch_status("split QKV kernel");
 }
 

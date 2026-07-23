@@ -427,8 +427,10 @@ __global__ void hcl_filter_kernel(const float *const log_poles,
     if (time < length) {
       for (std::size_t mode = 0; mode < state_size; ++mode) {
         const std::size_t parameter = channel * state_size + mode;
-        total += residues[parameter] *
-                 expf(log_poles[parameter] * static_cast<float>(time));
+        const float exponential =
+            expf(log_poles[parameter] * static_cast<float>(time));
+        const float term = __fmul_rn(residues[parameter], exponential);
+        total = __fadd_rn(total, term);
       }
     }
     filter[index] = total;
@@ -470,10 +472,16 @@ unpack_hcl_kernel(const float *const convolution, const __nv_bfloat16 *const x2,
        index += static_cast<std::size_t>(blockDim.x) * gridDim.x) {
     const std::size_t time = index / width;
     const std::size_t channel = index % width;
-    const float mixed =
-        convolution[channel * fft_size + time] +
-        __bfloat162float(direct[channel]) * __bfloat162float(gated[index]);
-    output[index] = __float2bfloat16_rn(__bfloat162float(x2[index]) * mixed);
+    // Vortex casts the FFT result to BF16 before applying the direct term,
+    // then performs each BF16 pointwise operation separately.
+    const __nv_bfloat16 convolved =
+        __float2bfloat16_rn(convolution[channel * fft_size + time]);
+    const __nv_bfloat16 direct_product = __float2bfloat16_rn(
+        __bfloat162float(direct[channel]) * __bfloat162float(gated[index]));
+    const __nv_bfloat16 mixed = __float2bfloat16_rn(
+        __bfloat162float(convolved) + __bfloat162float(direct_product));
+    output[index] = __float2bfloat16_rn(__bfloat162float(x2[index]) *
+                                        __bfloat162float(mixed));
   }
 }
 

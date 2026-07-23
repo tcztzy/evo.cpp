@@ -87,16 +87,26 @@ __global__ void rms_norm_kernel(const __nv_bfloat16 *const input,
   if (warp == 0) {
     float block_sum = lane < (blockDim.x + 31) / 32 ? partial[lane] : 0.0F;
     block_sum = warp_sum(block_sum);
-    if (lane == 0)
-      partial[0] = rsqrtf(block_sum / static_cast<float>(width));
+    if (lane == 0) {
+      // Match Vortex's BF16 expression:
+      // x.norm(2) * width**-0.5 + eps.
+      const __nv_bfloat16 norm = __float2bfloat16_rn(sqrtf(block_sum));
+      const __nv_bfloat16 scaled = __float2bfloat16_rn(
+          __bfloat162float(norm) * rsqrtf(static_cast<float>(width)));
+      const __nv_bfloat16 denominator =
+          __float2bfloat16_rn(__bfloat162float(scaled) + epsilon);
+      partial[0] = __bfloat162float(denominator);
+    }
   }
   __syncthreads();
-  const float root_mean_square = 1.0F / partial[0];
-  const float inverse_denominator = 1.0F / (root_mean_square + epsilon);
+  const float denominator = partial[0];
   for (std::size_t column = threadIdx.x; column < width; column += blockDim.x) {
     const float value = __bfloat162float(input[row * width + column]);
+    const float bf16_scale =
+        __bfloat162float(__float2bfloat16_rn(scale[column]));
+    const __nv_bfloat16 normalized = __float2bfloat16_rn(value / denominator);
     output[row * width + column] =
-        __float2bfloat16_rn(value * inverse_denominator * scale[column]);
+        __float2bfloat16_rn(__bfloat162float(normalized) * bf16_scale);
   }
 }
 
@@ -126,19 +136,6 @@ __global__ void add_kernel(__nv_bfloat16 *const output,
        index += static_cast<std::size_t>(blockDim.x) * gridDim.x) {
     output[index] = __float2bfloat16_rn(__bfloat162float(output[index]) +
                                         __bfloat162float(residual[index]));
-  }
-}
-
-__global__ void bias_kernel(__nv_bfloat16 *const output,
-                            const __nv_bfloat16 *const bias,
-                            const std::size_t elements,
-                            const std::size_t width) {
-  for (std::size_t index =
-           static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-       index < elements;
-       index += static_cast<std::size_t>(blockDim.x) * gridDim.x) {
-    output[index] = __float2bfloat16_rn(__bfloat162float(output[index]) +
-                                        __bfloat162float(bias[index % width]));
   }
 }
 
@@ -268,40 +265,51 @@ Status bf16_linear(const BlasLt &handle, const DeviceBuffer &input,
                     "cublasLtMatmulDescCreate");
   if (!status.ok())
     return status;
+  // Interpret row-major weight [N,K], input [M,K], and output [M,N] as
+  // column-major [K,N], [K,M], and [N,M]. This is the native cuBLASLt layout
+  // used by PyTorch and supports a fused BF16 bias epilogue.
   const cublasOperation_t transpose = CUBLAS_OP_T;
   status = cublas_status(cublasLtMatmulDescSetAttribute(
-                             objects.operation, CUBLASLT_MATMUL_DESC_TRANSB,
+                             objects.operation, CUBLASLT_MATMUL_DESC_TRANSA,
                              &transpose, sizeof(transpose)),
-                         "cublasLtMatmulDescSetAttribute TRANSB");
+                         "cublasLtMatmulDescSetAttribute TRANSA");
   if (!status.ok())
     return status;
-  status =
-      cublas_status(cublasLtMatrixLayoutCreate(&objects.input, CUDA_R_16BF,
-                                               rows, in_features, in_features),
-                    "cublasLtMatrixLayoutCreate input");
-  if (!status.ok())
-    return status;
-  status = cublas_status(cublasLtMatrixLayoutCreate(&objects.weight,
-                                                    CUDA_R_16BF, out_features,
-                                                    in_features, in_features),
-                         "cublasLtMatrixLayoutCreate weight");
-  if (!status.ok())
-    return status;
-  status = cublas_status(cublasLtMatrixLayoutCreate(&objects.output,
-                                                    CUDA_R_16BF, rows,
-                                                    out_features, out_features),
-                         "cublasLtMatrixLayoutCreate output");
-  if (!status.ok())
-    return status;
-  const cublasLtOrder_t order = CUBLASLT_ORDER_ROW;
-  for (const auto layout : {objects.input, objects.weight, objects.output}) {
-    status = cublas_status(
-        cublasLtMatrixLayoutSetAttribute(layout, CUBLASLT_MATRIX_LAYOUT_ORDER,
-                                         &order, sizeof(order)),
-        "cublasLtMatrixLayoutSetAttribute ORDER");
+  if (bias != nullptr) {
+    const cublasLtEpilogue_t epilogue = CUBLASLT_EPILOGUE_BIAS;
+    status = cublas_status(cublasLtMatmulDescSetAttribute(
+                               objects.operation, CUBLASLT_MATMUL_DESC_EPILOGUE,
+                               &epilogue, sizeof(epilogue)),
+                           "cublasLtMatmulDescSetAttribute EPILOGUE");
+    if (!status.ok())
+      return status;
+    const void *const bias_pointer = bias->data();
+    status =
+        cublas_status(cublasLtMatmulDescSetAttribute(
+                          objects.operation, CUBLASLT_MATMUL_DESC_BIAS_POINTER,
+                          &bias_pointer, sizeof(bias_pointer)),
+                      "cublasLtMatmulDescSetAttribute BIAS_POINTER");
     if (!status.ok())
       return status;
   }
+  status =
+      cublas_status(cublasLtMatrixLayoutCreate(&objects.input, CUDA_R_16BF,
+                                               in_features, rows, in_features),
+                    "cublasLtMatrixLayoutCreate input transpose view");
+  if (!status.ok())
+    return status;
+  status = cublas_status(cublasLtMatrixLayoutCreate(&objects.weight,
+                                                    CUDA_R_16BF, in_features,
+                                                    out_features, in_features),
+                         "cublasLtMatrixLayoutCreate weight transpose view");
+  if (!status.ok())
+    return status;
+  status = cublas_status(cublasLtMatrixLayoutCreate(&objects.output,
+                                                    CUDA_R_16BF, out_features,
+                                                    rows, out_features),
+                         "cublasLtMatrixLayoutCreate output transpose view");
+  if (!status.ok())
+    return status;
   status = cublas_status(cublasLtMatmulPreferenceCreate(&objects.preference),
                          "cublasLtMatmulPreferenceCreate");
   if (!status.ok())
@@ -317,8 +325,8 @@ Status bf16_linear(const BlasLt &handle, const DeviceBuffer &input,
   cublasLtMatmulHeuristicResult_t heuristic{};
   int returned = 0;
   status = cublas_status(cublasLtMatmulAlgoGetHeuristic(
-                             handle.get(), objects.operation, objects.input,
-                             objects.weight, objects.output, objects.output,
+                             handle.get(), objects.operation, objects.weight,
+                             objects.input, objects.output, objects.output,
                              objects.preference, 1, &heuristic, &returned),
                          "cublasLtMatmulAlgoGetHeuristic");
   if (!status.ok())
@@ -330,20 +338,13 @@ Status bf16_linear(const BlasLt &handle, const DeviceBuffer &input,
   constexpr float alpha = 1.0F;
   constexpr float beta = 0.0F;
   status = cublas_status(
-      cublasLtMatmul(handle.get(), objects.operation, &alpha, input.data(),
-                     objects.input, weight.data(), objects.weight, &beta,
+      cublasLtMatmul(handle.get(), objects.operation, &alpha, weight.data(),
+                     objects.weight, input.data(), objects.input, &beta,
                      output->data(), objects.output, output->data(),
                      objects.output, &heuristic.algo, workspace->data(),
                      workspace_bytes, stream.get()),
       "cublasLtMatmul");
-  if (!status.ok() || bias == nullptr)
-    return status;
-
-  bias_kernel<<<grid_for(output_elements), kThreads, 0, stream.get()>>>(
-      static_cast<__nv_bfloat16 *>(output->data()),
-      static_cast<const __nv_bfloat16 *>(bias->data()), output_elements,
-      out_features);
-  return launch_status("BF16 bias kernel");
+  return status;
 }
 
 Status bf16_rms_norm(const DeviceBuffer &input, const DeviceBuffer &scale,

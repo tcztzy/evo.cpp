@@ -8,6 +8,13 @@
 
 namespace evo2c::cuda {
 
+enum class QkvLayout {
+  // [tokens,3,heads,head_dim], as produced by a projection-major weight.
+  kProjectionMajor,
+  // [tokens,heads,3,head_dim], as stored by the official Evo 2 checkpoint.
+  kHeadMajor,
+};
+
 // Contiguous BF16 caches [capacity,heads,head_dim]. Length is host metadata;
 // appends are ordered on the supplied CUDA stream.
 struct KvCache final {
@@ -38,12 +45,12 @@ struct AttentionWorkspace final {
                                 std::size_t dimensions_per_head);
 };
 
-// QKV input is BF16 [tokens,3,heads,head_dim]. Outputs are BF16
-// [tokens,heads,head_dim].
-[[nodiscard]] Status bf16_split_qkv(const DeviceBuffer &qkv, std::size_t tokens,
-                                    std::size_t heads, std::size_t head_dim,
-                                    DeviceBuffer *query, DeviceBuffer *key,
-                                    DeviceBuffer *value, const Stream &stream);
+// QKV input uses `layout`. Outputs are BF16 [tokens,heads,head_dim].
+[[nodiscard]] Status
+bf16_split_qkv(const DeviceBuffer &qkv, std::size_t tokens, std::size_t heads,
+               std::size_t head_dim, DeviceBuffer *query, DeviceBuffer *key,
+               DeviceBuffer *value, const Stream &stream,
+               QkvLayout layout = QkvLayout::kProjectionMajor);
 
 // In-place GPT-NeoX half-pair RoPE on BF16 Q/K. inverse_frequency is F32
 // [head_dim/2]; positions are (position_offset+token)/position_scale.

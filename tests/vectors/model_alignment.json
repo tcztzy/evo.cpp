@@ -1,0 +1,146 @@
+{
+  "schema": 1,
+  "generated_on": "gpu02",
+  "gpu": "4x NVIDIA A800 80GB PCIe",
+  "driver_version": "580.126.20",
+  "cuda_version": "12.8.93",
+  "prompt": "ACGTGATTACAACGTT",
+  "tokens": [
+    65,
+    67,
+    71,
+    84,
+    71,
+    65,
+    84,
+    84,
+    65,
+    67,
+    65,
+    65,
+    67,
+    71,
+    84,
+    84
+  ],
+  "official_vortex": {
+    "commit": "8b00afebeac745d1f31e7e2788f0e0e39fa47637",
+    "torch_version": "2.9.1+cu128",
+    "overrides": {
+      "use_flash_attn": false,
+      "use_flash_depthwise": false,
+      "use_flash_rmsnorm": false,
+      "use_flashfft": false,
+      "use_fp8_input_projections": false,
+      "use_hcl_kernel": false,
+      "use_hcm_kernel": false,
+      "use_hcs_kernel": false
+    }
+  },
+  "evo2_7b_bf16_reference": {
+    "checkpoint_sha256": "c66645929dc1b9c631f5be656da8726f38946315dc9167000a615dd626fcecf4",
+    "layers": 32,
+    "hidden_size": 4096,
+    "vocab_size": 512,
+    "vector_files": 33,
+    "vector_bytes": 8425600,
+    "vector_set_sha256": "02faa112990561192debdbd90ec559973da4d563f9bd9d07c7ffa3b2a1acefbd",
+    "last_top10_tokens": [
+      84,
+      71,
+      65,
+      67,
+      0,
+      78,
+      64,
+      124,
+      82,
+      95
+    ],
+    "last_top10_logits": [
+      0.32421875,
+      0.11376953125,
+      0.09130859375,
+      -0.142578125,
+      -8.125,
+      -9.3125,
+      -13.5,
+      -13.5625,
+      -13.6875,
+      -13.75
+    ],
+    "peak_allocated_bytes": [
+      3667250176,
+      3658931712,
+      3659128320,
+      3658801152
+    ]
+  },
+  "evo2_40b_bf16_reference": {
+    "checkpoint_sha256": "dd299612b1c1cdded0dfdcaf4d16f98fc97458261d80f4d662429f0ccb316bc3",
+    "layers": 50,
+    "hidden_size": 8192,
+    "vocab_size": 512,
+    "vector_files": 51,
+    "vector_bytes": 26253696,
+    "vector_set_sha256": "0d70c55349f6931db071f15ffa855a73743b3768b716ef5c4494a192ffcc598a",
+    "last_top10_tokens": [
+      84,
+      71,
+      67,
+      65,
+      0,
+      78,
+      64,
+      82,
+      89,
+      75
+    ],
+    "last_top10_logits": [
+      0.5625,
+      0.390625,
+      0.326171875,
+      0.07568359375,
+      -8.1875,
+      -12.3125,
+      -15.9375,
+      -16.25,
+      -16.375,
+      -17.25
+    ],
+    "peak_allocated_bytes": [
+      22871913472,
+      22855529472,
+      22855669760,
+      19566254080
+    ],
+    "repeat_run_bit_exact": true
+  },
+  "evo2c_40b_bf16": {
+    "model_sha256": "7452b1412919d6724172dfe4a76b01605ccdb20522873dea6f06df4ea76c8ac7",
+    "vector_files": 51,
+    "vector_bytes": 26253696,
+    "vector_set_sha256": "359cd420b7674bcbd6a8d2203c01bafc275da32f9e0b3fb729128174882694fe",
+    "minimum_cosine": 0.999,
+    "passed": true,
+    "first_failing_layer": null,
+    "worst_layer": {
+      "layer": 21,
+      "cosine": 0.9991185872559462,
+      "max_abs": 200.0,
+      "mean_abs": 13.95415169838816
+    },
+    "logits": {
+      "cosine": 0.9999836944071268,
+      "max_abs": 0.375,
+      "mean_abs": 0.0870349109172821,
+      "reference_last_top1": 84,
+      "native_last_top1": 84,
+      "passed": true
+    }
+  },
+  "fp8_or_nim_reference": {
+    "available": false,
+    "reason": "gpu02 is Ampere sm_80 without FP8 Tensor Core support, and no licensed NIM endpoint was available"
+  }
+}

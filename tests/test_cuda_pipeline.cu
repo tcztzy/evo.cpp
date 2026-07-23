@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -157,10 +158,25 @@ int main(const int argc, char **argv) {
     check(assigned_weight_bytes == file_weight_bytes,
           "every model tensor is placed on exactly one pipeline stage");
 
+    std::vector<float> rejected_logits;
+    check(!model
+               .prefill_with_dumps(
+                   {1}, &rejected_logits,
+                   {{17, std::string{argv[5]} + ".invalid.npy",
+                     static_cast<evo2c::cuda::LayerDumpPoint>(999)}})
+               .ok(),
+          "pipeline rejects an invalid intermediate dump point");
+
     const std::vector<evo2c::TokenId> prompt{2, 5, 7, 3};
     std::vector<float> logits;
-    require(model.prefill(prompt, &logits, evo2c::cuda::LayerDump{17, argv[5]}),
-            "four-GPU 50-layer prefill");
+    const std::string copy_path = std::string{argv[5]} + ".copy.npy";
+    const std::string norm_path = std::string{argv[5]} + ".pre_norm.npy";
+    const std::vector<evo2c::cuda::LayerDump> dumps{
+        {17, argv[5]},
+        {17, copy_path},
+        {17, norm_path, evo2c::cuda::LayerDumpPoint::kPreNorm}};
+    require(model.prefill_with_dumps(prompt, &logits, dumps),
+            "four-GPU 50-layer prefill with multiple dumps");
     const auto expected_logits = read_f32(argv[2]);
     check(all_close(logits, expected_logits, 0.08F, 0.06F),
           "pipeline prefill logits match independent oracle");
@@ -171,8 +187,17 @@ int main(const int argc, char **argv) {
 
     const auto expected_layer = read_f32(argv[4]);
     const auto dumped_layer = read_npy_f32(argv[5], expected_layer.size());
+    const auto copied_layer = read_npy_f32(copy_path, expected_layer.size());
+    const auto dumped_norm = read_npy_f32(norm_path, expected_layer.size());
     check(all_close(dumped_layer, expected_layer, 0.06F, 0.05F),
           "pipeline stage-local layer dump matches oracle");
+    check(dumped_layer == copied_layer,
+          "multiple dumps from one layer are bit-identical");
+    check(
+        dumped_norm != dumped_layer &&
+            std::all_of(dumped_norm.begin(), dumped_norm.end(),
+                        [](const float value) { return std::isfinite(value); }),
+        "named intermediate dump captures finite pre-norm values");
 
     std::vector<float> decoded;
     require(model.decode(9, &decoded), "four-GPU cached decode");

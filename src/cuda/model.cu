@@ -140,6 +140,15 @@ bool same_indices(const std::vector<std::size_t> &actual,
          std::equal(actual.begin(), actual.end(), expected.begin());
 }
 
+bool valid_dump_point(const LayerDumpPoint point) noexcept {
+  return point == LayerDumpPoint::kBlockOutput ||
+         point == LayerDumpPoint::kPreNorm ||
+         point == LayerDumpPoint::kMixerOutput ||
+         point == LayerDumpPoint::kMixerResidual ||
+         point == LayerDumpPoint::kPostNorm ||
+         point == LayerDumpPoint::kMlpOutput;
+}
+
 Status checked_tensor(const ModelFile &model, const std::string &name,
                       const TensorDType dtype,
                       const std::vector<std::size_t> &shape,
@@ -365,12 +374,21 @@ Status read_runtime_model_config(const ModelFile &model,
     return status;
 
   bool tie_embeddings = false;
+  bool column_split = false;
   bool column_split_hyena = true;
   bool interleave = false;
   bool flip = true;
   status = metadata_bool(model, "config.tie_embeddings", &tie_embeddings);
   if (!status.ok())
     return status;
+  if (model.find_metadata("config.column_split") != nullptr) {
+    status = metadata_bool(model, "config.column_split", &column_split);
+    if (!status.ok())
+      return status;
+  } else if (!candidate.test_fixture) {
+    return {ErrorCode::kModelFormat,
+            "required metadata is missing: config.column_split"};
+  }
   status =
       metadata_bool(model, "config.column_split_hyena", &column_split_hyena);
   if (!status.ok())
@@ -381,9 +399,11 @@ Status read_runtime_model_config(const ModelFile &model,
   status = metadata_bool(model, "config.hyena_flip_x1x2", &flip);
   if (!status.ok())
     return status;
-  if (!tie_embeddings || column_split_hyena || !interleave || flip)
+  if (!tie_embeddings || (!candidate.test_fixture && !column_split) ||
+      column_split_hyena || !interleave || flip)
     return {ErrorCode::kUnsupported,
             "model semantic flags do not match supported Evo 2"};
+  candidate.qkv_head_major = column_split;
 
   std::vector<std::size_t> hcs;
   std::vector<std::size_t> hcm;
@@ -688,9 +708,11 @@ struct SingleGpuModel::Impl final {
     if (!status.ok())
       return status;
     if (layer->type == MixerType::kAttention) {
-      status = bf16_split_qkv(arena.projection, rows, config.heads,
-                              config.head_dim(), &arena.x2, &arena.x1,
-                              &arena.value, stream);
+      status = bf16_split_qkv(
+          arena.projection, rows, config.heads, config.head_dim(), &arena.x2,
+          &arena.x1, &arena.value, stream,
+          config.qkv_head_major ? QkvLayout::kHeadMajor
+                                : QkvLayout::kProjectionMajor);
       if (!status.ok())
         return status;
       const std::size_t prefix = layer->kv_cache.length;
@@ -768,11 +790,13 @@ struct SingleGpuModel::Impl final {
                                      &arena.mixer_output, stream);
   }
 
-  [[nodiscard]] Status dump_layer(const LayerDump &dump,
-                                  const std::size_t rows) {
-    std::vector<__nv_bfloat16> raw(rows * config.width);
-    auto status = arena.hidden.copy_to_host(
-        raw.data(), raw.size() * sizeof(raw[0]), stream);
+  [[nodiscard]] Status dump_buffer(const DeviceBuffer &buffer,
+                                   const LayerDump &dump,
+                                   const std::size_t rows,
+                                   const std::size_t columns) {
+    std::vector<__nv_bfloat16> raw(rows * columns);
+    auto status =
+        buffer.copy_to_host(raw.data(), raw.size() * sizeof(raw[0]), stream);
     if (!status.ok())
       return status;
     status = stream.synchronize();
@@ -782,12 +806,25 @@ struct SingleGpuModel::Impl final {
     values.reserve(raw.size());
     for (const auto value : raw)
       values.push_back(__bfloat162float(value));
-    return write_npy(dump.path, values, rows, config.width);
+    return write_npy(dump.path, values, rows, columns);
   }
 
   [[nodiscard]] Status
-  run_blocks(const std::size_t rows, const bool prefill,
-             const std::optional<LayerDump> &dump = std::nullopt) {
+  dump_matching(const std::vector<LayerDump> &dumps, const std::size_t layer,
+                const LayerDumpPoint point, const DeviceBuffer &buffer,
+                const std::size_t rows, const std::size_t columns) {
+    for (const auto &dump : dumps) {
+      if (dump.layer == layer && dump.point == point) {
+        auto status = dump_buffer(buffer, dump, rows, columns);
+        if (!status.ok())
+          return status;
+      }
+    }
+    return Status::Ok();
+  }
+
+  [[nodiscard]] Status run_blocks(const std::size_t rows, const bool prefill,
+                                  const std::vector<LayerDump> &dumps = {}) {
     auto status = Status::Ok();
     for (std::size_t local_index = 0; local_index < layers.size();
          ++local_index) {
@@ -797,7 +834,15 @@ struct SingleGpuModel::Impl final {
                              config.epsilon, &arena.normalized, stream);
       if (!status.ok())
         break;
+      status = dump_matching(dumps, index, LayerDumpPoint::kPreNorm,
+                             arena.normalized, rows, config.width);
+      if (!status.ok())
+        break;
       status = run_mixer(&layer, rows, prefill);
+      if (!status.ok())
+        break;
+      status = dump_matching(dumps, index, LayerDumpPoint::kMixerOutput,
+                             arena.mixer_output, rows, config.width);
       if (!status.ok())
         break;
       status = bf16_linear(blas, arena.mixer_output, layer.output_weight,
@@ -809,9 +854,17 @@ struct SingleGpuModel::Impl final {
                                 rows * config.width, stream);
       if (!status.ok())
         break;
+      status = dump_matching(dumps, index, LayerDumpPoint::kMixerResidual,
+                             arena.residual, rows, config.width);
+      if (!status.ok())
+        break;
       status =
           bf16_rms_norm(arena.residual, layer.post_norm, rows, config.width,
                         config.epsilon, &arena.normalized, stream);
+      if (!status.ok())
+        break;
+      status = dump_matching(dumps, index, LayerDumpPoint::kPostNorm,
+                             arena.normalized, rows, config.width);
       if (!status.ok())
         break;
       const auto activation =
@@ -821,15 +874,18 @@ struct SingleGpuModel::Impl final {
                         &arena.mlp, &arena.hidden, stream);
       if (!status.ok())
         break;
+      status = dump_matching(dumps, index, LayerDumpPoint::kMlpOutput,
+                             arena.hidden, rows, config.width);
+      if (!status.ok())
+        break;
       status = bf16_add_inplace(&arena.hidden, arena.residual,
                                 rows * config.width, stream);
       if (!status.ok())
         break;
-      if (prefill && dump.has_value() && dump->layer == index) {
-        status = dump_layer(*dump, rows);
-        if (!status.ok())
-          break;
-      }
+      status = dump_matching(dumps, index, LayerDumpPoint::kBlockOutput,
+                             arena.hidden, rows, config.width);
+      if (!status.ok())
+        break;
     }
     if (!status.ok())
       return {status.code(), "model block forward: " + status.message()};
@@ -839,7 +895,7 @@ struct SingleGpuModel::Impl final {
   [[nodiscard]] Status forward(const std::vector<TokenId> &tokens,
                                const bool prefill,
                                std::vector<float> *const logits,
-                               const std::optional<LayerDump> &dump) {
+                               const std::vector<LayerDump> &dumps) {
     if (!loaded || logits == nullptr || tokens.empty() ||
         tokens.size() > context_capacity) {
       return {ErrorCode::kInvalidArgument,
@@ -854,15 +910,19 @@ struct SingleGpuModel::Impl final {
       return {ErrorCode::kInvalidArgument,
               "decode requires a valid prefill and free context capacity"};
     }
-    if (dump.has_value() && dump->layer >= config.layers)
-      return {ErrorCode::kInvalidArgument, "layer dump index is out of range"};
+    for (const auto &dump : dumps) {
+      if (dump.layer >= config.layers || dump.path.empty() ||
+          !valid_dump_point(dump.point))
+        return {ErrorCode::kInvalidArgument,
+                "layer dump index or path is invalid"};
+    }
     auto status = embed(tokens);
     if (!status.ok()) {
       state_valid = false;
       return status;
     }
     const std::size_t rows = tokens.size();
-    status = run_blocks(rows, prefill, dump);
+    status = run_blocks(rows, prefill, dumps);
     if (!status.ok()) {
       state_valid = false;
       return status;
@@ -959,13 +1019,21 @@ Status SingleGpuModel::load(const ModelFile &model, const int device,
 Status SingleGpuModel::prefill(const std::vector<TokenId> &tokens,
                                std::vector<float> *const logits,
                                const std::optional<LayerDump> &dump) {
-  return impl_->forward(tokens, true, logits, dump);
+  std::vector<LayerDump> dumps;
+  if (dump.has_value())
+    dumps.push_back(*dump);
+  return impl_->forward(tokens, true, logits, dumps);
+}
+
+Status SingleGpuModel::prefill_with_dumps(const std::vector<TokenId> &tokens,
+                                          std::vector<float> *const logits,
+                                          const std::vector<LayerDump> &dumps) {
+  return impl_->forward(tokens, true, logits, dumps);
 }
 
 Status SingleGpuModel::decode(const TokenId token,
                               std::vector<float> *const logits) {
-  return impl_->forward(std::vector<TokenId>{token}, false, logits,
-                        std::nullopt);
+  return impl_->forward(std::vector<TokenId>{token}, false, logits, {});
 }
 
 const RuntimeModelConfig &SingleGpuModel::config() const noexcept {
@@ -1032,7 +1100,7 @@ struct PipelineModel::Impl final {
   [[nodiscard]] Status forward(const std::vector<TokenId> &tokens,
                                const bool prefill,
                                std::vector<float> *const logits,
-                               const std::optional<LayerDump> &dump) {
+                               const std::vector<LayerDump> &dumps) {
     if (!loaded || logits == nullptr || tokens.empty() ||
         tokens.size() > context_capacity) {
       return {ErrorCode::kInvalidArgument,
@@ -1054,8 +1122,12 @@ struct PipelineModel::Impl final {
               "pipeline decode requires a valid prefill and free context "
               "capacity"};
     }
-    if (dump.has_value() && dump->layer >= config.layers)
-      return {ErrorCode::kInvalidArgument, "layer dump index is out of range"};
+    for (const auto &dump : dumps) {
+      if (dump.layer >= config.layers || dump.path.empty() ||
+          !valid_dump_point(dump.point))
+        return {ErrorCode::kInvalidArgument,
+                "layer dump index or path is invalid"};
+    }
 
     auto status = stages.front()->embed(tokens);
     if (!status.ok()) {
@@ -1071,7 +1143,7 @@ struct PipelineModel::Impl final {
         if (!status.ok())
           break;
       }
-      status = stages[stage_index]->run_blocks(rows, prefill, dump);
+      status = stages[stage_index]->run_blocks(rows, prefill, dumps);
       if (!status.ok()) {
         status = {status.code(),
                   "pipeline stage " + std::to_string(stage_index) + " [" +
@@ -1242,13 +1314,21 @@ Status PipelineModel::load(const ModelFile &model,
 Status PipelineModel::prefill(const std::vector<TokenId> &tokens,
                               std::vector<float> *const logits,
                               const std::optional<LayerDump> &dump) {
-  return impl_->forward(tokens, true, logits, dump);
+  std::vector<LayerDump> dumps;
+  if (dump.has_value())
+    dumps.push_back(*dump);
+  return impl_->forward(tokens, true, logits, dumps);
+}
+
+Status PipelineModel::prefill_with_dumps(const std::vector<TokenId> &tokens,
+                                         std::vector<float> *const logits,
+                                         const std::vector<LayerDump> &dumps) {
+  return impl_->forward(tokens, true, logits, dumps);
 }
 
 Status PipelineModel::decode(const TokenId token,
                              std::vector<float> *const logits) {
-  return impl_->forward(std::vector<TokenId>{token}, false, logits,
-                        std::nullopt);
+  return impl_->forward(std::vector<TokenId>{token}, false, logits, {});
 }
 
 const RuntimeModelConfig &PipelineModel::config() const noexcept {

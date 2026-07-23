@@ -16,6 +16,15 @@ namespace evo2c::cuda {
 
 enum class MixerType { kHcs, kHcm, kHcl, kAttention };
 
+enum class LayerDumpPoint {
+  kBlockOutput,
+  kPreNorm,
+  kMixerOutput,
+  kMixerResidual,
+  kPostNorm,
+  kMlpOutput,
+};
+
 struct RuntimeModelConfig final {
   std::size_t vocab_size{0};
   std::size_t width{0};
@@ -30,6 +39,7 @@ struct RuntimeModelConfig final {
   std::size_t hcm_filter_groups{0};
   float epsilon{0.0F};
   float rope_scale{0.0F};
+  bool qkv_head_major{false};
   bool test_fixture{false};
   std::vector<MixerType> mixer_types;
 
@@ -41,6 +51,7 @@ struct RuntimeModelConfig final {
 struct LayerDump final {
   std::size_t layer{0};
   std::string path;
+  LayerDumpPoint point{LayerDumpPoint::kBlockOutput};
 };
 
 struct StageAssignment final {
@@ -73,6 +84,9 @@ public:
   [[nodiscard]] Status
   prefill(const std::vector<TokenId> &tokens, std::vector<float> *logits,
           const std::optional<LayerDump> &dump = std::nullopt);
+  [[nodiscard]] Status prefill_with_dumps(const std::vector<TokenId> &tokens,
+                                          std::vector<float> *logits,
+                                          const std::vector<LayerDump> &dumps);
   [[nodiscard]] Status decode(TokenId token, std::vector<float> *logits);
 
   [[nodiscard]] const RuntimeModelConfig &config() const noexcept;
@@ -103,6 +117,9 @@ public:
   [[nodiscard]] Status
   prefill(const std::vector<TokenId> &tokens, std::vector<float> *logits,
           const std::optional<LayerDump> &dump = std::nullopt);
+  [[nodiscard]] Status prefill_with_dumps(const std::vector<TokenId> &tokens,
+                                          std::vector<float> *logits,
+                                          const std::vector<LayerDump> &dumps);
   [[nodiscard]] Status decode(TokenId token, std::vector<float> *logits);
 
   [[nodiscard]] const RuntimeModelConfig &config() const noexcept;

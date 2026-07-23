@@ -114,6 +114,51 @@ bool all_close(const std::vector<float> &actual,
   return true;
 }
 
+void test_head_major_split(const int device,
+                           const evo2c::cuda::Stream &stream) {
+  constexpr std::size_t tokens = 2;
+  constexpr std::size_t heads = 2;
+  constexpr std::size_t head_dim = 3;
+  constexpr std::size_t width = heads * head_dim;
+  std::vector<float> head_major;
+  std::vector<float> expected_query;
+  std::vector<float> expected_key;
+  std::vector<float> expected_value;
+  for (std::size_t token = 0; token < tokens; ++token) {
+    for (std::size_t head = 0; head < heads; ++head) {
+      for (std::size_t projection = 0; projection < 3; ++projection) {
+        for (std::size_t dimension = 0; dimension < head_dim; ++dimension) {
+          const float value = static_cast<float>(token * 100 + projection * 20 +
+                                                 head * head_dim + dimension);
+          head_major.push_back(value);
+          auto *const expected = projection == 0   ? &expected_query
+                                 : projection == 1 ? &expected_key
+                                                   : &expected_value;
+          expected->push_back(value);
+        }
+      }
+    }
+  }
+  auto input = upload_bf16(device, head_major, stream);
+  evo2c::cuda::DeviceBuffer query;
+  evo2c::cuda::DeviceBuffer key;
+  evo2c::cuda::DeviceBuffer value;
+  for (auto *const output : {&query, &key, &value}) {
+    require(output->allocate(device, tokens * width * sizeof(__nv_bfloat16)),
+            "allocate head-major split output");
+  }
+  require(evo2c::cuda::bf16_split_qkv(input, tokens, heads, head_dim, &query,
+                                      &key, &value, stream,
+                                      evo2c::cuda::QkvLayout::kHeadMajor),
+          "split head-major QKV");
+  check(download_bf16(query, tokens * width, stream) == expected_query,
+        "head-major split extracts Q");
+  check(download_bf16(key, tokens * width, stream) == expected_key,
+        "head-major split extracts K");
+  check(download_bf16(value, tokens * width, stream) == expected_value,
+        "head-major split extracts V");
+}
+
 float cosine(const std::vector<float> &left, const std::vector<float> &right) {
   double dot = 0.0;
   double left_norm = 0.0;
@@ -441,6 +486,7 @@ int main() {
               << properties.minor << '\n';
     evo2c::cuda::Stream stream;
     require(stream.create(), "create CUDA stream");
+    test_head_major_split(device, stream);
     for (const std::size_t tokens : {1U, 2U, 7U, 128U})
       test_context(device, stream, tokens);
     test_chunked_prefill(device, stream);
