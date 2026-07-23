@@ -43,10 +43,14 @@ endfunction()
 
 add_library(
   evo2c_core STATIC
+  src/cli.cpp
   src/crc32.cpp
   src/mapped_file.cpp
   src/model_format.cpp
+  src/sampler.cpp
+  src/sequence_io.cpp
   src/status.cpp
+  src/tokenizer.cpp
   src/version.cpp)
 target_include_directories(
   evo2c_core
@@ -100,6 +104,11 @@ if(BUILD_TESTING)
   target_link_libraries(evo2c-model-format-tests PRIVATE evo2c_core)
   evo2c_configure_target(evo2c-model-format-tests)
   add_test(NAME model_format COMMAND evo2c-model-format-tests)
+
+  add_executable(evo2c-frontend-tests tests/test_frontend.cpp)
+  target_link_libraries(evo2c-frontend-tests PRIVATE evo2c_core)
+  evo2c_configure_target(evo2c-frontend-tests)
+  add_test(NAME frontend COMMAND evo2c-frontend-tests)
   add_test(
     NAME model_inspect_contract
     COMMAND ${CMAKE_COMMAND}
