@@ -48,7 +48,7 @@ V16: ∀ task completion → unit/integration test + ASan/UBSan CPU run；远端
 id|status|task|cites
 T1|x|初始化 Git/CMake/C++17 scaffold、CPU/CUDA test harness、Apache-2.0 LICENSE/NOTICE|V2,V12,V16,I.build
 T2|x|定义 `EVO2C` v1 format、mmap reader、`evo2c-inspect`、corruption tests|V1,V6,I.model,I.inspect
-T3|.|实现 `.pt`→`EVO2C` streaming converter、40B config/tensor manifest、roundtrip tests|V3,V6,I.convert
+T3|x|实现 `.pt`→`EVO2C` streaming converter、40B config/tensor manifest、roundtrip tests|V3,V6,I.convert
 T4|.|实现 byte tokenizer、FASTA/text reader、greedy/top-k/top-p sampler、CLI parsing|V7,V12,V15,I.cli,I.score,I.debug
 T5|.|实现 CPU F32 reference：RMSNorm/linear/MLP/FIR/HCL recurrence/RoPE/MHA + Python fixture generator|V4,V5,V8,I.vector
 T6|.|实现 CUDA tensor/runtime、cuBLASLt BF16 linear、RMSNorm/MLP/fused elementwise kernels|V2,V9,V12

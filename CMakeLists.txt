@@ -89,6 +89,8 @@ if(EVO2C_CUDA)
 endif()
 
 if(BUILD_TESTING)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
   add_executable(evo2c-core-tests tests/test_core.cpp)
   target_link_libraries(evo2c-core-tests PRIVATE evo2c_core)
   evo2c_configure_target(evo2c-core-tests)
@@ -118,6 +120,27 @@ if(BUILD_TESTING)
     COMMAND ${CMAKE_COMMAND}
       -DEVO2C_BINARY=$<TARGET_FILE:evo2c>
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/runtime_dependencies.cmake)
+
+  add_test(
+    NAME converter_roundtrip
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_converter.py
+      --inspector $<TARGET_FILE:evo2c-inspect>
+      --config ${CMAKE_CURRENT_SOURCE_DIR}/configs/evo2-40b-1m.yml
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/converter)
+  set_tests_properties(
+    converter_roundtrip
+    PROPERTIES ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools")
+
+  add_test(
+    NAME checkpoint_torch_integration
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_torch_checkpoint.py)
+  set_tests_properties(
+    checkpoint_torch_integration
+    PROPERTIES
+      ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools"
+      SKIP_RETURN_CODE 77)
 
   if(EVO2C_CUDA)
     add_test(NAME cuda_smoke COMMAND evo2c-cuda-smoke)
