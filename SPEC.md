@@ -52,7 +52,7 @@ T3|x|实现 `.pt`→`EVO2C` streaming converter、40B config/tensor manifest、r
 T4|x|实现 byte tokenizer、FASTA/text reader、greedy/top-k/top-p sampler、CLI parsing|V7,V12,V15,I.cli,I.score,I.debug
 T5|x|实现 CPU F32 reference：RMSNorm/linear/MLP/FIR/HCL recurrence/RoPE/MHA + Python fixture generator|V4,V5,V8,I.vector
 T6|x|实现 CUDA tensor/runtime、cuBLASLt BF16 linear、RMSNorm/MLP/fused elementwise kernels|V2,V9,V12
-T7|.|实现 HCS/HCM/HCL CUDA prefill+decode、FIR/IIR caches、cuFFT path|V4,V5,V9,V10
+T7|x|实现 HCS/HCM/HCL CUDA prefill+decode、FIR/IIR caches、cuFFT path|V4,V5,V9,V10
 T8|.|实现 MHA RoPE、online-softmax causal attention、BF16 KV cache、cached decode|V4,V9,V10,V14
 T9|.|组装 embedding+50 blocks+final norm/unembed、layer dump、tiny synthetic E2E|V3,V4,V9,I.debug
 T10|.|实现 4×A800 layer pipeline、P2P transfers、per-stage arena/weight placement|V11,V12

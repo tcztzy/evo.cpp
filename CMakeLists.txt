@@ -83,6 +83,7 @@ if(EVO2C_CUDA)
 
   add_library(
     evo2c_cuda STATIC
+    src/cuda/hyena.cu
     src/cuda/ops.cu
     src/cuda/runtime.cu)
   target_include_directories(
@@ -124,6 +125,19 @@ if(EVO2C_CUDA)
     if(EVO2C_WARNINGS_AS_ERRORS)
       target_compile_options(
         evo2c-cuda-ops-tests PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Werror>)
+    endif()
+
+    add_executable(evo2c-cuda-hyena-tests tests/test_cuda_hyena.cu)
+    target_link_libraries(evo2c-cuda-hyena-tests PRIVATE evo2c_cuda)
+    set_target_properties(
+      evo2c-cuda-hyena-tests
+      PROPERTIES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+    target_compile_options(
+      evo2c-cuda-hyena-tests
+      PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra,-Wconversion,-Wshadow>)
+    if(EVO2C_WARNINGS_AS_ERRORS)
+      target_compile_options(
+        evo2c-cuda-hyena-tests PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Werror>)
     endif()
   endif()
 endif()
@@ -208,7 +222,9 @@ if(BUILD_TESTING)
   if(EVO2C_CUDA)
     add_test(NAME cuda_smoke COMMAND evo2c-cuda-smoke)
     add_test(NAME cuda_ops COMMAND evo2c-cuda-ops-tests)
+    add_test(NAME cuda_hyena COMMAND evo2c-cuda-hyena-tests)
     set_tests_properties(cuda_smoke PROPERTIES LABELS "gpu;cuda")
     set_tests_properties(cuda_ops PROPERTIES LABELS "gpu;cuda")
+    set_tests_properties(cuda_hyena PROPERTIES LABELS "gpu;cuda")
   endif()
 endif()

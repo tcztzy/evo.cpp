@@ -25,6 +25,15 @@ layout or fuse operations, but must match these results within the tolerances in
 - MHA packs Q, K, and V as `[time, 3, heads, head_dim]`, applies RoPE only to Q
   and K, scales scores by `1/sqrt(head_dim)`, and uses causal softmax.
 
+The CUDA Hyena path keeps sequence tensors channel-last (`[time, width]`).
+Grouped HCS/HCM filters use the checkpoint's `repeat_interleave` mapping: each
+stored filter owns a contiguous group of channels. FIR decode caches are F32
+`[width, kernel-1]` arrays in chronological order, while HCL modal caches are
+F32 `[width, state_size]`. HCM prefill and the parallel HCL prefill path use
+zero-padded cuFFT convolution; both populate the same caches consumed by the
+single-token decode kernels. HCL also has a low-memory direct-recurrence prefill
+path with identical state semantics.
+
 The CPU attention implementation intentionally materializes a score vector for
 clarity. CUDA and long-context paths must use online/chunked softmax and may not
 materialize a full sequence-by-sequence score matrix.
