@@ -50,7 +50,7 @@ T1|x|初始化 Git/CMake/C++17 scaffold、CPU/CUDA test harness、Apache-2.0 LIC
 T2|x|定义 `EVO2C` v1 format、mmap reader、`evo2c-inspect`、corruption tests|V1,V6,I.model,I.inspect
 T3|x|实现 `.pt`→`EVO2C` streaming converter、40B config/tensor manifest、roundtrip tests|V3,V6,I.convert
 T4|x|实现 byte tokenizer、FASTA/text reader、greedy/top-k/top-p sampler、CLI parsing|V7,V12,V15,I.cli,I.score,I.debug
-T5|.|实现 CPU F32 reference：RMSNorm/linear/MLP/FIR/HCL recurrence/RoPE/MHA + Python fixture generator|V4,V5,V8,I.vector
+T5|x|实现 CPU F32 reference：RMSNorm/linear/MLP/FIR/HCL recurrence/RoPE/MHA + Python fixture generator|V4,V5,V8,I.vector
 T6|.|实现 CUDA tensor/runtime、cuBLASLt BF16 linear、RMSNorm/MLP/fused elementwise kernels|V2,V9,V12
 T7|.|实现 HCS/HCM/HCL CUDA prefill+decode、FIR/IIR caches、cuFFT path|V4,V5,V9,V10
 T8|.|实现 MHA RoPE、online-softmax causal attention、BF16 KV cache、cached decode|V4,V9,V10,V14

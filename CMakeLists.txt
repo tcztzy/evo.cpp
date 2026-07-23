@@ -44,6 +44,7 @@ endfunction()
 add_library(
   evo2c_core STATIC
   src/cli.cpp
+  src/cpu_reference.cpp
   src/crc32.cpp
   src/mapped_file.cpp
   src/model_format.cpp
@@ -109,6 +110,19 @@ if(BUILD_TESTING)
   target_link_libraries(evo2c-frontend-tests PRIVATE evo2c_core)
   evo2c_configure_target(evo2c-frontend-tests)
   add_test(NAME frontend COMMAND evo2c-frontend-tests)
+
+  add_executable(evo2c-cpu-reference-tests tests/test_cpu_reference.cpp)
+  target_link_libraries(evo2c-cpu-reference-tests PRIVATE evo2c_core)
+  evo2c_configure_target(evo2c-cpu-reference-tests)
+  add_test(NAME cpu_reference COMMAND evo2c-cpu-reference-tests)
+
+  add_test(
+    NAME cpu_reference_vectors
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cpu_vectors.py
+      --binary $<TARGET_FILE:evo2c-cpu-reference-tests>
+      --fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/cpu_ops.json
+      --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_cpu_vectors.py)
   add_test(
     NAME model_inspect_contract
     COMMAND ${CMAKE_COMMAND}
