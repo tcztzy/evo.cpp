@@ -20,11 +20,17 @@ python3 -m venv .venv-convert
 python3 -m pip install -r requirements-convert.txt
 ```
 
-The Hugging Face checkpoint is distributed in numbered byte parts. Concatenate
-them in numeric order into one zip file before conversion:
+The Hugging Face checkpoint is distributed in numbered byte parts. On gpu02,
+the reproducible preparation script retrieves both parts through the configured
+mirror, verifies them, merges them in numeric order, and runs the converter:
 
 ```sh
-cat evo2_40b.pt.part0 evo2_40b.pt.part1 > evo2_40b.pt
+scripts/gpu02_prepare_40b.sh
+```
+
+For an already merged local checkpoint, conversion itself is:
+
+```sh
 python3 tools/convert_checkpoint.py \
   --input evo2_40b.pt \
   --config configs/evo2-40b-1m.yml \

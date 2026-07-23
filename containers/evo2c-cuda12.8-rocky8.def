@@ -1,0 +1,6 @@
+Bootstrap: docker
+From: nvcr.io/nvidia/cuda:12.8.1-devel-rockylinux8
+
+%labels
+    org.opencontainers.image.title evo2c CUDA build environment
+    org.opencontainers.image.licenses Apache-2.0

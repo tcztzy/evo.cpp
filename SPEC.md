@@ -7,11 +7,11 @@
 - 引擎窄化：仅 Evo 2 40B/40B-base StripedHyena 2；⊥ 通用 LLM 框架。
 - 运行时：Linux x86_64、C++17、CUDA、cuBLASLt、cuFFT；⊥ PyTorch、Vortex、Transformer Engine、FP8 指令依赖。
 - 离线转换/参考向量 ? Python + PyTorch；推理二进制 ! 独立运行。
-- gpu02 已核验基线（2026-04-14）：Rocky Linux 8.10、4×A800 80GB PCIe、driver 580.126.20、Apptainer；本轮 SSH 因 tuqiao VPN/ProxyJump 未连通，执行前 ! 复核。
+- gpu02 已核验基线（2026-07-23）：Rocky Linux 8.10、4×A800 80GB PCIe、driver 580.126.20、Apptainer 1.4.5；四卡双向 P2P read/write ! `OK`。
 - CUDA target `sm_80`；构建环境固定于 Apptainer/CUDA 12.x 镜像，兼容 gpu02 driver。
 - batch=1 优先；首个端到端门槛 ctx≤8192；长上下文逐级 32768→131072→1048576。
 - 本地仓库为源；远端副本 `$HOME/evo2c`；权重留远端/HF cache，⊥ rsync 82GB checkpoint。
-- 权重源：`arcinstitute/evo2_40b` 或 `arcinstitute/evo2_40b_base`，Apache-2.0；40B 1M checkpoint 82,253,494,627 bytes。
+- 权重源：`arcinstitute/evo2_40b` 或 `arcinstitute/evo2_40b_base`，Apache-2.0；40B 1M 两个 part 各 41,126,745,847 bytes，合并后 82,253,491,694 bytes。
 - 参考设计：llama.cpp GGUF/mmap/量化、ds4.c 单模型+官方向量；代码独立实现，许可证/NOTICE ! 保留。
 - 非目标：训练、微调、HTTP server、多租户、跨节点并行、首版 batch>1。
 
@@ -24,7 +24,7 @@
 - I.score: `build/evo2c -m <model.evo2> --score <FASTA|text> --gpu 0,1,2,3` → JSONL token/sequence log-likelihood。
 - I.debug: `--dump-tokens|--dump-logits <path>|--dump-layer <idx>:<path>`；JSON/NPY fixtures 可与 Python reference 比较。
 - I.vector: `tests/vectors/*.json` 固定 prompt、token ids、top logits/logprobs、greedy continuation、reference SHA/config。
-- I.remote: `scripts/gpu02_build.sh`、`scripts/gpu02_smoke.sh`；只用 `$HOME` 相对布局，失败 nonzero。
+- I.remote: `scripts/gpu02_build.sh`、`scripts/gpu02_smoke.sh`、`scripts/gpu02_prepare_40b.sh`；源码/构建/模型路径基于远端 `$HOME`，HF cache 默认 `/build/grp_icg/users/tang/.cache/huggingface`，失败 nonzero。
 
 ## §V INVARIANTS
 V1: ∀ model load → magic/version/endian/rank/dims/offset/alignment/size/checksum 验证先于 CUDA allocation；越界/溢出/重复 tensor → 拒绝。
@@ -56,7 +56,7 @@ T7|x|实现 HCS/HCM/HCL CUDA prefill+decode、FIR/IIR caches、cuFFT path|V4,V5,
 T8|x|实现 MHA RoPE、online-softmax causal attention、BF16 KV cache、cached decode|V4,V9,V10,V14
 T9|x|组装 embedding+50 blocks+final norm/unembed、layer dump、tiny synthetic E2E|V3,V4,V9,I.debug
 T10|x|实现 4×A800 layer pipeline、P2P transfers、per-stage arena/weight placement|V11,V12
-T11|.|连通 gpu02 后复核环境；Apptainer build；下载/合并 checkpoint；远端转换并记录 SHA|V6,V11,V16,I.remote
+T11|x|连通 gpu02 后复核环境；Apptainer build；下载/合并 checkpoint；远端转换并记录 SHA|V6,V11,V16,I.remote
 T12|.|生成 7B/40B Python BF16 与可得官方 FP8/NIM vectors；逐算子→逐层→logits 对齐|V8,V9,V10,V13,I.vector
 T13|.|gpu02 跑 40B ctx=8192 score+greedy generation；修正质量；达成显存/确定性/官方 prompt gates|V10,V11,V13,V15,V16,I.cli,I.score
 T14|.|若纯 BF16 未过 V13，实现 software E4M3 projection cast/scale 与 checkpoint FP8 metadata 提取|V2,V6,V13,I.model
