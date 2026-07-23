@@ -34,6 +34,13 @@ zero-padded cuFFT convolution; both populate the same caches consumed by the
 single-token decode kernels. HCL also has a low-memory direct-recurrence prefill
 path with identical state semantics.
 
+CUDA attention stores RoPE-transformed keys and raw values in contiguous BF16
+`[capacity, heads, head_dim]` caches. Chunked prefill uses the existing cache
+length as both its causal prefix and RoPE position offset. Each query/head block
+updates an F32 running maximum, normalizer, and value accumulator, so no
+sequence-by-sequence score matrix is allocated. Single-token decode calls the
+same online-softmax kernel against the populated cache.
+
 The CPU attention implementation intentionally materializes a score vector for
 clarity. CUDA and long-context paths must use online/chunked softmax and may not
 materialize a full sequence-by-sequence score matrix.

@@ -1,0 +1,461 @@
+// SPDX-License-Identifier: Apache-2.0
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdlib>
+#include <iostream>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include <cuda_bf16.h>
+#include <cuda_runtime_api.h>
+
+#include "evo2c/cpu_reference.hpp"
+#include "evo2c/cuda/attention.hpp"
+#include "evo2c/cuda/runtime.hpp"
+
+namespace {
+
+int failures = 0;
+
+void check(const bool condition, const std::string_view description) {
+  if (!condition) {
+    std::cerr << "FAIL: " << description << '\n';
+    ++failures;
+  }
+}
+
+void require(const evo2c::Status &status, const std::string_view operation) {
+  if (!status.ok())
+    throw std::runtime_error(std::string{operation} + ": " + status.message());
+}
+
+std::vector<float> values(const std::size_t count, const std::size_t offset,
+                          const float divisor) {
+  std::vector<float> result;
+  result.reserve(count);
+  for (std::size_t index = 0; index < count; ++index) {
+    const auto raw = static_cast<int>(((index + offset) * 37 + 11) % 29) - 14;
+    result.push_back(static_cast<float>(raw) / divisor);
+  }
+  return result;
+}
+
+std::vector<__nv_bfloat16> to_bf16(const std::vector<float> &input) {
+  std::vector<__nv_bfloat16> output;
+  output.reserve(input.size());
+  for (const float value : input)
+    output.push_back(__float2bfloat16(value));
+  return output;
+}
+
+std::vector<float> to_float(const std::vector<__nv_bfloat16> &input) {
+  std::vector<float> output;
+  output.reserve(input.size());
+  for (const auto value : input)
+    output.push_back(__bfloat162float(value));
+  return output;
+}
+
+std::vector<float> quantize_bf16(const std::vector<float> &input) {
+  return to_float(to_bf16(input));
+}
+
+evo2c::cuda::DeviceBuffer upload(const int device, const void *const source,
+                                 const std::size_t bytes,
+                                 const evo2c::cuda::Stream &stream) {
+  evo2c::cuda::DeviceBuffer buffer;
+  require(buffer.allocate(device, bytes), "allocate upload buffer");
+  require(buffer.copy_from_host(source, bytes, stream), "upload buffer");
+  return buffer;
+}
+
+evo2c::cuda::DeviceBuffer upload_bf16(const int device,
+                                      const std::vector<float> &input,
+                                      const evo2c::cuda::Stream &stream) {
+  const auto converted = to_bf16(input);
+  return upload(device, converted.data(),
+                converted.size() * sizeof(converted[0]), stream);
+}
+
+evo2c::cuda::DeviceBuffer upload_f32(const int device,
+                                     const std::vector<float> &input,
+                                     const evo2c::cuda::Stream &stream) {
+  return upload(device, input.data(), input.size() * sizeof(input[0]), stream);
+}
+
+std::vector<float> download_bf16(const evo2c::cuda::DeviceBuffer &buffer,
+                                 const std::size_t elements,
+                                 const evo2c::cuda::Stream &stream) {
+  std::vector<__nv_bfloat16> raw(elements);
+  require(buffer.copy_to_host(raw.data(), raw.size() * sizeof(raw[0]), stream),
+          "download BF16");
+  require(stream.synchronize(), "synchronize BF16 download");
+  return to_float(raw);
+}
+
+bool all_close(const std::vector<float> &actual,
+               const std::vector<float> &expected, const float absolute,
+               const float relative) {
+  if (actual.size() != expected.size())
+    return false;
+  for (std::size_t index = 0; index < actual.size(); ++index) {
+    const float tolerance = absolute + relative * std::abs(expected[index]);
+    if (!std::isfinite(actual[index]) ||
+        std::abs(actual[index] - expected[index]) > tolerance) {
+      std::cerr << "mismatch at " << index << ": actual=" << actual[index]
+                << " expected=" << expected[index] << " tolerance=" << tolerance
+                << '\n';
+      return false;
+    }
+  }
+  return true;
+}
+
+float cosine(const std::vector<float> &left, const std::vector<float> &right) {
+  double dot = 0.0;
+  double left_norm = 0.0;
+  double right_norm = 0.0;
+  for (std::size_t index = 0; index < left.size(); ++index) {
+    dot += static_cast<double>(left[index]) * right[index];
+    left_norm += static_cast<double>(left[index]) * left[index];
+    right_norm += static_cast<double>(right[index]) * right[index];
+  }
+  return static_cast<float>(dot / std::sqrt(left_norm * right_norm));
+}
+
+void split_qkv_host(const std::vector<float> &qkv, const std::size_t tokens,
+                    const std::size_t width, std::vector<float> *const query,
+                    std::vector<float> *const key,
+                    std::vector<float> *const value) {
+  query->resize(tokens * width);
+  key->resize(tokens * width);
+  value->resize(tokens * width);
+  for (std::size_t token = 0; token < tokens; ++token) {
+    const std::size_t source = token * width * 3;
+    const std::size_t destination = token * width;
+    std::copy_n(qkv.begin() + static_cast<std::ptrdiff_t>(source), width,
+                query->begin() + static_cast<std::ptrdiff_t>(destination));
+    std::copy_n(qkv.begin() + static_cast<std::ptrdiff_t>(source + width),
+                width, key->begin() + static_cast<std::ptrdiff_t>(destination));
+    std::copy_n(qkv.begin() + static_cast<std::ptrdiff_t>(source + width * 2),
+                width,
+                value->begin() + static_cast<std::ptrdiff_t>(destination));
+  }
+}
+
+void rope_reference(std::vector<float> *const query,
+                    std::vector<float> *const key, const std::size_t tokens,
+                    const std::size_t heads, const std::size_t head_dim,
+                    const std::vector<float> &inverse_frequency,
+                    const std::size_t offset, const float position_scale) {
+  require(evo2c::cpu::apply_rope(query, key, tokens, heads, head_dim,
+                                 inverse_frequency, offset, position_scale),
+          "CPU RoPE reference");
+  *query = quantize_bf16(*query);
+  *key = quantize_bf16(*key);
+}
+
+std::vector<float>
+attention_last(const std::vector<float> &query, const std::vector<float> &key,
+               const std::vector<float> &value, const std::size_t sources,
+               const std::size_t heads, const std::size_t head_dim) {
+  std::vector<float> output(heads * head_dim, 0.0F);
+  const float scale = 1.0F / std::sqrt(static_cast<float>(head_dim));
+  for (std::size_t head = 0; head < heads; ++head) {
+    std::vector<float> scores(sources);
+    float maximum = -INFINITY;
+    for (std::size_t source = 0; source < sources; ++source) {
+      float score = 0.0F;
+      for (std::size_t dimension = 0; dimension < head_dim; ++dimension) {
+        score += query[head * head_dim + dimension] *
+                 key[(source * heads + head) * head_dim + dimension];
+      }
+      scores[source] = score * scale;
+      maximum = std::max(maximum, scores[source]);
+    }
+    float denominator = 0.0F;
+    for (float &score : scores) {
+      score = std::exp(score - maximum);
+      denominator += score;
+    }
+    for (std::size_t source = 0; source < sources; ++source) {
+      const float probability = scores[source] / denominator;
+      for (std::size_t dimension = 0; dimension < head_dim; ++dimension) {
+        output[head * head_dim + dimension] +=
+            probability * value[(source * heads + head) * head_dim + dimension];
+      }
+    }
+  }
+  return output;
+}
+
+void test_context(const int device, const evo2c::cuda::Stream &stream,
+                  const std::size_t tokens) {
+  constexpr std::size_t heads = 3;
+  constexpr std::size_t head_dim = 6;
+  constexpr float position_scale = 128.0F;
+  constexpr std::size_t width = heads * head_dim;
+  const auto qkv_f32 =
+      quantize_bf16(values(tokens * width * 3, tokens + 7, 29.0F));
+  const std::vector<float> inverse_frequency{1.0F, 0.1F, 0.01F};
+  auto qkv = upload_bf16(device, qkv_f32, stream);
+  auto frequency = upload_f32(device, inverse_frequency, stream);
+  evo2c::cuda::KvCache cache;
+  require(cache.allocate(device, tokens + 1, heads, head_dim),
+          "allocate context KV cache");
+  evo2c::cuda::AttentionWorkspace workspace;
+  require(workspace.allocate(device, tokens, heads, head_dim),
+          "allocate context attention workspace");
+  evo2c::cuda::DeviceBuffer output;
+  require(output.allocate(device, tokens * width * sizeof(__nv_bfloat16)),
+          "allocate context attention output");
+  require(evo2c::cuda::bf16_mha_prefill(qkv, frequency, tokens, heads, head_dim,
+                                        position_scale, &cache, &workspace,
+                                        &output, stream),
+          "MHA prefill");
+
+  std::vector<float> query;
+  std::vector<float> key;
+  std::vector<float> value;
+  split_qkv_host(qkv_f32, tokens, width, &query, &key, &value);
+  rope_reference(&query, &key, tokens, heads, head_dim, inverse_frequency, 0,
+                 position_scale);
+  std::vector<float> expected;
+  require(evo2c::cpu::causal_attention(query, key, value, tokens, heads,
+                                       head_dim, &expected),
+          "CPU causal attention reference");
+  const auto actual = download_bf16(output, tokens * width, stream);
+  check(all_close(actual, expected, 0.02F, 0.02F),
+        "online prefill matches full causal reference");
+  check(cosine(actual, expected) >= 0.999F,
+        "online prefill cosine is at least 0.999");
+  check(cache.length == tokens, "prefill advances KV cache length");
+  check(all_close(download_bf16(cache.key, tokens * width, stream), key, 0.004F,
+                  0.0F),
+        "KV cache stores RoPE-rotated BF16 keys");
+  check(download_bf16(cache.value, tokens * width, stream) == value,
+        "KV cache stores BF16 values bit exactly");
+
+  const auto next_qkv_f32 =
+      quantize_bf16(values(width * 3, tokens + 101, 31.0F));
+  auto next_qkv = upload_bf16(device, next_qkv_f32, stream);
+  evo2c::cuda::AttentionWorkspace decode_workspace;
+  require(decode_workspace.allocate(device, 1, heads, head_dim),
+          "allocate decode workspace");
+  evo2c::cuda::DeviceBuffer decoded;
+  require(decoded.allocate(device, width * sizeof(__nv_bfloat16)),
+          "allocate decode output");
+  require(evo2c::cuda::bf16_mha_decode(next_qkv, frequency, heads, head_dim,
+                                       position_scale, &cache,
+                                       &decode_workspace, &decoded, stream),
+          "MHA cached decode");
+  std::vector<float> next_query;
+  std::vector<float> next_key;
+  std::vector<float> next_value;
+  split_qkv_host(next_qkv_f32, 1, width, &next_query, &next_key, &next_value);
+  rope_reference(&next_query, &next_key, 1, heads, head_dim, inverse_frequency,
+                 tokens, position_scale);
+  key.insert(key.end(), next_key.begin(), next_key.end());
+  value.insert(value.end(), next_value.begin(), next_value.end());
+  const auto expected_decode =
+      attention_last(next_query, key, value, tokens + 1, heads, head_dim);
+  check(all_close(download_bf16(decoded, width, stream), expected_decode, 0.02F,
+                  0.02F),
+        "cached decode equals full causal last-token reference");
+  check(cache.length == tokens + 1, "decode advances KV cache length");
+}
+
+void test_chunked_prefill(const int device, const evo2c::cuda::Stream &stream) {
+  constexpr std::size_t tokens = 7;
+  constexpr std::size_t first = 3;
+  constexpr std::size_t second = tokens - first;
+  constexpr std::size_t heads = 2;
+  constexpr std::size_t head_dim = 8;
+  constexpr std::size_t width = heads * head_dim;
+  constexpr float position_scale = 128.0F;
+  const auto qkv_f32 = quantize_bf16(values(tokens * width * 3, 211, 37.0F));
+  const std::vector<float> inverse_frequency{1.0F, 0.1F, 0.01F, 0.001F};
+  const std::vector<float> first_qkv(
+      qkv_f32.begin(),
+      qkv_f32.begin() + static_cast<std::ptrdiff_t>(first * width * 3));
+  const std::vector<float> second_qkv(
+      qkv_f32.begin() + static_cast<std::ptrdiff_t>(first * width * 3),
+      qkv_f32.end());
+  auto first_device = upload_bf16(device, first_qkv, stream);
+  auto second_device = upload_bf16(device, second_qkv, stream);
+  auto frequency = upload_f32(device, inverse_frequency, stream);
+  evo2c::cuda::KvCache cache;
+  require(cache.allocate(device, tokens, heads, head_dim),
+          "allocate chunked KV cache");
+  evo2c::cuda::AttentionWorkspace first_workspace;
+  evo2c::cuda::AttentionWorkspace second_workspace;
+  require(first_workspace.allocate(device, first, heads, head_dim),
+          "allocate first chunk workspace");
+  require(second_workspace.allocate(device, second, heads, head_dim),
+          "allocate second chunk workspace");
+  evo2c::cuda::DeviceBuffer first_output;
+  evo2c::cuda::DeviceBuffer second_output;
+  require(first_output.allocate(device, first * width * sizeof(__nv_bfloat16)),
+          "allocate first chunk output");
+  require(
+      second_output.allocate(device, second * width * sizeof(__nv_bfloat16)),
+      "allocate second chunk output");
+  require(evo2c::cuda::bf16_mha_prefill(
+              first_device, frequency, first, heads, head_dim, position_scale,
+              &cache, &first_workspace, &first_output, stream),
+          "first chunk prefill");
+  require(evo2c::cuda::bf16_mha_prefill(
+              second_device, frequency, second, heads, head_dim, position_scale,
+              &cache, &second_workspace, &second_output, stream),
+          "second chunk prefill");
+
+  std::vector<float> query;
+  std::vector<float> key;
+  std::vector<float> value;
+  split_qkv_host(qkv_f32, tokens, width, &query, &key, &value);
+  rope_reference(&query, &key, tokens, heads, head_dim, inverse_frequency, 0,
+                 position_scale);
+  std::vector<float> expected;
+  require(evo2c::cpu::causal_attention(query, key, value, tokens, heads,
+                                       head_dim, &expected),
+          "CPU chunked attention reference");
+  const std::vector<float> expected_second(
+      expected.begin() + static_cast<std::ptrdiff_t>(first * width),
+      expected.end());
+  check(all_close(download_bf16(second_output, second * width, stream),
+                  expected_second, 0.02F, 0.02F),
+        "chunked prefill respects cached causal prefix");
+}
+
+void test_actual_head_shape(const int device,
+                            const evo2c::cuda::Stream &stream) {
+  constexpr std::size_t tokens = 2;
+  constexpr std::size_t heads = 64;
+  constexpr std::size_t head_dim = 128;
+  constexpr std::size_t width = heads * head_dim;
+  const auto qkv_f32 = quantize_bf16(values(tokens * width * 3, 307, 101.0F));
+  std::vector<float> inverse_frequency(head_dim / 2);
+  for (std::size_t index = 0; index < inverse_frequency.size(); ++index)
+    inverse_frequency[index] =
+        std::pow(1.0e11F, -2.0F * static_cast<float>(index) /
+                              static_cast<float>(head_dim));
+  auto qkv = upload_bf16(device, qkv_f32, stream);
+  auto frequency = upload_f32(device, inverse_frequency, stream);
+  evo2c::cuda::KvCache cache;
+  evo2c::cuda::AttentionWorkspace workspace;
+  evo2c::cuda::DeviceBuffer output;
+  require(cache.allocate(device, tokens, heads, head_dim),
+          "allocate actual-shape cache");
+  require(workspace.allocate(device, tokens, heads, head_dim),
+          "allocate actual-shape workspace");
+  require(output.allocate(device, tokens * width * sizeof(__nv_bfloat16)),
+          "allocate actual-shape output");
+  require(evo2c::cuda::bf16_mha_prefill(qkv, frequency, tokens, heads, head_dim,
+                                        128.0F, &cache, &workspace, &output,
+                                        stream),
+          "actual Evo2 head-shape prefill");
+  const auto actual = download_bf16(output, tokens * width, stream);
+  check(std::all_of(actual.begin(), actual.end(),
+                    [](const float value) { return std::isfinite(value); }),
+        "64x128 attention head shape produces finite output");
+}
+
+void test_context_8192(const int device, const evo2c::cuda::Stream &stream) {
+  constexpr std::size_t prefix = 8192;
+  constexpr std::size_t heads = 1;
+  constexpr std::size_t head_dim = 8;
+  constexpr std::size_t width = heads * head_dim;
+  constexpr float position_scale = 128.0F;
+  const auto prefix_key = quantize_bf16(values(prefix * width, 401, 47.0F));
+  const auto prefix_value = quantize_bf16(values(prefix * width, 503, 53.0F));
+  auto key_device = upload_bf16(device, prefix_key, stream);
+  auto value_device = upload_bf16(device, prefix_value, stream);
+  evo2c::cuda::KvCache cache;
+  require(cache.allocate(device, prefix + 1, heads, head_dim),
+          "allocate 8192-context cache");
+  require(evo2c::cuda::bf16_kv_append(key_device, value_device, prefix, &cache,
+                                      stream),
+          "append 8192-token prefix");
+
+  const auto qkv_f32 = quantize_bf16(values(width * 3, 607, 59.0F));
+  const std::vector<float> inverse_frequency{1.0F, 0.1F, 0.01F, 0.001F};
+  auto qkv = upload_bf16(device, qkv_f32, stream);
+  auto frequency = upload_f32(device, inverse_frequency, stream);
+  evo2c::cuda::AttentionWorkspace workspace;
+  evo2c::cuda::DeviceBuffer output;
+  require(workspace.allocate(device, 1, heads, head_dim),
+          "allocate 8192-context decode workspace");
+  require(output.allocate(device, width * sizeof(__nv_bfloat16)),
+          "allocate 8192-context decode output");
+  require(evo2c::cuda::bf16_mha_decode(qkv, frequency, heads, head_dim,
+                                       position_scale, &cache, &workspace,
+                                       &output, stream),
+          "8192-context cached decode");
+
+  std::vector<float> query;
+  std::vector<float> key;
+  std::vector<float> value;
+  split_qkv_host(qkv_f32, 1, width, &query, &key, &value);
+  rope_reference(&query, &key, 1, heads, head_dim, inverse_frequency, prefix,
+                 position_scale);
+  std::vector<float> all_key = prefix_key;
+  std::vector<float> all_value = prefix_value;
+  all_key.insert(all_key.end(), key.begin(), key.end());
+  all_value.insert(all_value.end(), value.begin(), value.end());
+  const auto expected =
+      attention_last(query, all_key, all_value, prefix + 1, heads, head_dim);
+  check(all_close(download_bf16(output, width, stream), expected, 0.02F, 0.02F),
+        "8192-context cached decode matches full causal last token");
+  check(cache.length == prefix + 1,
+        "8192-context decode fills cache to capacity");
+  const std::size_t full_length = cache.length;
+  check(!evo2c::cuda::bf16_mha_decode(qkv, frequency, heads, head_dim,
+                                      position_scale, &cache, &workspace,
+                                      &output, stream)
+             .ok(),
+        "KV cache rejects decode beyond capacity");
+  check(cache.length == full_length,
+        "failed KV append leaves cache length unchanged");
+}
+
+int requested_device() {
+  const char *environment = std::getenv("EVO2C_TEST_DEVICE");
+  return environment == nullptr ? 0 : std::stoi(environment);
+}
+
+} // namespace
+
+int main() {
+  try {
+    const int device = requested_device();
+    require(evo2c::cuda::select_device(device), "select CUDA device");
+    cudaDeviceProp properties{};
+    require(
+        evo2c::cuda::cuda_status(cudaGetDeviceProperties(&properties, device),
+                                 "cudaGetDeviceProperties"),
+        "query CUDA device");
+    std::cout << "GPU=" << properties.name << " sm=" << properties.major
+              << properties.minor << '\n';
+    evo2c::cuda::Stream stream;
+    require(stream.create(), "create CUDA stream");
+    for (const std::size_t tokens : {1U, 2U, 7U, 128U})
+      test_context(device, stream, tokens);
+    test_chunked_prefill(device, stream);
+    test_actual_head_shape(device, stream);
+    test_context_8192(device, stream);
+    require(stream.synchronize(), "final stream synchronize");
+    require(evo2c::cuda::synchronize_device(), "final device synchronize");
+  } catch (const std::exception &error) {
+    std::cerr << "FAIL: " << error.what() << '\n';
+    return 1;
+  }
+  if (failures != 0) {
+    std::cerr << failures << " CUDA attention test(s) failed\n";
+    return 1;
+  }
+  std::cout << "CUDA attention tests passed\n";
+  return 0;
+}
