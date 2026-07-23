@@ -76,8 +76,67 @@ unsigned int grid_for(const std::size_t elements) {
 
 Status validate_cache(const KvCache &cache, const int device) {
   if (cache.capacity == 0 || cache.heads == 0 || cache.head_dim == 0 ||
-      cache.length > cache.capacity) {
+      cache.length > cache.capacity || cache.device_id != device) {
     return {ErrorCode::kInvalidArgument, "KV cache metadata is invalid"};
+  }
+  if (cache.type != KvCacheType::kBF16 &&
+      cache.type != KvCacheType::kQ8Paged) {
+    return {ErrorCode::kInvalidArgument, "KV cache type is invalid"};
+  }
+  if (cache.type == KvCacheType::kQ8Paged) {
+    if (cache.page_tokens == 0 || cache.key.valid() || cache.value.valid()) {
+      return {ErrorCode::kInvalidArgument,
+              "paged Q8 KV cache metadata is invalid"};
+    }
+    const std::size_t page_count =
+        1 + (cache.capacity - 1) / cache.page_tokens;
+    if (cache.q8_pages.size() != page_count ||
+        cache.host_key_pages.size() != page_count ||
+        cache.host_value_pages.size() != page_count ||
+        cache.host_key_scale_pages.size() != page_count ||
+        cache.host_value_scale_pages.size() != page_count) {
+      return {ErrorCode::kInvalidArgument,
+              "paged Q8 KV cache page count is invalid"};
+    }
+    std::size_t page_elements = 0;
+    std::size_t scale_elements = 0;
+    std::size_t page_bytes = 0;
+    std::size_t scale_bytes = 0;
+    std::size_t table_bytes = 0;
+    if (!multiply(cache.page_tokens, cache.heads, &scale_elements) ||
+        !multiply(scale_elements, cache.head_dim, &page_elements) ||
+        !multiply(page_elements, sizeof(std::int8_t), &page_bytes) ||
+        !multiply(scale_elements, sizeof(float), &scale_bytes) ||
+        !multiply(page_count, sizeof(void *), &table_bytes)) {
+      return {ErrorCode::kInvalidArgument,
+              "paged Q8 KV cache dimensions overflow"};
+    }
+    for (const auto &page : cache.q8_pages) {
+      for (const auto *const buffer : {&page.key, &page.value}) {
+        auto status = buffer_size(*buffer, page_bytes, device,
+                                  "paged Q8 KV payload");
+        if (!status.ok())
+          return status;
+      }
+      for (const auto *const buffer : {&page.key_scale, &page.value_scale}) {
+        auto status = buffer_size(*buffer, scale_bytes, device,
+                                  "paged Q8 KV scale");
+        if (!status.ok())
+          return status;
+      }
+    }
+    for (const auto *const table :
+         {&cache.key_page_table, &cache.value_page_table,
+          &cache.key_scale_page_table, &cache.value_scale_page_table}) {
+      auto status =
+          buffer_size(*table, table_bytes, device, "paged Q8 KV page table");
+      if (!status.ok())
+        return status;
+    }
+    return Status::Ok();
+  }
+  if (cache.page_tokens != 0 || !cache.q8_pages.empty()) {
+    return {ErrorCode::kInvalidArgument, "BF16 KV cache metadata is invalid"};
   }
   std::size_t elements = 0;
   std::size_t bytes = 0;
@@ -167,6 +226,80 @@ __inline__ __device__ float warp_sum(float value) {
   return value;
 }
 
+__inline__ __device__ float warp_max(float value) {
+  for (int offset = 16; offset > 0; offset /= 2)
+    value = fmaxf(value, __shfl_down_sync(0xffffffffU, value, offset));
+  return value;
+}
+
+__global__ void q8_kv_append_kernel(
+    const __nv_bfloat16 *const key, const __nv_bfloat16 *const value,
+    std::int8_t *const *const key_pages,
+    std::int8_t *const *const value_pages, float *const *const key_scale_pages,
+    float *const *const value_scale_pages, const std::size_t token_offset,
+    const std::size_t tokens, const std::size_t heads,
+    const std::size_t head_dim, const std::size_t page_tokens) {
+  const std::size_t token_head = blockIdx.x;
+  const std::size_t token = token_head / heads;
+  const std::size_t head = token_head % heads;
+  if (token >= tokens)
+    return;
+
+  const std::size_t dimension = threadIdx.x;
+  const std::size_t input_base = token_head * head_dim;
+  const float key_value =
+      dimension < head_dim ? __bfloat162float(key[input_base + dimension])
+                           : 0.0F;
+  const float value_value =
+      dimension < head_dim ? __bfloat162float(value[input_base + dimension])
+                           : 0.0F;
+  float key_maximum = warp_max(fabsf(key_value));
+  float value_maximum = warp_max(fabsf(value_value));
+  __shared__ float partial_key[32];
+  __shared__ float partial_value[32];
+  __shared__ float key_scale;
+  __shared__ float value_scale;
+  const int lane = threadIdx.x % 32;
+  const int warp = threadIdx.x / 32;
+  const int warp_count = (blockDim.x + 31) / 32;
+  if (lane == 0) {
+    partial_key[warp] = key_maximum;
+    partial_value[warp] = value_maximum;
+  }
+  __syncthreads();
+  if (warp == 0) {
+    key_maximum = lane < warp_count ? partial_key[lane] : 0.0F;
+    value_maximum = lane < warp_count ? partial_value[lane] : 0.0F;
+    key_maximum = warp_max(key_maximum);
+    value_maximum = warp_max(value_maximum);
+    if (lane == 0) {
+      key_scale = key_maximum == 0.0F ? 1.0F : key_maximum / 127.0F;
+      value_scale = value_maximum == 0.0F ? 1.0F : value_maximum / 127.0F;
+    }
+  }
+  __syncthreads();
+
+  const std::size_t position = token_offset + token;
+  const std::size_t page = position / page_tokens;
+  const std::size_t within_page = position % page_tokens;
+  const std::size_t scale_index = within_page * heads + head;
+  const std::size_t output_base = scale_index * head_dim;
+  if (dimension == 0) {
+    key_scale_pages[page][scale_index] = key_scale;
+    value_scale_pages[page][scale_index] = value_scale;
+  }
+  if (dimension < head_dim) {
+    int key_quantized = __float2int_rn(key_value / key_scale);
+    int value_quantized = __float2int_rn(value_value / value_scale);
+    key_quantized = max(-127, min(127, key_quantized));
+    value_quantized = max(-127, min(127, value_quantized));
+    key_pages[page][output_base + dimension] =
+        static_cast<std::int8_t>(key_quantized);
+    value_pages[page][output_base + dimension] =
+        static_cast<std::int8_t>(value_quantized);
+  }
+}
+
 __global__ void online_attention_kernel(
     const __nv_bfloat16 *const query, const __nv_bfloat16 *const key_cache,
     const __nv_bfloat16 *const value_cache, __nv_bfloat16 *const output,
@@ -231,12 +364,88 @@ __global__ void online_attention_kernel(
   }
 }
 
+__global__ void q8_online_attention_kernel(
+    const __nv_bfloat16 *const query,
+    const std::int8_t *const *const key_pages,
+    const std::int8_t *const *const value_pages,
+    const float *const *const key_scale_pages,
+    const float *const *const value_scale_pages,
+    __nv_bfloat16 *const output, const std::size_t query_tokens,
+    const std::size_t prefix_tokens, const std::size_t heads,
+    const std::size_t head_dim, const std::size_t page_tokens) {
+  const std::size_t query_head = blockIdx.x;
+  const std::size_t query_token = query_head / heads;
+  const std::size_t head = query_head % heads;
+  if (query_token >= query_tokens)
+    return;
+
+  const std::size_t dimension = threadIdx.x;
+  const std::size_t query_base = (query_token * heads + head) * head_dim;
+  const float query_value =
+      dimension < head_dim ? __bfloat162float(query[query_base + dimension])
+                           : 0.0F;
+  float accumulator = 0.0F;
+  float maximum = -CUDART_INF_F;
+  float normalizer = 0.0F;
+  const float attention_scale = rsqrtf(static_cast<float>(head_dim));
+  __shared__ float partial[32];
+  __shared__ float shared_score;
+  const int lane = threadIdx.x % 32;
+  const int warp = threadIdx.x / 32;
+  const int warp_count = (blockDim.x + 31) / 32;
+  const std::size_t sources = prefix_tokens + query_token + 1;
+
+  for (std::size_t source = 0; source < sources; ++source) {
+    const std::size_t page = source / page_tokens;
+    const std::size_t within_page = source % page_tokens;
+    const std::size_t scale_index = within_page * heads + head;
+    const std::size_t cache_base = scale_index * head_dim;
+    const float key_scale = key_scale_pages[page][scale_index];
+    const float value_scale = value_scale_pages[page][scale_index];
+    float dot =
+        dimension < head_dim
+            ? query_value *
+                  (static_cast<float>(key_pages[page][cache_base + dimension]) *
+                   key_scale)
+            : 0.0F;
+    dot = warp_sum(dot);
+    if (lane == 0)
+      partial[warp] = dot;
+    __syncthreads();
+    if (warp == 0) {
+      float total = lane < warp_count ? partial[lane] : 0.0F;
+      total = warp_sum(total);
+      if (lane == 0)
+        shared_score = total * attention_scale;
+    }
+    __syncthreads();
+
+    const float score = shared_score;
+    const float next_maximum = fmaxf(maximum, score);
+    const float old_weight =
+        normalizer == 0.0F ? 0.0F : expf(maximum - next_maximum);
+    const float new_weight = expf(score - next_maximum);
+    if (dimension < head_dim) {
+      const float cached_value =
+          static_cast<float>(value_pages[page][cache_base + dimension]) *
+          value_scale;
+      accumulator = accumulator * old_weight + new_weight * cached_value;
+    }
+    normalizer = normalizer * old_weight + new_weight;
+    maximum = next_maximum;
+  }
+  if (dimension < head_dim) {
+    output[query_base + dimension] =
+        __float2bfloat16_rn(accumulator / normalizer);
+  }
+}
+
 } // namespace
 
 Status KvCache::allocate(const int device, const std::size_t token_capacity,
                          const std::size_t head_count,
                          const std::size_t dimensions_per_head) {
-  if (key.valid() || value.valid()) {
+  if (key.valid() || value.valid() || !q8_pages.empty()) {
     return {ErrorCode::kInvalidArgument, "KV cache is already allocated"};
   }
   std::size_t elements = 0;
@@ -256,11 +465,131 @@ Status KvCache::allocate(const int device, const std::size_t token_capacity,
     key.reset();
     return status;
   }
+  type = KvCacheType::kBF16;
+  device_id = device;
   capacity = token_capacity;
   length = 0;
   heads = head_count;
   head_dim = dimensions_per_head;
+  page_tokens = 0;
   return Status::Ok();
+}
+
+Status KvCache::allocate_q8_paged(
+    const int device, const std::size_t token_capacity,
+    const std::size_t head_count, const std::size_t dimensions_per_head,
+    const std::size_t tokens_per_page, const Stream &stream) {
+  if (key.valid() || value.valid() || !q8_pages.empty() || !stream.valid() ||
+      stream.device() != device || tokens_per_page == 0) {
+    return {ErrorCode::kInvalidArgument,
+            "paged Q8 KV cache allocation arguments are invalid"};
+  }
+  std::size_t page_elements = 0;
+  std::size_t scale_elements = 0;
+  std::size_t page_bytes = 0;
+  std::size_t scale_bytes = 0;
+  auto status =
+      tensor_elements(tokens_per_page, head_count, dimensions_per_head,
+                      &page_elements);
+  if (!status.ok())
+    return status;
+  if (!multiply(tokens_per_page, head_count, &scale_elements)) {
+    return {ErrorCode::kInvalidArgument,
+            "paged Q8 KV scale dimensions overflow"};
+  }
+  status = bytes_for(page_elements, sizeof(std::int8_t), &page_bytes,
+                     "paged Q8 KV payload");
+  if (!status.ok())
+    return status;
+  status = bytes_for(scale_elements, sizeof(float), &scale_bytes,
+                     "paged Q8 KV scale");
+  if (!status.ok())
+    return status;
+  if (token_capacity == 0) {
+    return {ErrorCode::kInvalidArgument,
+            "paged Q8 KV token capacity is zero"};
+  }
+  const std::size_t page_count =
+      1 + (token_capacity - 1) / tokens_per_page;
+  std::size_t table_bytes = 0;
+  if (!multiply(page_count, sizeof(void *), &table_bytes)) {
+    return {ErrorCode::kInvalidArgument,
+            "paged Q8 KV page table dimensions overflow"};
+  }
+
+  q8_pages.reserve(page_count);
+  host_key_pages.reserve(page_count);
+  host_value_pages.reserve(page_count);
+  host_key_scale_pages.reserve(page_count);
+  host_value_scale_pages.reserve(page_count);
+  for (std::size_t index = 0; index < page_count; ++index) {
+    q8_pages.emplace_back();
+    auto &page = q8_pages.back();
+    status = page.key.allocate(device, page_bytes);
+    if (!status.ok())
+      return status;
+    status = page.value.allocate(device, page_bytes);
+    if (!status.ok())
+      return status;
+    status = page.key_scale.allocate(device, scale_bytes);
+    if (!status.ok())
+      return status;
+    status = page.value_scale.allocate(device, scale_bytes);
+    if (!status.ok())
+      return status;
+    host_key_pages.push_back(
+        static_cast<std::int8_t *>(page.key.data()));
+    host_value_pages.push_back(
+        static_cast<std::int8_t *>(page.value.data()));
+    host_key_scale_pages.push_back(
+        static_cast<float *>(page.key_scale.data()));
+    host_value_scale_pages.push_back(
+        static_cast<float *>(page.value_scale.data()));
+  }
+  for (auto *const table :
+       {&key_page_table, &value_page_table, &key_scale_page_table,
+        &value_scale_page_table}) {
+    status = table->allocate(device, table_bytes);
+    if (!status.ok())
+      return status;
+  }
+  status = key_page_table.copy_from_host(host_key_pages.data(), table_bytes,
+                                         stream);
+  if (!status.ok())
+    return status;
+  status = value_page_table.copy_from_host(host_value_pages.data(), table_bytes,
+                                           stream);
+  if (!status.ok())
+    return status;
+  status = key_scale_page_table.copy_from_host(
+      host_key_scale_pages.data(), table_bytes, stream);
+  if (!status.ok())
+    return status;
+  status = value_scale_page_table.copy_from_host(
+      host_value_scale_pages.data(), table_bytes, stream);
+  if (!status.ok())
+    return status;
+
+  type = KvCacheType::kQ8Paged;
+  device_id = device;
+  capacity = token_capacity;
+  length = 0;
+  heads = head_count;
+  head_dim = dimensions_per_head;
+  page_tokens = tokens_per_page;
+  return Status::Ok();
+}
+
+std::size_t KvCache::allocated_bytes() const noexcept {
+  std::size_t total = key.bytes() + value.bytes() + key_page_table.bytes() +
+                      value_page_table.bytes() +
+                      key_scale_page_table.bytes() +
+                      value_scale_page_table.bytes();
+  for (const auto &page : q8_pages) {
+    total += page.key.bytes() + page.value.bytes() + page.key_scale.bytes() +
+             page.value_scale.bytes();
+  }
+  return total;
 }
 
 Status AttentionWorkspace::allocate(const int device,
@@ -425,7 +754,7 @@ Status bf16_kv_append(const DeviceBuffer &key, const DeviceBuffer &value,
   if (cache == nullptr || !stream.valid() || tokens == 0) {
     return {ErrorCode::kInvalidArgument, "KV append arguments are invalid"};
   }
-  const int device = cache->key.device();
+  const int device = cache->device_id;
   auto status = validate_cache(*cache, device);
   if (!status.ok())
     return status;
@@ -440,19 +769,13 @@ Status bf16_kv_append(const DeviceBuffer &key, const DeviceBuffer &value,
   std::size_t token_width = 0;
   std::size_t elements = 0;
   std::size_t bytes = 0;
-  std::size_t offset_elements = 0;
-  std::size_t offset_bytes = 0;
   if (!multiply(cache->heads, cache->head_dim, &token_width) ||
-      !multiply(tokens, token_width, &elements) ||
-      !multiply(cache->length, token_width, &offset_elements)) {
+      !multiply(tokens, token_width, &elements)) {
     return {ErrorCode::kInvalidArgument, "KV append dimensions overflow"};
   }
   status = bytes_for(elements, sizeof(__nv_bfloat16), &bytes, "KV append");
   if (!status.ok())
     return status;
-  if (!multiply(offset_elements, sizeof(__nv_bfloat16), &offset_bytes)) {
-    return {ErrorCode::kInvalidArgument, "KV append offset overflows"};
-  }
   status = buffer_size(key, bytes, device, "KV append key");
   if (!status.ok())
     return status;
@@ -462,6 +785,38 @@ Status bf16_kv_append(const DeviceBuffer &key, const DeviceBuffer &value,
   status = select_device(device);
   if (!status.ok())
     return status;
+  if (cache->type == KvCacheType::kQ8Paged) {
+    std::size_t blocks = 0;
+    if (!multiply(tokens, cache->heads, &blocks) ||
+        blocks >
+            static_cast<std::size_t>(
+                std::numeric_limits<unsigned int>::max())) {
+      return {ErrorCode::kInvalidArgument,
+              "paged Q8 KV append grid dimensions overflow"};
+    }
+    q8_kv_append_kernel<<<static_cast<unsigned int>(blocks),
+                          kAttentionThreads, 0, stream.get()>>>(
+        static_cast<const __nv_bfloat16 *>(key.data()),
+        static_cast<const __nv_bfloat16 *>(value.data()),
+        static_cast<std::int8_t *const *>(cache->key_page_table.data()),
+        static_cast<std::int8_t *const *>(cache->value_page_table.data()),
+        static_cast<float *const *>(cache->key_scale_page_table.data()),
+        static_cast<float *const *>(cache->value_scale_page_table.data()),
+        cache->length, tokens, cache->heads, cache->head_dim,
+        cache->page_tokens);
+    status = launch_status("paged Q8 KV append kernel");
+    if (!status.ok())
+      return status;
+    cache->length += tokens;
+    return Status::Ok();
+  }
+
+  std::size_t offset_elements = 0;
+  std::size_t offset_bytes = 0;
+  if (!multiply(cache->length, token_width, &offset_elements) ||
+      !multiply(offset_elements, sizeof(__nv_bfloat16), &offset_bytes)) {
+    return {ErrorCode::kInvalidArgument, "KV append offset overflows"};
+  }
   auto *const key_destination =
       static_cast<std::uint8_t *>(cache->key.data()) + offset_bytes;
   auto *const value_destination =
@@ -525,6 +880,20 @@ Status bf16_online_causal_attention(const DeviceBuffer &query,
   status = select_device(device);
   if (!status.ok())
     return status;
+  if (cache.type == KvCacheType::kQ8Paged) {
+    q8_online_attention_kernel<<<static_cast<unsigned int>(blocks),
+                                 kAttentionThreads, 0, stream.get()>>>(
+        static_cast<const __nv_bfloat16 *>(query.data()),
+        static_cast<const std::int8_t *const *>(
+            cache.key_page_table.data()),
+        static_cast<const std::int8_t *const *>(
+            cache.value_page_table.data()),
+        static_cast<const float *const *>(cache.key_scale_page_table.data()),
+        static_cast<const float *const *>(cache.value_scale_page_table.data()),
+        static_cast<__nv_bfloat16 *>(output->data()), query_tokens,
+        prefix_tokens, cache.heads, cache.head_dim, cache.page_tokens);
+    return launch_status("paged Q8 online causal attention kernel");
+  }
   online_attention_kernel<<<static_cast<unsigned int>(blocks),
                             kAttentionThreads, 0, stream.get()>>>(
       static_cast<const __nv_bfloat16 *>(query.data()),

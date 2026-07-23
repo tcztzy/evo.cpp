@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import argparse
+import re
 from pathlib import Path
 
 
@@ -25,6 +26,12 @@ def main() -> int:
         "V18: the optional CTest regex must be shell-quoted before SSH "
         "transports it through the remote login shell"
     )
+    for script in sorted((args.source_dir / "scripts").glob("gpu02_*.sh")):
+        script_text = script.read_text(encoding="utf-8")
+        assert re.search(r"(?m)^[ \t]*python3(?:[ \t]|$)", script_text) is None, (
+            "V18: gpu02 scripts must use the pinned container Python instead "
+            f"of the older host interpreter: {script.name}"
+        )
 
     build = (
         args.source_dir / "scripts" / "gpu02_build.sh"
@@ -35,6 +42,22 @@ def main() -> int:
         "V16: the canonical build entrypoint must configure its build "
         "directory before attempting to compile it"
     )
+
+    local_build = (
+        args.source_dir / "scripts" / "local_test.sh"
+    ).read_text(encoding="utf-8")
+    local_configure_index = local_build.index('  -S "$source_dir"')
+    local_compile_index = local_build.index(
+        '"$cmake_bin" --build "$build_dir"'
+    )
+    local_test_index = local_build.index(
+        'ctest --test-dir "$build_dir"'
+    )
+    assert local_configure_index < local_compile_index < local_test_index, (
+        "V16: local verification must configure before build and test"
+    )
+    assert '-DEVO2C_SANITIZE="$sanitize"' in local_build
+    assert "EVO2C_SANITIZERS" not in local_build
 
     prepare = (
         args.source_dir / "scripts" / "gpu02_prepare_40b.sh"

@@ -170,3 +170,40 @@ single-GPU and four-GPU model tests compare an 8+1 activation split against an
 independent one-shot nine-token Python causal oracle; the CLI test also checks
 automatic generation chunks, score-logit concatenation, teacher-force
 separation, and the explicit multi-chunk layer-dump limitation.
+
+## T17 paged Q8 KV and 131K capacity
+
+Binary
+`6f803ea0a5692da6a3c11190b40e15bfbeef5fb4bed8b6edd00976d52814cd41`
+ran the real 40B model with `--ctx 131072`, prompt `ACGTACGTACGTACGT`,
+two greedy output bytes, and a logits dump. It selected `q8_paged`, exited
+zero, and emitted `AC`. The output SHA256 is
+`472e73d796e20aa8ff9059e6316f218e0322548f661ec4dc267507ed66317404`.
+
+The artifact directory is
+`$HOME/evo2c-artifacts/t17-ctx131072-q8-short-6f803ea0`. Its `metrics.log`
+has SHA256
+`6782b4af158317c011f549a0b986839c5fd038bcb87050da136738844c3874c5`.
+Loading took 58.650 seconds, 16-token prefill took 2.992 seconds, and one
+measured decode step took 1.104 seconds. The allocated cache bytes were
+4,450,353,664, 4,446,716,416, 4,449,960,448, and 4,446,323,200 on pipeline
+stages 0–3. Each stage owns two attention layers; the Q8 payload plus one F32
+scale per token/head uses 2.0625 GiB per layer at 131072 tokens.
+
+A second run of the same binary, model, prompt, and seed used
+`--ctx 32768`, selecting the contiguous BF16 cache. The dependency-free
+`tools/compare_logits.py` comparator checked the two 2×512 F32 NPY files.
+The Q8 rows had cosine similarities 0.9999995896399383 and
+0.9999998089002153, exact top-1 token ids 65 and 67, maximum absolute
+difference 0.125, finite values, and byte-identical generated output. The
+comparison report has SHA256
+`1006667defa9a5c2f4cd61dd183aa3b920936387112536806555639bfcaa94af`.
+
+This run validates allocation, quantize/dequantize execution, cached decode,
+and the real-model numerical gate at 131K capacity. The prompt itself is
+short; it does not claim the quadratic work of pre-filling 131072 attention
+positions. The final source build passed all 26 gpu02 CTest entries, including
+the paged-cache boundary test and comparator contract. Four optional external
+PyTorch/Triton/Vortex tests reported their declared skip status. Local Release
+and ASan/UBSan builds each passed all 18 entries, with three dependency-gated
+oracles skipped.

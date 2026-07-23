@@ -520,7 +520,8 @@ Status run_score(const CliOptions &options, PipelineModel *const model,
 }
 
 void print_metrics(const Metrics &metrics, const MemoryTracker &memory,
-                   const std::vector<StageAssignment> &stages) {
+                   const std::vector<StageAssignment> &stages,
+                   const bool q8_kv_cache) {
   const double prefill_rate =
       metrics.prefill_seconds > 0.0
           ? static_cast<double>(metrics.prefill_tokens) /
@@ -545,7 +546,10 @@ void print_metrics(const Metrics &metrics, const MemoryTracker &memory,
             << ",\"teacher_force_tokens_per_second\":" << teacher_force_rate
             << ",\"decode_tokens\":" << metrics.decode_tokens
             << ",\"decode_seconds\":" << metrics.decode_seconds
-            << ",\"decode_tokens_per_second\":" << decode_rate << ",\"gpus\":[";
+            << ",\"decode_tokens_per_second\":" << decode_rate
+            << ",\"kv_cache\":\""
+            << (q8_kv_cache ? "q8_paged" : "bf16_contiguous")
+            << "\",\"gpus\":[";
   for (std::size_t index = 0; index < memory.entries().size(); ++index) {
     if (index != 0) {
       std::cerr.put(',');
@@ -613,7 +617,7 @@ Status run_inference_cli(const CliOptions &options,
   if (!status.ok()) {
     return status;
   }
-  print_metrics(metrics, memory, model.stages());
+  print_metrics(metrics, memory, model.stages(), model.uses_q8_kv_cache());
   return Status::Ok();
 }
 

@@ -28,6 +28,8 @@ namespace {
 constexpr int kThreads = 256;
 constexpr std::size_t kMaximumArenaTokens = 8192;
 constexpr std::size_t kTestFixtureArenaTokens = 8;
+constexpr std::size_t kQ8KvContextThreshold = 131072;
+constexpr std::size_t kQ8KvPageTokens = 16384;
 constexpr std::array<std::size_t, 14> kHcsLayers{0,  4,  7,  11, 14, 18, 21,
                                                  25, 28, 32, 36, 39, 43, 46};
 constexpr std::array<std::size_t, 14> kHcmLayers{1,  5,  8,  12, 15, 19, 22,
@@ -381,8 +383,8 @@ std::size_t layer_weight_bytes(const Layer &layer) noexcept {
 
 std::size_t layer_cache_bytes(const Layer &layer) noexcept {
   return total_bytes({&layer.short_cache.state, &layer.inner_cache.state,
-                      &layer.iir_cache.state, &layer.kv_cache.key,
-                      &layer.kv_cache.value});
+                      &layer.iir_cache.state}) +
+         layer.kv_cache.allocated_bytes();
 }
 
 std::size_t arena_bytes(const Arena &arena) noexcept {
@@ -563,6 +565,7 @@ struct SingleGpuModel::Impl final {
   std::size_t arena_capacity{0};
   std::size_t layer_offset{0};
   std::size_t position{0};
+  bool q8_kv_cache{false};
   bool loaded{false};
   bool state_valid{false};
   Stream stream;
@@ -674,8 +677,12 @@ struct SingleGpuModel::Impl final {
                         stream, &layer->inverse_frequency);
       if (!status.ok())
         return status;
-      return layer->kv_cache.allocate(device, context_capacity, config.heads,
-                                      config.head_dim());
+      return q8_kv_cache
+                 ? layer->kv_cache.allocate_q8_paged(
+                       device, context_capacity, config.heads, config.head_dim(),
+                       kQ8KvPageTokens, stream)
+                 : layer->kv_cache.allocate(device, context_capacity,
+                                            config.heads, config.head_dim());
     }
 
     if (config.use_fp8_input_projections && !config.test_fixture) {
@@ -1148,6 +1155,8 @@ Status SingleGpuModel::load(const ModelFile &model, const int device,
   impl_->arena_capacity = std::min(
       context_capacity, impl_->config.test_fixture ? kTestFixtureArenaTokens
                                                   : kMaximumArenaTokens);
+  impl_->q8_kv_cache = !impl_->config.test_fixture &&
+                       context_capacity >= kQ8KvContextThreshold;
   status = select_device(device);
   if (!status.ok())
     return status;
@@ -1226,6 +1235,9 @@ std::size_t SingleGpuModel::position() const noexcept {
 std::size_t SingleGpuModel::activation_capacity() const noexcept {
   return impl_->arena_capacity;
 }
+bool SingleGpuModel::uses_q8_kv_cache() const noexcept {
+  return impl_->q8_kv_cache;
+}
 int SingleGpuModel::device() const noexcept { return impl_->device; }
 
 struct PipelineModel::Impl final {
@@ -1233,6 +1245,7 @@ struct PipelineModel::Impl final {
   std::size_t context_capacity{0};
   std::size_t arena_capacity{0};
   std::size_t position{0};
+  bool q8_kv_cache{false};
   bool loaded{false};
   bool state_valid{false};
   std::vector<StageAssignment> assignments;
@@ -1409,6 +1422,8 @@ Status PipelineModel::load(const ModelFile &model,
       context_capacity, candidate->config.test_fixture
                             ? kTestFixtureArenaTokens
                             : kMaximumArenaTokens);
+  candidate->q8_kv_cache = !candidate->config.test_fixture &&
+                           context_capacity >= kQ8KvContextThreshold;
   const std::size_t stage_count = devices.size();
   const std::size_t base_layers = candidate->config.layers / stage_count;
   const std::size_t extra_layers = candidate->config.layers % stage_count;
@@ -1426,6 +1441,7 @@ Status PipelineModel::load(const ModelFile &model,
     stage->device = devices[index];
     stage->context_capacity = context_capacity;
     stage->arena_capacity = candidate->arena_capacity;
+    stage->q8_kv_cache = candidate->q8_kv_cache;
     stage->layer_offset = layer_begin;
     status = select_device(stage->device);
     if (!status.ok())
@@ -1558,6 +1574,10 @@ std::size_t PipelineModel::position() const noexcept { return impl_->position; }
 
 std::size_t PipelineModel::activation_capacity() const noexcept {
   return impl_->arena_capacity;
+}
+
+bool PipelineModel::uses_q8_kv_cache() const noexcept {
+  return impl_->q8_kv_cache;
 }
 
 } // namespace evo2c::cuda

@@ -239,6 +239,7 @@ def main() -> int:
     if (
         chunked_metrics["prefill_tokens"] != 9
         or chunked_metrics["teacher_force_tokens"] != 0
+        or chunked_metrics["kv_cache"] != "bf16_contiguous"
         or forced_metrics["prefill_tokens"] != 8
         or forced_metrics["teacher_force_tokens"] != 1
     ):

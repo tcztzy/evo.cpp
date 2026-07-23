@@ -36,14 +36,20 @@ the retained chronological prefix and then advances that cache. HCL
 continuation runs the modal recurrence from its existing F32 state without
 zeroing it.
 
-CUDA attention stores RoPE-transformed keys and raw values in contiguous BF16
-`[capacity, heads, head_dim]` caches. The activation arena is capped separately
-from context capacity, so the CLI feeds prompts in bounded chunks. Chunked
-prefill uses the existing cache length as both its causal prefix and RoPE
-position offset. Each query/head block updates an F32 running maximum,
-normalizer, and value accumulator, so no sequence-by-sequence score matrix is
-allocated. Single-token decode calls the same online-softmax kernel against the
-populated cache.
+CUDA attention stores RoPE-transformed keys and raw values in BF16 caches below
+131072 context tokens. At 131072 and above, each K and V `(token, head)` vector
+is independently quantized as
+`scale=max(abs(vector))/127`, `q=clamp(round(vector/scale),-127,127)`. The int8
+payload and F32 scale are stored in fixed 16384-token pages. The attention
+kernel selects a page for each source, dequantizes its elements into F32, and
+retains the same F32 dot-product, online-softmax, and value-accumulator
+semantics as the BF16 path.
+
+The activation arena is capped separately from context capacity, so the CLI
+feeds prompts in bounded chunks. Chunked prefill uses the existing cache length
+as both its causal prefix and RoPE position offset. No path materializes a
+sequence-by-sequence score matrix. Single-token decode calls the same
+format-aware online-softmax operation against the populated cache.
 
 The 42 Hyena input projections use fixed Transformer Engine 2.3 E4M3FN
 inference scales and H100 QGMMA K=32 global-alignment semantics. Their Ampere

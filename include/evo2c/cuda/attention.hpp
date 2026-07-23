@@ -2,6 +2,8 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
+#include <vector>
 
 #include "evo2c/cuda/runtime.hpp"
 #include "evo2c/status.hpp"
@@ -15,19 +17,49 @@ enum class QkvLayout {
   kHeadMajor,
 };
 
-// Contiguous BF16 caches [capacity,heads,head_dim]. Length is host metadata;
-// appends are ordered on the supplied CUDA stream.
+enum class KvCacheType { kBF16, kQ8Paged };
+
+struct Q8KvPage final {
+  DeviceBuffer key;
+  DeviceBuffer value;
+  DeviceBuffer key_scale;
+  DeviceBuffer value_scale;
+};
+
+// Length is host metadata; appends are ordered on the supplied CUDA stream.
+// BF16 uses contiguous [capacity,heads,head_dim] buffers. Q8 uses fixed token
+// pages with int8 payloads and one F32 scale per (token,head).
 struct KvCache final {
   DeviceBuffer key;
   DeviceBuffer value;
+  std::vector<Q8KvPage> q8_pages;
+  DeviceBuffer key_page_table;
+  DeviceBuffer value_page_table;
+  DeviceBuffer key_scale_page_table;
+  DeviceBuffer value_scale_page_table;
+  std::vector<std::int8_t *> host_key_pages;
+  std::vector<std::int8_t *> host_value_pages;
+  std::vector<float *> host_key_scale_pages;
+  std::vector<float *> host_value_scale_pages;
+  KvCacheType type{KvCacheType::kBF16};
+  int device_id{-1};
   std::size_t capacity{0};
   std::size_t length{0};
   std::size_t heads{0};
   std::size_t head_dim{0};
+  std::size_t page_tokens{0};
 
   [[nodiscard]] Status allocate(int device, std::size_t token_capacity,
                                 std::size_t head_count,
                                 std::size_t dimensions_per_head);
+  [[nodiscard]] Status allocate_q8_paged(
+      int device, std::size_t token_capacity, std::size_t head_count,
+      std::size_t dimensions_per_head, std::size_t tokens_per_page,
+      const Stream &stream);
+  [[nodiscard]] std::size_t allocated_bytes() const noexcept;
+  [[nodiscard]] bool quantized() const noexcept {
+    return type == KvCacheType::kQ8Paged;
+  }
   void reset_length() noexcept { length = 0; }
 };
 

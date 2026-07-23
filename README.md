@@ -19,13 +19,18 @@ an offline converter, and reproducible reference vectors.
 - Parallel per-GPU stage loading and static E4M3 weight preparation.
 - State-preserving chunked prefill with an 8192-token activation arena
   independent of the logical context capacity.
+- Fixed-page Q8 KV at context capacities of 131072 tokens and above, with
+  on-read F32 dequantization inside online-softmax attention.
 - `EVO2C` v1 mmap model validation before any CUDA allocation.
 - CPU, CUDA, SASS, converter, four-GPU CLI, and official continuation gates.
 
 The quality-gated production target is batch 1 with `--ctx 8192`. A real 40B
 8193-token prompt has additionally crossed the activation boundary under
-`--ctx 32768`. Paged Q8 KV and `--ctx 131072` remain the next milestone in
-`SPEC.md`; they are not yet claimed by this README.
+`--ctx 32768`. A real 40B `--ctx 131072` smoke has also allocated and exercised
+the paged Q8 KV path. Its two rows of logits retained at least
+0.999999589 cosine similarity to the BF16-cache baseline with exact top-1 and
+output bytes. This is a capacity and numerical smoke, not a claim that a full
+131072-token prefix has been prefetched.
 
 ## gpu02 quick start
 
@@ -75,6 +80,19 @@ apptainer exec --nv -B "$nix_root:/nix:ro" "$image" \
   "$binary" -m "$model" -p ACGTACGT -n 10 --ctx 8192 \
   --gpu 0,1,2,3 --top-k 1 --seed 1
 ```
+
+Long-context cache selection is automatic. `--ctx` below 131072 uses
+contiguous BF16 KV; `--ctx 131072` or greater uses 16384-token Q8 pages:
+
+```sh
+apptainer exec --nv -B "$nix_root:/nix:ro" "$image" \
+  "$binary" -m "$model" -p ACGTACGTACGTACGT -n 2 --ctx 131072 \
+  --gpu 0,1,2,3 --top-k 1 --seed 1 \
+  --dump-logits q8-logits.npy
+```
+
+The final `evo2c_metrics` record names the selected `kv_cache` format and
+reports cache bytes per pipeline stage.
 
 For the official long-prompt semantics, prefill 3000 bytes in parallel and
 teacher-force the remainder through the caches:

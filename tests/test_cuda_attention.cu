@@ -375,6 +375,100 @@ void test_chunked_prefill(const int device, const evo2c::cuda::Stream &stream) {
         "chunked prefill respects cached causal prefix");
 }
 
+void test_q8_paged_cache(const int device,
+                         const evo2c::cuda::Stream &stream) {
+  constexpr std::size_t tokens = 7;
+  constexpr std::size_t capacity = tokens + 1;
+  constexpr std::size_t heads = 2;
+  constexpr std::size_t head_dim = 32;
+  constexpr std::size_t width = heads * head_dim;
+  constexpr std::size_t page_tokens = 3;
+  constexpr float position_scale = 128.0F;
+  const auto qkv_f32 =
+      quantize_bf16(values(tokens * width * 3, 271, 43.0F));
+  std::vector<float> inverse_frequency(head_dim / 2);
+  for (std::size_t index = 0; index < inverse_frequency.size(); ++index) {
+    inverse_frequency[index] =
+        std::pow(1.0e6F, -2.0F * static_cast<float>(index) /
+                            static_cast<float>(head_dim));
+  }
+  auto qkv = upload_bf16(device, qkv_f32, stream);
+  auto frequency = upload_f32(device, inverse_frequency, stream);
+  evo2c::cuda::KvCache cache;
+  require(cache.allocate_q8_paged(device, capacity, heads, head_dim,
+                                  page_tokens, stream),
+          "allocate paged Q8 KV cache");
+  check(cache.quantized() && cache.device_id == device &&
+            cache.q8_pages.size() == 3,
+        "Q8 KV cache records its device and expected three physical pages");
+  const std::size_t bf16_bytes =
+      capacity * width * sizeof(__nv_bfloat16) * 2;
+  check(cache.allocated_bytes() < bf16_bytes,
+        "paged Q8 KV cache is smaller than equivalent BF16 storage");
+
+  evo2c::cuda::AttentionWorkspace workspace;
+  evo2c::cuda::DeviceBuffer output;
+  require(workspace.allocate(device, tokens, heads, head_dim),
+          "allocate paged Q8 prefill workspace");
+  require(output.allocate(device, tokens * width * sizeof(__nv_bfloat16)),
+          "allocate paged Q8 prefill output");
+  require(evo2c::cuda::bf16_mha_prefill(
+              qkv, frequency, tokens, heads, head_dim, position_scale, &cache,
+              &workspace, &output, stream),
+          "paged Q8 MHA prefill");
+
+  std::vector<float> query;
+  std::vector<float> key;
+  std::vector<float> value;
+  split_qkv_host(qkv_f32, tokens, width, &query, &key, &value);
+  rope_reference(&query, &key, tokens, heads, head_dim, inverse_frequency, 0,
+                 position_scale);
+  std::vector<float> expected;
+  require(evo2c::cpu::causal_attention(query, key, value, tokens, heads,
+                                       head_dim, &expected),
+          "CPU paged Q8 attention reference");
+  const auto actual = download_bf16(output, tokens * width, stream);
+  check(all_close(actual, expected, 0.04F, 0.04F),
+        "paged Q8 prefill stays within its quantization tolerance");
+  check(cosine(actual, expected) >= 0.999F,
+        "paged Q8 prefill cosine is at least 0.999");
+
+  const auto next_qkv_f32 = quantize_bf16(values(width * 3, 331, 47.0F));
+  auto next_qkv = upload_bf16(device, next_qkv_f32, stream);
+  evo2c::cuda::AttentionWorkspace decode_workspace;
+  evo2c::cuda::DeviceBuffer decode_output;
+  require(decode_workspace.allocate(device, 1, heads, head_dim),
+          "allocate paged Q8 decode workspace");
+  require(decode_output.allocate(device, width * sizeof(__nv_bfloat16)),
+          "allocate paged Q8 decode output");
+  require(evo2c::cuda::bf16_mha_decode(
+              next_qkv, frequency, heads, head_dim, position_scale, &cache,
+              &decode_workspace, &decode_output, stream),
+          "paged Q8 MHA decode across a page boundary");
+  std::vector<float> next_query;
+  std::vector<float> next_key;
+  std::vector<float> next_value;
+  split_qkv_host(next_qkv_f32, 1, width, &next_query, &next_key, &next_value);
+  rope_reference(&next_query, &next_key, 1, heads, head_dim,
+                 inverse_frequency, tokens, position_scale);
+  key.insert(key.end(), next_key.begin(), next_key.end());
+  value.insert(value.end(), next_value.begin(), next_value.end());
+  const auto expected_decode =
+      attention_last(next_query, key, value, capacity, heads, head_dim);
+  const auto actual_decode = download_bf16(decode_output, width, stream);
+  check(all_close(actual_decode, expected_decode, 0.04F, 0.04F),
+        "paged Q8 decode stays within its quantization tolerance");
+  check(cosine(actual_decode, expected_decode) >= 0.999F,
+        "paged Q8 decode cosine is at least 0.999");
+  check(cache.length == capacity,
+        "paged Q8 decode fills the logical cache capacity");
+  check(!evo2c::cuda::bf16_mha_decode(
+             next_qkv, frequency, heads, head_dim, position_scale, &cache,
+             &decode_workspace, &decode_output, stream)
+             .ok(),
+        "paged Q8 cache rejects decode beyond logical capacity");
+}
+
 void test_actual_head_shape(const int device,
                             const evo2c::cuda::Stream &stream) {
   constexpr std::size_t tokens = 2;
@@ -490,6 +584,7 @@ int main() {
     for (const std::size_t tokens : {1U, 2U, 7U, 128U})
       test_context(device, stream, tokens);
     test_chunked_prefill(device, stream);
+    test_q8_paged_cache(device, stream);
     test_actual_head_shape(device, stream);
     test_context_8192(device, stream);
     require(stream.synchronize(), "final stream synchronize");

@@ -301,6 +301,12 @@ if(BUILD_TESTING)
       --quality-tool ${CMAKE_CURRENT_SOURCE_DIR}/tools/evo2_quality_gate.py
       --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/quality-gate)
   add_test(
+    NAME logit_comparator
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_logit_comparator.py
+      --tool ${CMAKE_CURRENT_SOURCE_DIR}/tools/compare_logits.py
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/logit-comparator)
+  add_test(
     NAME source_hygiene
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_source_hygiene.py
