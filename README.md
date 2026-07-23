@@ -192,6 +192,48 @@ python3 tools/convert_checkpoint.py \
   --dtype bf16
 ```
 
+## Validation commands
+
+The canonical local entrypoint always configures before it builds:
+
+```sh
+scripts/local_test.sh build-release
+EVO2C_SANITIZE=ON scripts/local_test.sh build-sanitize
+```
+
+Both suites currently pass all 18 entries; three dependency-gated
+PyTorch/Triton/Vortex oracles report their declared skip status when those
+packages are unavailable. The production target is validated on gpu02 with:
+
+```sh
+scripts/gpu02_build.sh
+scripts/gpu02_test.sh
+```
+
+The gpu02 suite passes all 26 entries: the CPU/converter contracts plus nine
+CUDA tests, including two four-GPU tests. Four optional external-reference
+tests are skipped in the pinned runtime. Build warnings are errors in all
+canonical entrypoints.
+
+## Limits
+
+- The runtime is deliberately limited to Evo 2 40B/40B-base, batch 1, and
+  exactly four CUDA devices. It is not a general model framework or server.
+- The checked production environment is four Ampere `sm_80` A800 80GB cards.
+  Other CUDA architectures and smaller cards are not claimed.
+- The official continuation quality gate is `--ctx 8192`. A real 8193-token
+  prompt validates chunking at `--ctx 32768`; 131K and 1M runs validate logical
+  capacity, real-model Q8 numerics, and short cached decode.
+- Full 1M Q8 KV residency fits idle A800 80GB hardware, but a full 1M prompt is
+  not currently practical because the attention prefill kernel is quadratic
+  and not query-tiled. No host-offload fallback is enabled.
+- Multi-chunk scoring and generation are supported. `--dump-layer` is rejected
+  when one prefill spans multiple activation chunks because a single NPY file
+  cannot represent separate stage-local invocations.
+- PyTorch is required only for offline checkpoint conversion and optional
+  oracle tests. The production binary does not link PyTorch, Vortex,
+  Transformer Engine, or hardware FP8 support.
+
 ## Design and validation
 
 - [`SPEC.md`](SPEC.md) is the executable task and invariant ledger.

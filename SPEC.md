@@ -67,7 +67,7 @@ T15|x|优化 software-QGMMA padded tiling与四卡 stage 并发加载；输出�
 T16|x|固定 8192-token activation arena + state-preserving chunked prefill；真实 40B 验证 ctx=32768 且跨块|V10,V13,V14,V16
 T17|x|实现 paged Q8 KV、量化 attention 数值门；真实 40B 验证 ctx=131072|V9,V10,V14,V16
 T18|x|评估 1M context：显存/attention 计算量/host-offload；可行则 smoke，否→瓶颈与硬件下限报告|V13,V14,V16
-T19|.|README：构建、转换、gpu02 运行、限制、复现命令；全套 CPU+GPU regression|V12,V16,I.build,I.convert,I.cli,I.remote
+T19|x|README：构建、转换、gpu02 运行、限制、复现命令；全套 CPU+GPU regression|V12,V16,I.build,I.convert,I.cli,I.remote
 
 ## §B BUGS
 id|date|cause|fix
