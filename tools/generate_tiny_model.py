@@ -12,7 +12,7 @@ from pathlib import Path
 from evo2c.format import BytesTensorSource, write_model
 
 
-VOCAB = 16
+VOCAB = 512
 WIDTH = 8
 LAYERS = 50
 HEADS = 2

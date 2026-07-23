@@ -44,7 +44,7 @@ V14: long-context path ⊥ materialize full attention score matrix；chunked pre
 V15: deterministic greedy (`top_k=1`) 同 build/model/seed → byte-identical；sampling seed reproducible。
 V16: ∀ task completion → unit/integration test + ASan/UBSan CPU run；远端 GPU task记录 GPU/driver/CUDA/model SHA/peak memory/prefill tok/s/decode tok/s。
 V17: 40B software FP8 ! 仅 42 个 Hyena input projection 的输入和权重按 TE 2.3 `HYBRID` forward E4M3FN per-tensor delayed scaling量化；官方 `torch.inference_mode()` 路径固定使用 checkpoint scale（TE 2.3 仅在 grad enabled 时推进 amax/history），因此静态权重按该固定 scale 一次量化后缓存；GEMM 对 scaled raw-E4M3 payload 累加，随后按 cuBLASLt 公式在 epilogue 乘 input/weight inverse scales、再加 bias，⊥ inverse-scale operands before GEMM；CPU bit-pattern vectors vs PyTorch `float8_e4m3fn` exact，CUDA projection logits vs 软件 reference cosine≥0.999/top-1 exact。
-V18: gpu02 上执行任何 CUDA CTest ! 通过 `scripts/gpu02_test.sh`/`gpu02_smoke.sh` 的 `apptainer exec --nv` 暴露宿主 NVIDIA driver；SSH 传递 CTest regex ! shell-safe quoted；`/nix` 内 executable 仅能在 mount 后的容器内探测；缺 driver 映射/参数解析不得被误判为 kernel failure；remote script contract 测试固定此入口以及 HF cache/endpoint。
+V18: gpu02 上执行任何 CUDA CTest ! 通过 `scripts/gpu02_test.sh`/`gpu02_smoke.sh` 的 `apptainer exec --nv` 暴露宿主 NVIDIA driver；SSH 传递 CTest regex ! shell-safe quoted；`/nix` 内 executable 仅能在 mount 后的容器内探测；缺 driver 映射/参数解析不得被误判为 kernel failure；超过单次 SSH 生命周期的转换/质量任务 ! detached worker + PID/log/原子 status + 可重连轮询；remote script contract 测试固定这些入口以及 HF cache/endpoint。
 V19: score JSONL 中每个 target token 的 log-likelihood ! 对对应 prefill row 的 512 logits 精确执行一次 stable log-softmax；总和、均值、perplexity 从这些 token 值派生。
 
 ## §T TASKS
@@ -61,7 +61,7 @@ T9|x|组装 embedding+50 blocks+final norm/unembed、layer dump、tiny synthetic
 T10|x|实现 4×A800 layer pipeline、P2P transfers、per-stage arena/weight placement|V11,V12
 T11|x|连通 gpu02 后复核环境；Apptainer build；下载/合并 checkpoint；远端转换并记录 SHA|V6,V11,V16,I.remote
 T12|x|生成 7B/40B Python BF16 与可得官方 FP8/NIM vectors；逐算子→逐层→logits 对齐|V8,V9,V10,V13,I.vector
-T13|~|gpu02 跑 40B ctx=8192 score+greedy generation；修正质量；达成显存/确定性/官方 prompt gates|V10,V11,V13,V15,V16,V19,I.cli,I.score
+T13|x|gpu02 跑 40B ctx=8192 score+greedy generation；修正质量；达成显存/确定性/官方 prompt gates|V10,V11,V13,V15,V16,V19,I.cli,I.score
 T14|x|若纯 BF16 未过 V13，实现 software E4M3 projection cast/scale 与 checkpoint FP8 metadata 提取|V2,V6,V13,V17,I.model
 T15|~|优化 software-QGMMA tiling、fused kernels、CUDA graphs、stage transfer；输出基准，无正确性回退|V9,V10,V11,V16,V17
 T16|.|实现 paged Q8 KV + chunked prefill；依次验证 ctx=32768/131072|V10,V13,V14,V16
@@ -86,3 +86,10 @@ B13|2026-07-23|the optional Vortex reference contract imported PyTorch before it
 B14|2026-07-23|the first teacher-forcing CLI regression demanded elementwise `1e-3` agreement even though full prefill and cached BF16 decode legitimately differ by a few ULPs; the engine met its established cache contract (`cosine=0.9999992`, top-1 exact) but CTest failed|V10 cosine≥0.9999 + greedy top-1 exact contract
 B15|2026-07-23|the converter began exporting 126 FP8 metadata tensors, but the fresh gpu02 preparation script still pinned the old 537-tensor BF16 container filename, size, and SHA; an existing old file masked the drift while a clean conversion would fail post-write validation|V6,V17,I.remote preparation contract pins the 663-tensor E4M3_SW artifact
 B16|2026-07-23|the new software-FP8 design note ended with a redundant blank line, so the pre-commit whitespace gate failed after all numerical tests had passed|V16 task completion includes clean `git diff --check`
+B17|2026-07-23|the four-sequence gpu02 quality gate ran under an interactive SSH pipe; gpu02 closed the connection during prompt 1, leaving the numerical child alive but disconnecting progress/result collection|V18 detached quality worker + per-prompt artifacts + `--start-index` resume
+B18|2026-07-23|a remote verification command invoked the pinned `/nix` Python directly on the gpu02 host even though that store is exposed only by the Apptainer bind mount|V18 remote contract requires every pinned `/nix` executable invocation to occur under `apptainer exec`
+B19|2026-07-23|a one-shot SSH artifact probe returned 255 during gpu02 contention, demonstrating that even read-only final-result collection cannot treat one transport attempt as the task outcome|V18 quality launcher and result collector both retry SSH independently of the detached worker
+B20|2026-07-23|the first quality-report provenance test hand-copied the wrong SHA256 for its fixture binary and failed despite the report hashing the correct bytes|V16 executable quality-gate test fixes the known fixture digest and verifies `binary_sha256`
+B21|2026-07-23|an ad-hoc `clang-format --dry-run` used LLVM defaults because the repository does not pin a style file, so it rejected widespread pre-existing project style rather than isolating T13 defects|V16 compiler `-Werror` remains the semantic gate; repository-wide executable hygiene test enforces trailing-whitespace and final-newline invariants without inventing a formatter policy
+B22|2026-07-23|a detached-worktree verification wrapper assigned its exit code to zsh's read-only special parameter `status` after all 14 tests passed, preventing the cleanup command and returning a false failure|V16 shell hygiene rejects generic `status=` assignments; command wrappers use task-specific exit variable names
+B23|2026-07-23|the first production-validation note estimated the final quality JSON size instead of reading the published artifact; remote `stat` showed 3,777 rather than 4,437 bytes|V16 documentation contract pins the verified report size and SHA together

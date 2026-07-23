@@ -164,6 +164,7 @@ void test_cli() {
   auto status = parse({"evo2c", "-m", "model.evo2", "-p", "ACGT", "-n", "8",
                        "--ctx", "128", "--gpu", "0,1,2,3", "--temp", "0.8",
                        "--top-k", "32", "--top-p", "0.9", "--seed", "99",
+                       "--force-prompt-threshold", "3",
                        "--dump-tokens", "--dump-logits", "logits.npy", "--dump-layer",
                        "49:layer.npy"},
                       &options);
@@ -176,6 +177,8 @@ void test_cli() {
         "GPU and sampling CLI values are retained");
   check(options.dump_layer.has_value() && options.dump_layer->layer == 49,
         "debug layer CLI parses");
+  check(options.force_prompt_threshold == 3,
+        "teacher-forced prompt threshold CLI parses");
 
   status = parse({"evo2c", "-m", "model.evo2", "--score", "input.fa", "--gpu", "2"},
                  &options);
@@ -198,6 +201,18 @@ void test_cli() {
                  &options);
   check(!status.ok() && status.message().find("top-p") != std::string::npos,
         "invalid top-p is rejected");
+  status = parse({"evo2c", "-m", "a", "-p", "A", "-n", "1", "--gpu", "0",
+                  "--force-prompt-threshold", "0"},
+                 &options);
+  check(!status.ok() &&
+            status.message().find("force-prompt-threshold") != std::string::npos,
+        "zero teacher-forcing threshold is rejected");
+  status = parse({"evo2c", "-m", "a", "--score", "input.fa", "--gpu", "0",
+                  "--force-prompt-threshold", "3"},
+                 &options);
+  check(!status.ok() &&
+            status.message().find("only valid for generation") != std::string::npos,
+        "teacher-forcing threshold is rejected for score mode");
 }
 
 }  // namespace

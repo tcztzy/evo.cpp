@@ -27,6 +27,7 @@ struct CliOptions final {
   std::string score_path;
   std::size_t generated_tokens{0};
   std::size_t context_size{8192};
+  std::optional<std::size_t> force_prompt_threshold;
   std::vector<int> gpu_ids;
   SamplingConfig sampling;
   bool dump_tokens{false};

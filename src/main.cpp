@@ -11,11 +11,13 @@
 #include "evo2c/tokenizer.hpp"
 #include "evo2c/version.hpp"
 
+#if defined(EVO2C_HAS_CUDA)
+#include "evo2c/cuda/inference_cli.hpp"
+#endif
+
 namespace {
 
-void print_help() {
-  std::cout << evo2c::cli_usage();
-}
+void print_help() { std::cout << evo2c::cli_usage(); }
 
 void dump_tokens(const std::string_view label, const std::string_view bytes) {
   const auto tokens = evo2c::encode_bytes(bytes);
@@ -29,15 +31,15 @@ void dump_tokens(const std::string_view label, const std::string_view bytes) {
   std::cerr << "]\n";
 }
 
-int fail(const evo2c::Status& status) {
+int fail(const evo2c::Status &status) {
   std::cerr << "evo2c: " << evo2c::error_code_name(status.code()) << ": "
             << status.message() << '\n';
   return evo2c::exit_code(status.code());
 }
 
-}  // namespace
+} // namespace
 
-int main(const int argc, char** argv) {
+int main(const int argc, char **argv) {
   try {
     if (argc == 2) {
       const std::string_view arg{argv[1]};
@@ -59,7 +61,8 @@ int main(const int argc, char** argv) {
 
     if (options.mode == evo2c::RunMode::kGenerate) {
       if (options.prompt.size() > options.context_size ||
-          options.generated_tokens > options.context_size - options.prompt.size()) {
+          options.generated_tokens >
+              options.context_size - options.prompt.size()) {
         return fail({evo2c::ErrorCode::kInvalidArgument,
                      "prompt bytes plus generated tokens exceed --ctx"});
       }
@@ -72,22 +75,34 @@ int main(const int argc, char** argv) {
       if (!status.ok()) {
         return fail(status);
       }
-      for (const auto& record : records) {
+      for (const auto &record : records) {
         if (record.bytes.size() > options.context_size) {
           return fail({evo2c::ErrorCode::kInvalidArgument,
                        "score record '" + record.name + "' exceeds --ctx"});
         }
       }
       if (options.dump_tokens) {
-        for (const auto& record : records) {
+        for (const auto &record : records) {
           dump_tokens(record.name, record.bytes);
         }
       }
     }
 
-    return fail({evo2c::ErrorCode::kUnsupported,
-                 "model execution is not implemented yet; complete SPEC tasks T5-T13"});
-  } catch (const std::exception& error) {
+#if defined(EVO2C_HAS_CUDA)
+#if defined(EVO2C_ALLOW_TEST_FIXTURE)
+    constexpr bool allow_test_fixture = true;
+#else
+    constexpr bool allow_test_fixture = false;
+#endif
+    status = evo2c::cuda::run_inference_cli(options, allow_test_fixture);
+    return status.ok() ? 0 : fail(status);
+#else
+    return fail(
+        {evo2c::ErrorCode::kUnsupported,
+         "this evo2c binary was built without CUDA support; rebuild with "
+         "-DEVO2C_CUDA=ON"});
+#endif
+  } catch (const std::exception &error) {
     return fail({evo2c::ErrorCode::kInternal, error.what()});
   } catch (...) {
     return fail({evo2c::ErrorCode::kInternal, "unknown exception"});

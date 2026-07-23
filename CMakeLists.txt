@@ -105,6 +105,10 @@ if(EVO2C_CUDA)
     target_compile_options(evo2c_cuda PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Werror>)
   endif()
 
+  target_sources(evo2c PRIVATE src/cuda/inference_cli.cpp)
+  target_link_libraries(evo2c PRIVATE evo2c_cuda)
+  target_compile_definitions(evo2c PRIVATE EVO2C_HAS_CUDA=1)
+
   add_executable(evo2c-cuda-smoke src/cuda/smoke.cu)
   target_link_libraries(
     evo2c-cuda-smoke
@@ -197,6 +201,16 @@ if(EVO2C_CUDA)
       target_compile_options(
         evo2c-cuda-pipeline-tests PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Werror>)
     endif()
+
+    add_executable(
+      evo2c-cuda-cli-test-bin
+      src/main.cpp
+      src/cuda/inference_cli.cpp)
+    target_link_libraries(evo2c-cuda-cli-test-bin PRIVATE evo2c_cuda)
+    target_compile_definitions(
+      evo2c-cuda-cli-test-bin
+      PRIVATE EVO2C_HAS_CUDA=1 EVO2C_ALLOW_TEST_FIXTURE=1)
+    evo2c_configure_target(evo2c-cuda-cli-test-bin)
   endif()
 endif()
 
@@ -269,6 +283,23 @@ if(BUILD_TESTING)
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/runtime_dependencies.cmake)
 
   add_test(
+    NAME remote_scripts_contract
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_remote_scripts.py
+      --source-dir ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(
+    NAME quality_gate_resume
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_quality_gate.py
+      --quality-tool ${CMAKE_CURRENT_SOURCE_DIR}/tools/evo2_quality_gate.py
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/quality-gate)
+  add_test(
+    NAME source_hygiene
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_source_hygiene.py
+      --source-dir ${CMAKE_CURRENT_SOURCE_DIR})
+
+  add_test(
     NAME converter_roundtrip
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_converter.py
@@ -335,6 +366,13 @@ if(BUILD_TESTING)
         --binary $<TARGET_FILE:evo2c-cuda-pipeline-tests>
         --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_tiny_model.py
         --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/cuda_pipeline)
+    add_test(
+      NAME cuda_cli
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cuda_cli.py
+        --binary $<TARGET_FILE:evo2c-cuda-cli-test-bin>
+        --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_tiny_model.py
+        --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/cuda_cli)
     set_tests_properties(cuda_smoke PROPERTIES LABELS "gpu;cuda")
     set_tests_properties(cuda_ops PROPERTIES LABELS "gpu;cuda")
     set_tests_properties(fp8_sass PROPERTIES LABELS "gpu;cuda")
@@ -347,6 +385,12 @@ if(BUILD_TESTING)
         ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools")
     set_tests_properties(
       cuda_pipeline
+      PROPERTIES
+        LABELS "gpu;cuda;multi_gpu"
+        SKIP_RETURN_CODE 77
+        ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools")
+    set_tests_properties(
+      cuda_cli
       PROPERTIES
         LABELS "gpu;cuda;multi_gpu"
         SKIP_RETURN_CODE 77

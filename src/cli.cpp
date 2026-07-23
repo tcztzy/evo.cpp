@@ -100,6 +100,9 @@ std::string_view cli_usage() noexcept {
          "  --top-k K      Keep K logits; 0 disables, 1 is greedy (default: 1)\n"
          "  --top-p P      Nucleus probability in (0,1] (default: 1)\n"
          "  --seed N       Reproducible unsigned 64-bit seed (default: 0)\n\n"
+         "Prompt cache:\n"
+         "  --force-prompt-threshold N\n"
+         "                 Prefill N prompt bytes, then teacher-force the rest\n\n"
          "Debug:\n"
          "  --dump-tokens\n"
          "  --dump-logits PATH\n"
@@ -116,6 +119,7 @@ Status parse_cli(const int argc, char* const argv[], CliOptions* const options) 
   bool seen_score = false;
   bool seen_tokens = false;
   bool seen_context = false;
+  bool seen_force_prompt_threshold = false;
   bool seen_gpu = false;
   bool seen_temperature = false;
   bool seen_top_k = false;
@@ -165,6 +169,18 @@ Status parse_cli(const int argc, char* const argv[], CliOptions* const options) 
           options->context_size > 1'048'576) {
         return {ErrorCode::kInvalidArgument, "--ctx must be an integer in [1, 1048576]"};
       }
+    } else if (option == "--force-prompt-threshold") {
+      if (seen_force_prompt_threshold) return duplicate(option);
+      seen_force_prompt_threshold = true;
+      status = value_after(argc, argv, &index, option, &value);
+      if (!status.ok()) return status;
+      std::size_t threshold = 0;
+      if (!parse_unsigned(value, &threshold) || threshold == 0 ||
+          threshold > 1'048'576) {
+        return {ErrorCode::kInvalidArgument,
+                "--force-prompt-threshold must be an integer in [1, 1048576]"};
+      }
+      options->force_prompt_threshold = threshold;
     } else if (option == "--gpu") {
       if (seen_gpu) return duplicate(option);
       seen_gpu = true;
@@ -259,6 +275,10 @@ Status parse_cli(const int argc, char* const argv[], CliOptions* const options) 
     }
     if (seen_temperature || seen_top_k || seen_top_p || seen_seed) {
       return {ErrorCode::kInvalidArgument, "sampling options are only valid for generation"};
+    }
+    if (seen_force_prompt_threshold) {
+      return {ErrorCode::kInvalidArgument,
+              "--force-prompt-threshold is only valid for generation"};
     }
   }
   return validate_sampling_config(options->sampling);
