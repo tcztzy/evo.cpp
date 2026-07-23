@@ -234,7 +234,7 @@ class ModelConfig:
         for key, value in required_false.items():
             if value:
                 raise ConfigError(f"{key} must be false for Evo 2 40B checkpoint semantics")
-        if self.eps != 1e-6 or self.rotary_emb_base != 1e11 or self.rotary_emb_scaling_factor != 128:
+        if self.eps != 1e-6 or self.rotary_emb_base != 1e6 or self.rotary_emb_scaling_factor != 128:
             raise ConfigError("RMSNorm/RoPE constants do not match Evo 2 40B")
         exact_strings = {
             "tokenizer_type": (self.tokenizer_type, "CharLevelTokenizer"),

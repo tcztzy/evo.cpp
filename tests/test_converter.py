@@ -49,6 +49,7 @@ class ConverterTests(unittest.TestCase):
         manifest = checkpoint_manifest(config)
         counts = Counter(spec.dtype for spec in manifest)
 
+        self.assertEqual(config.rotary_emb_base, 1e6)
         self.assertEqual(len(manifest), EXPECTED_TENSOR_COUNT)
         self.assertEqual(counts, {"BF16": EXPECTED_BF16_TENSOR_COUNT, "F32": EXPECTED_F32_TENSOR_COUNT})
         self.assertEqual(sum(spec.nbytes for spec in manifest), EXPECTED_TENSOR_BYTES)
@@ -76,6 +77,15 @@ class ConverterTests(unittest.TestCase):
             path = Path(directory) / "bad-semantics.yml"
             path.write_text(changed, encoding="utf-8")
             with self.assertRaisesRegex(ConfigError, "hyena_flip_x1x2 must be false"):
+                load_config(path)
+
+        changed = CONFIG.read_text(encoding="utf-8").replace(
+            "rotary_emb_base: 1000000", "rotary_emb_base: 100000000000"
+        )
+        with tempfile.TemporaryDirectory(dir=WORK_DIR) as directory:
+            path = Path(directory) / "bad-rope.yml"
+            path.write_text(changed, encoding="utf-8")
+            with self.assertRaisesRegex(ConfigError, "RMSNorm/RoPE constants"):
                 load_config(path)
 
     def test_streaming_writer_roundtrips_through_native_inspector(self) -> None:

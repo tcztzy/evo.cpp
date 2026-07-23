@@ -30,7 +30,7 @@
 V1: ∀ model load → magic/version/endian/rank/dims/offset/alignment/size/checksum 验证先于 CUDA allocation；越界/溢出/重复 tensor → 拒绝。
 V2: `ldd build/evo2c` ⊥ torch/vortex/transformer-engine；SASS/PTX target `sm_80`；运行路径 ⊥ FP8 hardware instruction。
 V3: 40B topology ! `vocab=512,D=8192,L=50,H=64,head=128,state=16,MLP=22528`；layer sets ! 官方 14 HCS+14 HCM+14 HCL+8 MHA。
-V4: 数学语义 ! 官方 Vortex：RMSNorm denominator=`sqrt(mean(x²))+eps`；triplet interleave/`x2,x1,v` 顺序；HCS FIR=7、HCM FIR=128、HCL modal recurrence；layer0 MLP GELU、layer>0 identity；tied embed/unembed；interpolated RoPE base=`1e11`, scale=`128`。
+V4: 数学语义 ! 官方 Vortex：RMSNorm denominator=`sqrt(mean(x²))+eps`；triplet interleave/`x2,x1,v` 顺序；HCS FIR=7、HCM FIR=128、HCL modal recurrence；layer0 MLP GELU、layer>0 identity；tied embed/unembed；interpolated RoPE base=`1e6`, scale=`128`，并加载 checkpoint `inv_freq`。
 V5: HCL decode ! `s_t=exp(log_poles)*s_(t-1)+x1_t*v_t`; `y_t=x2_t*(sum(residues*s_t)+D*x1_t*v_t)`；state F32。
 V6: converter ∀ required tensor → name/shape/dtype validated；BF16 payload bit-exact；仅 TE `._extra_state`/documented training metadata ? skip；缺 tensor/未知 data tensor → fail。
 V7: tokenizer ! UTF-8 byte→same integer id；EOS=0、PAD=1、vocab=512；`--dump-tokens` 与 Vortex CharLevelTokenizer byte-exact。
@@ -67,3 +67,4 @@ T18|.|README：构建、转换、gpu02 运行、限制、复现命令；全套 C
 
 ## §B BUGS
 id|date|cause|fix
+B1|2026-07-23|40B config copied the obsolete pre-fix RoPE base `1e11`; official Vortex and checkpoint `inv_freq` use `1e6`|V4 + converter config drift test

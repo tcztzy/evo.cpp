@@ -18,7 +18,7 @@ num_attention_heads: 64
 short_filter_bias: false
 eps: 0.000001
 state_size: 16
-rotary_emb_base: 100000000000
+rotary_emb_base: 1000000
 rotary_emb_scaling_factor: 128
 use_interpolated_rotary_pos_emb: true
 inner_size_multiple_of: 128
