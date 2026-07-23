@@ -118,9 +118,10 @@ int requested_device() {
 
 int main(const int argc, char **argv) {
   try {
-    if (argc != 6) {
+    if (argc != 7) {
       std::cerr << "usage: test_cuda_model MODEL EXPECTED_LOGITS "
-                   "EXPECTED_DECODE EXPECTED_LAYER DUMP_PATH\n";
+                   "EXPECTED_DECODE EXPECTED_LAYER DUMP_PATH "
+                   "EXPECTED_CHUNKED\n";
       return 2;
     }
     const int device = requested_device();
@@ -148,7 +149,9 @@ int main(const int argc, char **argv) {
           "synthetic topology contains eight attention blocks");
 
     evo2c::cuda::SingleGpuModel model;
-    require(model.load(file, device, 8, true), "load single-GPU model");
+    require(model.load(file, device, 12, true), "load single-GPU model");
+    check(model.activation_capacity() == 8,
+          "test model exposes its fixed eight-token activation arena");
     std::vector<float> one_token_logits;
     require(model.prefill({1}, &one_token_logits), "one-token model prefill");
     check(
@@ -184,6 +187,28 @@ int main(const int argc, char **argv) {
           "synthetic decode logits cosine is at least 0.999");
     check(model.position() == prompt.size() + 1,
           "decode advances the model position");
+
+    const std::vector<evo2c::TokenId> long_prompt{
+        2, 5, 7, 3, 9, 11, 13, 17, 19};
+    const std::vector<evo2c::TokenId> initial_chunk(
+        long_prompt.begin(), long_prompt.begin() + 8);
+    std::vector<float> first_chunk;
+    std::vector<float> final_chunk;
+    require(model.prefill(initial_chunk, &first_chunk),
+            "eight-token initial model chunk");
+    require(model.prefill_chunk({long_prompt.back()}, &final_chunk),
+            "one-token continued model chunk");
+    const auto expected_chunked = read_f32(argv[6]);
+    const std::vector<float> expected_last(
+        expected_chunked.end() -
+            static_cast<std::ptrdiff_t>(config.vocab_size),
+        expected_chunked.end());
+    check(all_close(final_chunk, expected_last, 0.08F, 0.06F),
+          "chunked model final logits match full Python causal oracle");
+    check(cosine(final_chunk, expected_last) >= 0.999F,
+          "chunked model final-logit cosine is at least 0.999");
+    check(model.position() == long_prompt.size(),
+          "chunked model records the full logical position");
   } catch (const std::exception &error) {
     std::cerr << "FAIL: " << error.what() << '\n';
     return 1;

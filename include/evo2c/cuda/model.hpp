@@ -88,10 +88,13 @@ public:
   [[nodiscard]] Status prefill_with_dumps(const std::vector<TokenId> &tokens,
                                           std::vector<float> *logits,
                                           const std::vector<LayerDump> &dumps);
+  [[nodiscard]] Status prefill_chunk(const std::vector<TokenId> &tokens,
+                                     std::vector<float> *logits);
   [[nodiscard]] Status decode(TokenId token, std::vector<float> *logits);
 
   [[nodiscard]] const RuntimeModelConfig &config() const noexcept;
   [[nodiscard]] std::size_t position() const noexcept;
+  [[nodiscard]] std::size_t activation_capacity() const noexcept;
   [[nodiscard]] int device() const noexcept;
 
 private:
@@ -121,11 +124,14 @@ public:
   [[nodiscard]] Status prefill_with_dumps(const std::vector<TokenId> &tokens,
                                           std::vector<float> *logits,
                                           const std::vector<LayerDump> &dumps);
+  [[nodiscard]] Status prefill_chunk(const std::vector<TokenId> &tokens,
+                                     std::vector<float> *logits);
   [[nodiscard]] Status decode(TokenId token, std::vector<float> *logits);
 
   [[nodiscard]] const RuntimeModelConfig &config() const noexcept;
   [[nodiscard]] const std::vector<StageAssignment> &stages() const noexcept;
   [[nodiscard]] std::size_t position() const noexcept;
+  [[nodiscard]] std::size_t activation_capacity() const noexcept;
 
 private:
   struct Impl;

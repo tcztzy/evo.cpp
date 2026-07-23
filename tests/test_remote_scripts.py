@@ -26,6 +26,16 @@ def main() -> int:
         "transports it through the remote login shell"
     )
 
+    build = (
+        args.source_dir / "scripts" / "gpu02_build.sh"
+    ).read_text(encoding="utf-8")
+    configure_index = build.index('  -S "$source_dir"')
+    compile_index = build.index('  --build "$build_dir"')
+    assert configure_index < compile_index, (
+        "V16: the canonical build entrypoint must configure its build "
+        "directory before attempting to compile it"
+    )
+
     prepare = (
         args.source_dir / "scripts" / "gpu02_prepare_40b.sh"
     ).read_text(encoding="utf-8")

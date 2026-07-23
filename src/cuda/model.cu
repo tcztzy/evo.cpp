@@ -26,6 +26,8 @@ namespace evo2c::cuda {
 namespace {
 
 constexpr int kThreads = 256;
+constexpr std::size_t kMaximumArenaTokens = 8192;
+constexpr std::size_t kTestFixtureArenaTokens = 8;
 constexpr std::array<std::size_t, 14> kHcsLayers{0,  4,  7,  11, 14, 18, 21,
                                                  25, 28, 32, 36, 39, 43, 46};
 constexpr std::array<std::size_t, 14> kHcmLayers{1,  5,  8,  12, 15, 19, 22,
@@ -34,6 +36,7 @@ constexpr std::array<std::size_t, 14> kHclLayers{2,  6,  9,  13, 16, 20, 23,
                                                  27, 30, 34, 38, 41, 45, 48};
 constexpr std::array<std::size_t, 8> kAttentionLayers{3,  10, 17, 24,
                                                       31, 35, 42, 49};
+enum class ForwardMode { kPrefill, kContinue, kDecode };
 
 bool multiply(const std::size_t left, const std::size_t right,
               std::size_t *const result) {
@@ -557,6 +560,7 @@ struct SingleGpuModel::Impl final {
   RuntimeModelConfig config;
   int device{-1};
   std::size_t context_capacity{0};
+  std::size_t arena_capacity{0};
   std::size_t layer_offset{0};
   std::size_t position{0};
   bool loaded{false};
@@ -575,14 +579,14 @@ struct SingleGpuModel::Impl final {
     std::size_t sequence = 0;
     std::size_t triple_sequence = 0;
     std::size_t logits_elements = 0;
-    if (!multiply(context_capacity, config.width, &sequence) ||
+    if (!multiply(arena_capacity, config.width, &sequence) ||
         !multiply(sequence, 3, &triple_sequence) ||
-        !multiply(context_capacity, config.vocab_size, &logits_elements)) {
+        !multiply(arena_capacity, config.vocab_size, &logits_elements)) {
       return {ErrorCode::kInvalidArgument,
               "activation arena dimensions overflow"};
     }
     std::size_t token_bytes = 0;
-    if (!multiply(context_capacity, sizeof(TokenId), &token_bytes))
+    if (!multiply(arena_capacity, sizeof(TokenId), &token_bytes))
       return {ErrorCode::kInvalidArgument, "token arena dimensions overflow"};
     auto status = arena.token_ids.allocate(device, token_bytes);
     if (!status.ok())
@@ -609,7 +613,7 @@ struct SingleGpuModel::Impl final {
     status = arena.blas_workspace.allocate(device, kDefaultBlasWorkspaceBytes);
     if (!status.ok())
       return status;
-    return arena.mlp.allocate(device, context_capacity, config.inner_width);
+    return arena.mlp.allocate(device, arena_capacity, config.inner_width);
   }
 
   [[nodiscard]] Status load_common_layer(const ModelFile &model,
@@ -828,7 +832,7 @@ struct SingleGpuModel::Impl final {
   }
 
   [[nodiscard]] Status run_mixer(Layer *const layer, const std::size_t rows,
-                                 const bool prefill) {
+                                 const ForwardMode mode) {
     auto status =
         layer->software_fp8_projection
             ? software_e4m3_h100_linear(
@@ -863,8 +867,14 @@ struct SingleGpuModel::Impl final {
           arena.x2, rows, prefix, layer->kv_cache, &arena.mixer_output, stream);
     }
 
-    if (prefill) {
+    if (mode == ForwardMode::kPrefill) {
       status = bf16_fir_prefill_direct(
+          arena.projection, layer->short_filter, nullptr, rows,
+          config.width * 3, config.width * 3, config.short_filter_length,
+          FirOrientation::kCrossCorrelation, FirBiasMode::kAdd,
+          &arena.short_filtered, &layer->short_cache, stream);
+    } else if (mode == ForwardMode::kContinue) {
+      status = bf16_fir_continue_direct(
           arena.projection, layer->short_filter, nullptr, rows,
           config.width * 3, config.width * 3, config.short_filter_length,
           FirOrientation::kCrossCorrelation, FirBiasMode::kAdd,
@@ -884,44 +894,68 @@ struct SingleGpuModel::Impl final {
     if (!status.ok())
       return status;
     if (layer->type == MixerType::kHcs) {
-      return prefill ? bf16_hcs_prefill(
-                           arena.x2, arena.x1, arena.value, layer->inner_filter,
-                           rows, config.width, config.hcs_filter_groups,
-                           config.hcs_filter_length, &layer->inner_cache,
-                           &arena.mixer_scratch, &arena.mixer_output, stream)
-                     : bf16_hcs_decode(
-                           arena.x2, arena.x1, arena.value, layer->inner_filter,
-                           config.width, config.hcs_filter_groups,
-                           config.hcs_filter_length, &layer->inner_cache,
-                           &arena.mixer_scratch, &arena.mixer_output, stream);
+      if (mode == ForwardMode::kPrefill) {
+        return bf16_hcs_prefill(
+            arena.x2, arena.x1, arena.value, layer->inner_filter, rows,
+            config.width, config.hcs_filter_groups, config.hcs_filter_length,
+            &layer->inner_cache, &arena.mixer_scratch, &arena.mixer_output,
+            stream);
+      }
+      if (mode == ForwardMode::kContinue) {
+        return bf16_hcs_continue(
+            arena.x2, arena.x1, arena.value, layer->inner_filter, rows,
+            config.width, config.hcs_filter_groups, config.hcs_filter_length,
+            &layer->inner_cache, &arena.mixer_scratch, &arena.mixer_output,
+            stream);
+      }
+      return bf16_hcs_decode(
+          arena.x2, arena.x1, arena.value, layer->inner_filter, config.width,
+          config.hcs_filter_groups, config.hcs_filter_length,
+          &layer->inner_cache, &arena.mixer_scratch, &arena.mixer_output,
+          stream);
     }
     if (layer->type == MixerType::kHcm) {
-      return prefill
-                 ? bf16_hcm_prefill(arena.x2, arena.x1, arena.value,
-                                    layer->inner_filter, layer->direct, rows,
-                                    config.width, config.hcm_filter_groups,
-                                    config.hcm_filter_length,
-                                    &layer->inner_cache, &arena.mixer_scratch,
-                                    &arena.mixer_output, &hcm_fft, stream)
-                 : bf16_hcm_decode(
-                       arena.x2, arena.x1, arena.value, layer->inner_filter,
-                       layer->direct, config.width, config.hcm_filter_groups,
-                       config.hcm_filter_length, &layer->inner_cache,
-                       &arena.mixer_scratch, &arena.mixer_output, stream);
+      if (mode == ForwardMode::kPrefill) {
+        return bf16_hcm_prefill(
+            arena.x2, arena.x1, arena.value, layer->inner_filter,
+            layer->direct, rows, config.width, config.hcm_filter_groups,
+            config.hcm_filter_length, &layer->inner_cache,
+            &arena.mixer_scratch, &arena.mixer_output, &hcm_fft, stream);
+      }
+      if (mode == ForwardMode::kContinue) {
+        return bf16_hcm_continue(
+            arena.x2, arena.x1, arena.value, layer->inner_filter,
+            layer->direct, rows, config.width, config.hcm_filter_groups,
+            config.hcm_filter_length, &layer->inner_cache,
+            &arena.mixer_scratch, &arena.mixer_output, stream);
+      }
+      return bf16_hcm_decode(
+          arena.x2, arena.x1, arena.value, layer->inner_filter, layer->direct,
+          config.width, config.hcm_filter_groups, config.hcm_filter_length,
+          &layer->inner_cache, &arena.mixer_scratch, &arena.mixer_output,
+          stream);
+    }
+    if (mode == ForwardMode::kContinue) {
+      return bf16_hcl_prefill(
+          arena.x2, arena.x1, arena.value, layer->direct, layer->log_poles,
+          layer->residues, rows, config.width, config.state_size,
+          HclPrefillMode::kRecurrenceContinue, &layer->iir_cache,
+          &arena.mixer_scratch, &arena.mixer_output, nullptr, stream);
     }
     const auto hcl_mode =
         rows == 1 ? HclPrefillMode::kRecurrence : HclPrefillMode::kFft;
-    return prefill ? bf16_hcl_prefill(
-                         arena.x2, arena.x1, arena.value, layer->direct,
-                         layer->log_poles, layer->residues, rows, config.width,
-                         config.state_size, hcl_mode, &layer->iir_cache,
-                         &arena.mixer_scratch, &arena.mixer_output,
-                         rows == 1 ? nullptr : &hcl_fft, stream)
-                   : bf16_hcl_decode(arena.x2, arena.x1, arena.value,
-                                     layer->direct, layer->log_poles,
-                                     layer->residues, config.width,
-                                     config.state_size, &layer->iir_cache,
-                                     &arena.mixer_output, stream);
+    return mode == ForwardMode::kPrefill
+               ? bf16_hcl_prefill(
+                     arena.x2, arena.x1, arena.value, layer->direct,
+                     layer->log_poles, layer->residues, rows, config.width,
+                     config.state_size, hcl_mode, &layer->iir_cache,
+                     &arena.mixer_scratch, &arena.mixer_output,
+                     rows == 1 ? nullptr : &hcl_fft, stream)
+               : bf16_hcl_decode(
+                     arena.x2, arena.x1, arena.value, layer->direct,
+                     layer->log_poles, layer->residues, config.width,
+                     config.state_size, &layer->iir_cache,
+                     &arena.mixer_output, stream);
   }
 
   [[nodiscard]] Status dump_buffer(const DeviceBuffer &buffer,
@@ -957,7 +991,8 @@ struct SingleGpuModel::Impl final {
     return Status::Ok();
   }
 
-  [[nodiscard]] Status run_blocks(const std::size_t rows, const bool prefill,
+  [[nodiscard]] Status run_blocks(const std::size_t rows,
+                                  const ForwardMode mode,
                                   const std::vector<LayerDump> &dumps = {}) {
     auto status = Status::Ok();
     for (std::size_t local_index = 0; local_index < layers.size();
@@ -972,7 +1007,7 @@ struct SingleGpuModel::Impl final {
                              arena.normalized, rows, config.width);
       if (!status.ok())
         break;
-      status = run_mixer(&layer, rows, prefill);
+      status = run_mixer(&layer, rows, mode);
       if (!status.ok())
         break;
       status = dump_matching(dumps, index, LayerDumpPoint::kMixerOutput,
@@ -1027,22 +1062,24 @@ struct SingleGpuModel::Impl final {
   }
 
   [[nodiscard]] Status forward(const std::vector<TokenId> &tokens,
-                               const bool prefill,
+                               const ForwardMode mode,
                                std::vector<float> *const logits,
                                const std::vector<LayerDump> &dumps) {
     if (!loaded || logits == nullptr || tokens.empty() ||
-        tokens.size() > context_capacity) {
+        tokens.size() > arena_capacity) {
       return {ErrorCode::kInvalidArgument,
               "model forward arguments are invalid"};
     }
-    if (prefill) {
+    if (mode == ForwardMode::kPrefill) {
       auto status = prepare_prefill(tokens.size());
       if (!status.ok())
         return status;
-    } else if (!state_valid || tokens.size() != 1 ||
-               position >= context_capacity) {
+    } else if (!state_valid || position > context_capacity ||
+               tokens.size() > context_capacity - position ||
+               (mode == ForwardMode::kDecode && tokens.size() != 1)) {
       return {ErrorCode::kInvalidArgument,
-              "decode requires a valid prefill and free context capacity"};
+              "continuation requires a valid prefill and free context "
+              "capacity"};
     }
     for (const auto &dump : dumps) {
       if (dump.layer >= config.layers || dump.path.empty() ||
@@ -1056,7 +1093,7 @@ struct SingleGpuModel::Impl final {
       return status;
     }
     const std::size_t rows = tokens.size();
-    status = run_blocks(rows, prefill, dumps);
+    status = run_blocks(rows, mode, dumps);
     if (!status.ok()) {
       state_valid = false;
       return status;
@@ -1085,7 +1122,7 @@ struct SingleGpuModel::Impl final {
     logits->reserve(raw.size());
     for (const auto value : raw)
       logits->push_back(__bfloat162float(value));
-    position = prefill ? rows : position + 1;
+    position = mode == ForwardMode::kPrefill ? rows : position + rows;
     state_valid = true;
     return Status::Ok();
   }
@@ -1108,6 +1145,9 @@ Status SingleGpuModel::load(const ModelFile &model, const int device,
     return status;
   impl_->device = device;
   impl_->context_capacity = context_capacity;
+  impl_->arena_capacity = std::min(
+      context_capacity, impl_->config.test_fixture ? kTestFixtureArenaTokens
+                                                  : kMaximumArenaTokens);
   status = select_device(device);
   if (!status.ok())
     return status;
@@ -1156,18 +1196,24 @@ Status SingleGpuModel::prefill(const std::vector<TokenId> &tokens,
   std::vector<LayerDump> dumps;
   if (dump.has_value())
     dumps.push_back(*dump);
-  return impl_->forward(tokens, true, logits, dumps);
+  return impl_->forward(tokens, ForwardMode::kPrefill, logits, dumps);
 }
 
 Status SingleGpuModel::prefill_with_dumps(const std::vector<TokenId> &tokens,
                                           std::vector<float> *const logits,
                                           const std::vector<LayerDump> &dumps) {
-  return impl_->forward(tokens, true, logits, dumps);
+  return impl_->forward(tokens, ForwardMode::kPrefill, logits, dumps);
+}
+
+Status SingleGpuModel::prefill_chunk(const std::vector<TokenId> &tokens,
+                                     std::vector<float> *const logits) {
+  return impl_->forward(tokens, ForwardMode::kContinue, logits, {});
 }
 
 Status SingleGpuModel::decode(const TokenId token,
                               std::vector<float> *const logits) {
-  return impl_->forward(std::vector<TokenId>{token}, false, logits, {});
+  return impl_->forward(std::vector<TokenId>{token}, ForwardMode::kDecode,
+                        logits, {});
 }
 
 const RuntimeModelConfig &SingleGpuModel::config() const noexcept {
@@ -1177,11 +1223,15 @@ const RuntimeModelConfig &SingleGpuModel::config() const noexcept {
 std::size_t SingleGpuModel::position() const noexcept {
   return impl_->position;
 }
+std::size_t SingleGpuModel::activation_capacity() const noexcept {
+  return impl_->arena_capacity;
+}
 int SingleGpuModel::device() const noexcept { return impl_->device; }
 
 struct PipelineModel::Impl final {
   RuntimeModelConfig config;
   std::size_t context_capacity{0};
+  std::size_t arena_capacity{0};
   std::size_t position{0};
   bool loaded{false};
   bool state_valid{false};
@@ -1232,15 +1282,15 @@ struct PipelineModel::Impl final {
   }
 
   [[nodiscard]] Status forward(const std::vector<TokenId> &tokens,
-                               const bool prefill,
+                               const ForwardMode mode,
                                std::vector<float> *const logits,
                                const std::vector<LayerDump> &dumps) {
     if (!loaded || logits == nullptr || tokens.empty() ||
-        tokens.size() > context_capacity) {
+        tokens.size() > arena_capacity) {
       return {ErrorCode::kInvalidArgument,
               "pipeline model forward arguments are invalid"};
     }
-    if (prefill) {
+    if (mode == ForwardMode::kPrefill) {
       position = 0;
       state_valid = false;
       for (auto &stage : stages) {
@@ -1250,11 +1300,12 @@ struct PipelineModel::Impl final {
                                      std::to_string(stage->device) + ": " +
                                      status.message()};
       }
-    } else if (!state_valid || tokens.size() != 1 ||
-               position >= context_capacity) {
+    } else if (!state_valid || position > context_capacity ||
+               tokens.size() > context_capacity - position ||
+               (mode == ForwardMode::kDecode && tokens.size() != 1)) {
       return {ErrorCode::kInvalidArgument,
-              "pipeline decode requires a valid prefill and free context "
-              "capacity"};
+              "pipeline continuation requires a valid prefill and free "
+              "context capacity"};
     }
     for (const auto &dump : dumps) {
       if (dump.layer >= config.layers || dump.path.empty() ||
@@ -1277,7 +1328,7 @@ struct PipelineModel::Impl final {
         if (!status.ok())
           break;
       }
-      status = stages[stage_index]->run_blocks(rows, prefill, dumps);
+      status = stages[stage_index]->run_blocks(rows, mode, dumps);
       if (!status.ok()) {
         status = {status.code(),
                   "pipeline stage " + std::to_string(stage_index) + " [" +
@@ -1322,7 +1373,7 @@ struct PipelineModel::Impl final {
     logits->reserve(raw.size());
     for (const auto value : raw)
       logits->push_back(__bfloat162float(value));
-    position = prefill ? rows : position + 1;
+    position = mode == ForwardMode::kPrefill ? rows : position + rows;
     state_valid = true;
     return Status::Ok();
   }
@@ -1354,6 +1405,10 @@ Status PipelineModel::load(const ModelFile &model,
   if (!status.ok())
     return status;
   candidate->context_capacity = context_capacity;
+  candidate->arena_capacity = std::min(
+      context_capacity, candidate->config.test_fixture
+                            ? kTestFixtureArenaTokens
+                            : kMaximumArenaTokens);
   const std::size_t stage_count = devices.size();
   const std::size_t base_layers = candidate->config.layers / stage_count;
   const std::size_t extra_layers = candidate->config.layers % stage_count;
@@ -1370,6 +1425,7 @@ Status PipelineModel::load(const ModelFile &model,
     stage->config = candidate->config;
     stage->device = devices[index];
     stage->context_capacity = context_capacity;
+    stage->arena_capacity = candidate->arena_capacity;
     stage->layer_offset = layer_begin;
     status = select_device(stage->device);
     if (!status.ok())
@@ -1470,18 +1526,24 @@ Status PipelineModel::prefill(const std::vector<TokenId> &tokens,
   std::vector<LayerDump> dumps;
   if (dump.has_value())
     dumps.push_back(*dump);
-  return impl_->forward(tokens, true, logits, dumps);
+  return impl_->forward(tokens, ForwardMode::kPrefill, logits, dumps);
 }
 
 Status PipelineModel::prefill_with_dumps(const std::vector<TokenId> &tokens,
                                          std::vector<float> *const logits,
                                          const std::vector<LayerDump> &dumps) {
-  return impl_->forward(tokens, true, logits, dumps);
+  return impl_->forward(tokens, ForwardMode::kPrefill, logits, dumps);
+}
+
+Status PipelineModel::prefill_chunk(const std::vector<TokenId> &tokens,
+                                    std::vector<float> *const logits) {
+  return impl_->forward(tokens, ForwardMode::kContinue, logits, {});
 }
 
 Status PipelineModel::decode(const TokenId token,
                              std::vector<float> *const logits) {
-  return impl_->forward(std::vector<TokenId>{token}, false, logits, {});
+  return impl_->forward(std::vector<TokenId>{token}, ForwardMode::kDecode,
+                        logits, {});
 }
 
 const RuntimeModelConfig &PipelineModel::config() const noexcept {
@@ -1493,5 +1555,9 @@ const std::vector<StageAssignment> &PipelineModel::stages() const noexcept {
 }
 
 std::size_t PipelineModel::position() const noexcept { return impl_->position; }
+
+std::size_t PipelineModel::activation_capacity() const noexcept {
+  return impl_->arena_capacity;
+}
 
 } // namespace evo2c::cuda

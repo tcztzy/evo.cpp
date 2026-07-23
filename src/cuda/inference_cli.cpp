@@ -281,20 +281,82 @@ void print_score_record(const SequenceRecord &record,
   std::cout << "]}\n";
 }
 
+Status prefill_in_chunks(const std::vector<TokenId> &tokens,
+                         const std::size_t token_count,
+                         const std::optional<LayerDump> &dump,
+                         const bool collect_all_logits,
+                         PipelineModel *const model,
+                         std::vector<float> *const logits,
+                         Metrics *const metrics) {
+  if (model == nullptr || logits == nullptr || metrics == nullptr ||
+      token_count == 0 || token_count > tokens.size() ||
+      model->activation_capacity() == 0) {
+    return {ErrorCode::kInvalidArgument,
+            "chunked prefill arguments are invalid"};
+  }
+  const std::size_t chunk_capacity = model->activation_capacity();
+  if (dump.has_value() && token_count > chunk_capacity) {
+    return {ErrorCode::kInvalidArgument,
+            "--dump-layer is unavailable when prefill spans multiple "
+            "activation chunks"};
+  }
+  const std::size_t vocab_size = model->config().vocab_size;
+  if (collect_all_logits &&
+      (vocab_size == 0 ||
+       token_count > std::numeric_limits<std::size_t>::max() / vocab_size)) {
+    return {ErrorCode::kInvalidArgument,
+            "chunked prefill logit dimensions overflow"};
+  }
+
+  logits->clear();
+  if (collect_all_logits) {
+    logits->reserve(token_count * vocab_size);
+  }
+  std::size_t offset = 0;
+  bool first = true;
+  while (offset < token_count) {
+    const std::size_t chunk_size =
+        std::min(chunk_capacity, token_count - offset);
+    const std::vector<TokenId> chunk(
+        tokens.begin() + static_cast<std::ptrdiff_t>(offset),
+        tokens.begin() + static_cast<std::ptrdiff_t>(offset + chunk_size));
+    std::vector<float> chunk_logits;
+    const auto start = Clock::now();
+    const auto status =
+        first ? model->prefill(chunk, &chunk_logits, dump)
+              : model->prefill_chunk(chunk, &chunk_logits);
+    metrics->prefill_seconds += seconds_since(start);
+    metrics->prefill_tokens += chunk_size;
+    if (!status.ok()) {
+      return {status.code(), "activation chunk at token " +
+                                 std::to_string(offset) + ": " +
+                                 status.message()};
+    }
+    if (chunk_logits.size() != chunk_size * vocab_size) {
+      return {ErrorCode::kInternal,
+              "chunked prefill returned an incomplete logit matrix"};
+    }
+    if (collect_all_logits) {
+      logits->insert(logits->end(), chunk_logits.begin(), chunk_logits.end());
+    } else {
+      *logits = std::move(chunk_logits);
+    }
+    offset += chunk_size;
+    first = false;
+  }
+  return Status::Ok();
+}
+
 Status run_generate(const CliOptions &options, PipelineModel *const model,
                     MemoryTracker *const memory, Metrics *const metrics) {
   const auto prompt = encode_bytes(options.prompt);
   const std::size_t prefill_tokens =
       std::min(prompt.size(),
                options.force_prompt_threshold.value_or(prompt.size()));
-  const std::vector<TokenId> prefill_prompt(prompt.begin(),
-                                            prompt.begin() + prefill_tokens);
   std::vector<float> logits;
-  const auto prefill_start = Clock::now();
-  auto status =
-      model->prefill(prefill_prompt, &logits, make_layer_dump(options));
-  metrics->prefill_seconds += seconds_since(prefill_start);
-  metrics->prefill_tokens += prefill_tokens;
+  auto status = prefill_in_chunks(prompt, prefill_tokens,
+                                  make_layer_dump(options), false, model,
+                                  &logits, metrics);
   if (!status.ok()) {
     return {status.code(), "prompt prefill: " + status.message()};
   }
@@ -305,10 +367,11 @@ Status run_generate(const CliOptions &options, PipelineModel *const model,
 
   const std::size_t vocab_size = model->config().vocab_size;
   if (vocab_size != kTokenizerVocabSize ||
-      logits.size() != prefill_tokens * vocab_size) {
+      logits.size() < vocab_size ||
+      logits.size() % vocab_size != 0) {
     return {ErrorCode::kModelFormat,
-            "generation requires a 512-token vocabulary and complete "
-            "prefill logits"};
+            "generation requires a 512-token vocabulary and complete final "
+            "prefill-chunk logits"};
   }
   std::vector<float> current(
       logits.end() - static_cast<std::ptrdiff_t>(vocab_size), logits.end());
@@ -414,10 +477,8 @@ Status run_score(const CliOptions &options, PipelineModel *const model,
                   "' must contain at least two bytes"};
     }
     std::vector<float> logits;
-    const auto prefill_start = Clock::now();
-    status = model->prefill(tokens, &logits, make_layer_dump(options));
-    metrics->prefill_seconds += seconds_since(prefill_start);
-    metrics->prefill_tokens += tokens.size();
+    status = prefill_in_chunks(tokens, tokens.size(), make_layer_dump(options),
+                               true, model, &logits, metrics);
     if (!status.ok()) {
       return {status.code(),
               "score prefill for '" + record.name + "': " + status.message()};

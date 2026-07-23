@@ -30,16 +30,20 @@ Grouped HCS/HCM filters use the checkpoint's `repeat_interleave` mapping: each
 stored filter owns a contiguous group of channels. FIR decode caches are F32
 `[width, kernel-1]` arrays in chronological order, while HCL modal caches are
 F32 `[width, state_size]`. HCM prefill and the parallel HCL prefill path use
-zero-padded cuFFT convolution; both populate the same caches consumed by the
-single-token decode kernels. HCL also has a low-memory direct-recurrence prefill
-path with identical state semantics.
+zero-padded cuFFT convolution; both populate the same caches consumed by later
+chunks and single-token decode. A continuation chunk applies direct FIR against
+the retained chronological prefix and then advances that cache. HCL
+continuation runs the modal recurrence from its existing F32 state without
+zeroing it.
 
 CUDA attention stores RoPE-transformed keys and raw values in contiguous BF16
-`[capacity, heads, head_dim]` caches. Chunked prefill uses the existing cache
-length as both its causal prefix and RoPE position offset. Each query/head block
-updates an F32 running maximum, normalizer, and value accumulator, so no
-sequence-by-sequence score matrix is allocated. Single-token decode calls the
-same online-softmax kernel against the populated cache.
+`[capacity, heads, head_dim]` caches. The activation arena is capped separately
+from context capacity, so the CLI feeds prompts in bounded chunks. Chunked
+prefill uses the existing cache length as both its causal prefix and RoPE
+position offset. Each query/head block updates an F32 running maximum,
+normalizer, and value accumulator, so no sequence-by-sequence score matrix is
+allocated. Single-token decode calls the same online-softmax kernel against the
+populated cache.
 
 The 42 Hyena input projections use fixed Transformer Engine 2.3 E4M3FN
 inference scales and H100 QGMMA K=32 global-alignment semantics. Their Ampere

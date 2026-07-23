@@ -27,6 +27,7 @@ HCM_GROUPS = 2
 EPSILON = 1e-6
 ROPE_SCALE = 128.0
 PROMPT = [2, 5, 7, 3]
+CHUNKED_PROMPT = [2, 5, 7, 3, 9, 11, 13, 17, 19]
 DECODE_TOKEN = 9
 DUMP_LAYER = 17
 HCS = [0, 4, 7, 11, 14, 18, 21, 25, 28, 32, 36, 39, 43, 46]
@@ -429,6 +430,7 @@ def main() -> int:
     parser.add_argument("--expected-logits", required=True, type=Path)
     parser.add_argument("--expected-decode", required=True, type=Path)
     parser.add_argument("--expected-layer", required=True, type=Path)
+    parser.add_argument("--expected-chunked", type=Path)
     args = parser.parse_args()
     model = TinyModel()
     logits, layer = model.forward(PROMPT, prefill=True)
@@ -465,6 +467,10 @@ def main() -> int:
     write_f32(args.expected_logits, logits)
     write_f32(args.expected_decode, decode)
     write_f32(args.expected_layer, layer)
+    if args.expected_chunked is not None:
+        chunked_oracle = TinyModel()
+        chunked_logits, _ = chunked_oracle.forward(CHUNKED_PROMPT, prefill=True)
+        write_f32(args.expected_chunked, chunked_logits)
     return 0
 
 

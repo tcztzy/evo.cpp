@@ -64,9 +64,10 @@ T12|x|生成 7B/40B Python BF16 与可得官方 FP8/NIM vectors；逐算子→�
 T13|x|gpu02 跑 40B ctx=8192 score+greedy generation；修正质量；达成显存/确定性/官方 prompt gates|V10,V11,V13,V15,V16,V19,I.cli,I.score
 T14|x|若纯 BF16 未过 V13，实现 software E4M3 projection cast/scale 与 checkpoint FP8 metadata 提取|V2,V6,V13,V17,I.model
 T15|x|优化 software-QGMMA padded tiling与四卡 stage 并发加载；输出前后基准，无正确性回退|V9,V10,V11,V16,V17
-T16|.|实现 paged Q8 KV + chunked prefill；依次验证 ctx=32768/131072|V10,V13,V14,V16
-T17|.|评估 1M context：显存/host-offload/耗时；可行则 smoke，否→量化瓶颈与硬件下限报告|V13,V14,V16
-T18|.|README：构建、转换、gpu02 运行、限制、复现命令；全套 CPU+GPU regression|V12,V16,I.build,I.convert,I.cli,I.remote
+T16|x|固定 8192-token activation arena + state-preserving chunked prefill；真实 40B 验证 ctx=32768 且跨块|V10,V13,V14,V16
+T17|.|实现 paged Q8 KV、量化 attention 数值门；真实 40B 验证 ctx=131072|V9,V10,V14,V16
+T18|.|评估 1M context：显存/attention 计算量/host-offload；可行则 smoke，否→瓶颈与硬件下限报告|V13,V14,V16
+T19|.|README：构建、转换、gpu02 运行、限制、复现命令；全套 CPU+GPU regression|V12,V16,I.build,I.convert,I.cli,I.remote
 
 ## §B BUGS
 id|date|cause|fix
@@ -93,3 +94,5 @@ B20|2026-07-23|the first quality-report provenance test hand-copied the wrong SH
 B21|2026-07-23|an ad-hoc `clang-format --dry-run` used LLVM defaults because the repository does not pin a style file, so it rejected widespread pre-existing project style rather than isolating T13 defects|V16 compiler `-Werror` remains the semantic gate; repository-wide executable hygiene test enforces trailing-whitespace and final-newline invariants without inventing a formatter policy
 B22|2026-07-23|a detached-worktree verification wrapper assigned its exit code to zsh's read-only special parameter `status` after all 14 tests passed, preventing the cleanup command and returning a false failure|V16 shell hygiene rejects generic `status=` assignments; command wrappers use task-specific exit variable names
 B23|2026-07-23|the first production-validation note estimated the final quality JSON size instead of reading the published artifact; remote `stat` showed 3,777 rather than 4,437 bytes|V16 documentation contract pins the verified report size and SHA together
+B24|2026-07-23|an ad-hoc local verification attempted `cmake --build build-release` without first discovering or configuring that directory, producing a false build failure before any source was compiled|V16 canonical build entrypoint always runs configure before build; remote script contract asserts this ordering
+B25|2026-07-23|a read-only gpu02 progress probe placed awk `$2` inside a double-quoted remote command, so the login shell expanded the field variable before awk parsed it and the probe failed while the detached inference remained healthy|V16 shell hygiene requires awk programs with field variables to be single-quoted; structured `nvidia-smi --query-*` probes are preferred

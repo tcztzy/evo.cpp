@@ -108,9 +108,10 @@ float cosine(const std::vector<float> &left, const std::vector<float> &right) {
 
 int main(const int argc, char **argv) {
   try {
-    if (argc != 6) {
+    if (argc != 7) {
       std::cerr << "usage: test_cuda_pipeline MODEL EXPECTED_LOGITS "
-                   "EXPECTED_DECODE EXPECTED_LAYER DUMP_PATH\n";
+                   "EXPECTED_DECODE EXPECTED_LAYER DUMP_PATH "
+                   "EXPECTED_CHUNKED\n";
       return 2;
     }
     int device_count = 0;
@@ -127,8 +128,10 @@ int main(const int argc, char **argv) {
     evo2c::cuda::PipelineModel model;
     check(!model.load(file, {0, 0, 1, 2}, 8, true).ok(),
           "pipeline rejects duplicate CUDA devices");
-    require(model.load(file, {0, 1, 2, 3}, 8, true),
+    require(model.load(file, {0, 1, 2, 3}, 12, true),
             "load four-GPU pipeline model");
+    check(model.activation_capacity() == 8,
+          "pipeline exposes its fixed eight-token activation arena");
 
     const auto &stages = model.stages();
     const std::vector<evo2c::cuda::StageAssignment> expected_stages{
@@ -208,6 +211,28 @@ int main(const int argc, char **argv) {
           "pipeline decode cosine is at least 0.999");
     check(model.position() == prompt.size() + 1,
           "pipeline decode advances position");
+
+    const std::vector<evo2c::TokenId> long_prompt{
+        2, 5, 7, 3, 9, 11, 13, 17, 19};
+    const std::vector<evo2c::TokenId> initial_chunk(
+        long_prompt.begin(), long_prompt.begin() + 8);
+    std::vector<float> first_chunk;
+    std::vector<float> final_chunk;
+    require(model.prefill(initial_chunk, &first_chunk),
+            "eight-token initial pipeline chunk");
+    require(model.prefill_chunk({long_prompt.back()}, &final_chunk),
+            "one-token continued pipeline chunk");
+    const auto expected_chunked = read_f32(argv[6]);
+    const std::vector<float> expected_last(
+        expected_chunked.end() -
+            static_cast<std::ptrdiff_t>(model.config().vocab_size),
+        expected_chunked.end());
+    check(all_close(final_chunk, expected_last, 0.08F, 0.06F),
+          "chunked pipeline final logits match full Python causal oracle");
+    check(cosine(final_chunk, expected_last) >= 0.999F,
+          "chunked pipeline final-logit cosine is at least 0.999");
+    check(model.position() == long_prompt.size(),
+          "chunked pipeline records the full logical position");
   } catch (const std::exception &error) {
     std::cerr << "FAIL: " << error.what() << '\n';
     return 1;

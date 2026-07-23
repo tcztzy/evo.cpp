@@ -12,7 +12,7 @@ namespace evo2c::cuda {
 
 enum class FirOrientation { kCrossCorrelation, kCausalConvolution };
 enum class FirBiasMode { kAdd, kMultiplyInput };
-enum class HclPrefillMode { kRecurrence, kFft };
+enum class HclPrefillMode { kRecurrence, kFft, kRecurrenceContinue };
 
 // F32 chronological state [channels,kernel_size-1]. Short sequences are
 // left-zero-padded, so the newest value is always in the final column.
@@ -115,6 +115,16 @@ bf16_fir_prefill_direct(const DeviceBuffer &input, const DeviceBuffer &weight,
                         FirBiasMode bias_mode, DeviceBuffer *output,
                         FirCache *cache, const Stream &stream);
 
+// Continues a sequence from an initialized F32 FIR cache and updates that
+// cache with the final kernel_size-1 inputs.
+[[nodiscard]] Status
+bf16_fir_continue_direct(const DeviceBuffer &input, const DeviceBuffer &weight,
+                         const DeviceBuffer *bias, std::size_t length,
+                         std::size_t channels, std::size_t filter_groups,
+                         std::size_t kernel_size, FirOrientation orientation,
+                         FirBiasMode bias_mode, DeviceBuffer *output,
+                         FirCache *cache, const Stream &stream);
+
 [[nodiscard]] Status bf16_fir_prefill_fft(
     const DeviceBuffer &input, const DeviceBuffer &weight,
     const DeviceBuffer *bias, std::size_t length, std::size_t channels,
@@ -145,6 +155,12 @@ bf16_hcs_decode(const DeviceBuffer &x2, const DeviceBuffer &x1,
                 std::size_t kernel_size, FirCache *cache, DeviceBuffer *scratch,
                 DeviceBuffer *output, const Stream &stream);
 
+[[nodiscard]] Status bf16_hcs_continue(
+    const DeviceBuffer &x2, const DeviceBuffer &x1, const DeviceBuffer &value,
+    const DeviceBuffer &weight, std::size_t length, std::size_t width,
+    std::size_t filter_groups, std::size_t kernel_size, FirCache *cache,
+    DeviceBuffer *scratch, DeviceBuffer *output, const Stream &stream);
+
 [[nodiscard]] Status bf16_hcm_prefill(
     const DeviceBuffer &x2, const DeviceBuffer &x1, const DeviceBuffer &value,
     const DeviceBuffer &weight, const DeviceBuffer &direct, std::size_t length,
@@ -157,6 +173,13 @@ bf16_hcs_decode(const DeviceBuffer &x2, const DeviceBuffer &x1,
     const DeviceBuffer &weight, const DeviceBuffer &direct, std::size_t width,
     std::size_t filter_groups, std::size_t kernel_size, FirCache *cache,
     DeviceBuffer *scratch, DeviceBuffer *output, const Stream &stream);
+
+[[nodiscard]] Status bf16_hcm_continue(
+    const DeviceBuffer &x2, const DeviceBuffer &x1, const DeviceBuffer &value,
+    const DeviceBuffer &weight, const DeviceBuffer &direct, std::size_t length,
+    std::size_t width, std::size_t filter_groups, std::size_t kernel_size,
+    FirCache *cache, DeviceBuffer *scratch, DeviceBuffer *output,
+    const Stream &stream);
 
 // HCL tensors: x2/x1/value and direct are BF16; log_poles/residues and cache
 // are F32. scratch is BF16 [length,width]. FFT mode requires an exact matching

@@ -140,3 +140,33 @@ so its prefill/decode throughput is not used as a kernel comparison. The
 previous uncontended packed-kernel throughput table remains the reproducible
 compute baseline. The parallel-loading build again passed all 25 gpu02 CTest
 entries and both 17-entry local Release/Sanitizer suites.
+
+## T16 chunked 32K context
+
+Binary
+`0129dc143986a3295dd5a1120e344c2f51f134746e215f90a1ee0dee6b4a80c1`
+ran the real 40B model with `--ctx 32768`, an 8193-byte `A` prompt, one greedy
+output token, and no teacher forcing. The runtime processed an 8192-token
+initial activation chunk followed by a state-preserving one-token continuation.
+It exited zero and emitted byte `0x41` (`A`), whose SHA256 is
+`559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd`.
+
+The artifact directory is
+`$HOME/evo2c-artifacts/t16-ctx32768-chunk8193-0129dc14`. Its `metrics.log` is
+1,169 bytes with SHA256
+`3f00ec66c89ece53a848def79985892c7c9a666273dad03054c065d977c67225`.
+Model loading took 56.614 seconds. Prefill took 1,064.976 seconds, or
+7.693 tokens/s, while unrelated jobs saturated the same GPUs; that rate is a
+contention observation, not a replacement for the uncontended T13 baseline.
+
+The process-level allocation snapshot recorded 30,488, 30,470, 29,094, and
+29,086 MiB on GPUs 0–3. The 630-byte snapshot has SHA256
+`19fa6b8dd46e57473f4c75e935074fe119a4f2294706d5109223ba3fd61d07e9`.
+Unlike the global peak deltas in `metrics.log`, these per-process values exclude
+the other jobs sharing gpu02.
+
+The final implementation build passed all 25 gpu02 CTest entries. Its
+single-GPU and four-GPU model tests compare an 8+1 activation split against an
+independent one-shot nine-token Python causal oracle; the CLI test also checks
+automatic generation chunks, score-logit concatenation, teacher-force
+separation, and the explicit multi-chunk layer-dump limitation.

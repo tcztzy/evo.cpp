@@ -20,6 +20,7 @@ def main() -> int:
     expected_logits = args.work_dir / "expected-logits.f32"
     expected_decode = args.work_dir / "expected-decode.f32"
     expected_layer = args.work_dir / "expected-layer.f32"
+    expected_chunked = args.work_dir / "expected-chunked.f32"
     dump = args.work_dir / "layer-17.npy"
     subprocess.run(
         [
@@ -33,6 +34,8 @@ def main() -> int:
             str(expected_decode),
             "--expected-layer",
             str(expected_layer),
+            "--expected-chunked",
+            str(expected_chunked),
         ],
         check=True,
     )
@@ -44,6 +47,7 @@ def main() -> int:
             str(expected_decode),
             str(expected_layer),
             str(dump),
+            str(expected_chunked),
         ],
         check=False,
     )

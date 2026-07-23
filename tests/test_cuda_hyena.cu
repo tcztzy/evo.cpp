@@ -238,6 +238,35 @@ void test_short_fir_cache(const int device, const evo2c::cuda::Stream &stream) {
   check(all_close(download_bf16(decoded, channels, stream), expected_last,
                   0.02F, 0.01F),
         "short FIR cache decode equals full causal last token");
+
+  constexpr std::size_t chunk_length = 4;
+  const auto chunk_f32 =
+      quantize_bf16(values(chunk_length * channels, 131, 29.0F));
+  auto chunk = upload_bf16(device, chunk_f32, stream);
+  evo2c::cuda::DeviceBuffer chunk_output;
+  require(chunk_output.allocate(device, chunk_f32.size() *
+                                            sizeof(__nv_bfloat16)),
+          "allocate continued FIR output");
+  require(evo2c::cuda::bf16_fir_continue_direct(
+              chunk, weight, &bias, chunk_length, channels, groups, kernel,
+              evo2c::cuda::FirOrientation::kCrossCorrelation,
+              evo2c::cuda::FirBiasMode::kAdd, &chunk_output, &cache, stream),
+          "continue short FIR chunk");
+  input_f32.insert(input_f32.end(), chunk_f32.begin(), chunk_f32.end());
+  require(evo2c::cpu::causal_depthwise_fir(
+              input_f32, length + 1 + chunk_length, channels, weight_f32,
+              kernel, &bias_f32, &expected,
+              evo2c::cpu::FirOrientation::kCrossCorrelation,
+              evo2c::cpu::FirBiasMode::kAdd),
+          "CPU continued short FIR reference");
+  const std::vector<float> expected_chunk(
+      expected.end() -
+          static_cast<std::ptrdiff_t>(chunk_length * channels),
+      expected.end());
+  check(all_close(
+            download_bf16(chunk_output, chunk_length * channels, stream),
+            expected_chunk, 0.02F, 0.01F),
+        "continued FIR chunk equals sequential causal reference");
 }
 
 void test_hcs(const int device, const evo2c::cuda::Stream &stream) {
@@ -401,6 +430,51 @@ void test_hcm_fft_decode(const int device, const evo2c::cuda::Stream &stream) {
   check(all_close(download_bf16(decoded, width, stream), expected_last, 0.04F,
                   0.03F),
         "HCM cached decode equals full causal last token");
+
+  constexpr std::size_t chunk_length = 5;
+  const auto chunk_x2 =
+      quantize_bf16(values(chunk_length * width, 251, 67.0F));
+  const auto chunk_x1 =
+      quantize_bf16(values(chunk_length * width, 277, 71.0F));
+  const auto chunk_value =
+      quantize_bf16(values(chunk_length * width, 307, 73.0F));
+  auto chunk_x2_device = upload_bf16(device, chunk_x2, stream);
+  auto chunk_x1_device = upload_bf16(device, chunk_x1, stream);
+  auto chunk_value_device = upload_bf16(device, chunk_value, stream);
+  evo2c::cuda::DeviceBuffer chunk_scratch;
+  evo2c::cuda::DeviceBuffer chunk_output;
+  const std::size_t chunk_bytes =
+      chunk_length * width * sizeof(__nv_bfloat16);
+  require(chunk_scratch.allocate(device, chunk_bytes),
+          "allocate HCM continuation scratch");
+  require(chunk_output.allocate(device, chunk_bytes),
+          "allocate HCM continuation output");
+  require(evo2c::cuda::bf16_hcm_continue(
+              chunk_x2_device, chunk_x1_device, chunk_value_device, weight,
+              direct, chunk_length, width, groups, kernel, &cache,
+              &chunk_scratch, &chunk_output, stream),
+          "continue HCM chunk");
+  std::vector<float> chunk_gated(chunk_length * width);
+  for (std::size_t index = 0; index < chunk_gated.size(); ++index)
+    chunk_gated[index] = chunk_x1[index] * chunk_value[index];
+  chunk_gated = quantize_bf16(chunk_gated);
+  gated_f32.insert(gated_f32.end(), chunk_gated.begin(), chunk_gated.end());
+  require(evo2c::cpu::causal_depthwise_fir(
+              gated_f32, length + 1 + chunk_length, width, expanded, kernel,
+              &direct_f32, &expected,
+              evo2c::cpu::FirOrientation::kCausalConvolution,
+              evo2c::cpu::FirBiasMode::kMultiplyInput),
+          "CPU HCM continuation reference");
+  std::vector<float> expected_chunk(
+      expected.end() -
+          static_cast<std::ptrdiff_t>(chunk_length * width),
+      expected.end());
+  for (std::size_t index = 0; index < expected_chunk.size(); ++index)
+    expected_chunk[index] *= chunk_x2[index];
+  check(all_close(
+            download_bf16(chunk_output, chunk_length * width, stream),
+            expected_chunk, 0.04F, 0.03F),
+        "HCM continuation equals sequential causal reference");
 }
 
 void test_hcl(const int device, const evo2c::cuda::Stream &stream) {
@@ -520,6 +594,51 @@ void test_hcl(const int device, const evo2c::cuda::Stream &stream) {
   check(all_close(download_bf16(decode_fft, width, stream), expected_decode,
                   0.03F, 0.02F),
         "HCL FFT cache decode matches continued reference");
+
+  constexpr std::size_t chunk_length = 4;
+  const auto chunk_x2 =
+      quantize_bf16(values(chunk_length * width, 257, 67.0F));
+  const auto chunk_x1 =
+      quantize_bf16(values(chunk_length * width, 281, 71.0F));
+  const auto chunk_value =
+      quantize_bf16(values(chunk_length * width, 313, 73.0F));
+  auto chunk_x2_device = upload_bf16(device, chunk_x2, stream);
+  auto chunk_x1_device = upload_bf16(device, chunk_x1, stream);
+  auto chunk_value_device = upload_bf16(device, chunk_value, stream);
+  const std::size_t chunk_bytes =
+      chunk_length * width * sizeof(__nv_bfloat16);
+  evo2c::cuda::DeviceBuffer chunk_scratch;
+  evo2c::cuda::DeviceBuffer chunk_output;
+  require(chunk_scratch.allocate(device, chunk_bytes),
+          "allocate HCL continuation scratch");
+  require(chunk_output.allocate(device, chunk_bytes),
+          "allocate HCL continuation output");
+  require(evo2c::cuda::bf16_hcl_prefill(
+              chunk_x2_device, chunk_x1_device, chunk_value_device, direct,
+              poles, residue, chunk_length, width, state_size,
+              evo2c::cuda::HclPrefillMode::kRecurrenceContinue,
+              &recurrence_cache, &chunk_scratch, &chunk_output, nullptr,
+              stream),
+          "continue HCL recurrence chunk");
+  std::vector<float> chunk_gated(chunk_length * width);
+  for (std::size_t index = 0; index < chunk_gated.size(); ++index)
+    chunk_gated[index] = chunk_x1[index] * chunk_value[index];
+  chunk_gated = quantize_bf16(chunk_gated);
+  std::vector<float> expected_chunk;
+  require(evo2c::cpu::hcl_recurrence(
+              chunk_x2, chunk_gated,
+              std::vector<float>(chunk_length * width, 1.0F), chunk_length,
+              width, direct_f32, log_poles, residues, state_size,
+              &expected_state, &expected_chunk),
+          "CPU HCL continuation reference");
+  check(all_close(
+            download_bf16(chunk_output, chunk_length * width, stream),
+            expected_chunk, 0.03F, 0.02F),
+        "HCL recurrent chunk continues the existing F32 state");
+  check(all_close(
+            download_f32(recurrence_cache.state, width * state_size, stream),
+            expected_state, 1.0e-5F, 1.0e-5F),
+        "HCL recurrent chunk publishes the continued F32 final state");
 }
 
 int requested_device() {

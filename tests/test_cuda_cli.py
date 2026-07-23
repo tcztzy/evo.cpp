@@ -65,6 +65,23 @@ def run_checked(command: list[str]) -> subprocess.CompletedProcess[bytes]:
     return result
 
 
+def metrics(result: subprocess.CompletedProcess[bytes]) -> dict[str, object]:
+    prefix = b"evo2c_metrics "
+    for line in result.stderr.splitlines():
+        if line.startswith(prefix):
+            return json.loads(line[len(prefix) :])
+    raise AssertionError("successful CUDA CLI command omitted parseable metrics")
+
+
+def cosine(left: tuple[float, ...], right: tuple[float, ...]) -> float:
+    dot = math.fsum(
+        first * second for first, second in zip(left, right, strict=True)
+    )
+    left_norm = math.sqrt(math.fsum(value * value for value in left))
+    right_norm = math.sqrt(math.fsum(value * value for value in right))
+    return dot / (left_norm * right_norm)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", required=True, type=Path)
@@ -158,21 +175,96 @@ def main() -> int:
         )
     _, full_values = npy_f32(full_prompt_logits)
     _, forced_values = npy_f32(forced_prompt_logits)
-    dot = math.fsum(
-        left * right
-        for left, right in zip(full_values, forced_values, strict=True)
-    )
-    full_norm = math.sqrt(math.fsum(value * value for value in full_values))
-    forced_norm = math.sqrt(math.fsum(value * value for value in forced_values))
-    cosine = dot / (full_norm * forced_norm)
+    prompt_cosine = cosine(full_values, forced_values)
     if (
-        cosine < 0.9999
+        prompt_cosine < 0.9999
         or max(range(len(full_values)), key=full_values.__getitem__)
         != max(range(len(forced_values)), key=forced_values.__getitem__)
     ):
         raise AssertionError(
             "teacher-forced prompt cache does not meet the cached-decode "
-            f"contract (cosine={cosine})"
+            f"contract (cosine={prompt_cosine})"
+        )
+
+    long_prompt_logits = args.work_dir / "long-prompt-chunked-logits.npy"
+    long_forced_logits = args.work_dir / "long-prompt-forced-logits.npy"
+    long_prompt_command = [
+        str(args.binary),
+        "-m",
+        str(model),
+        "-p",
+        "ACGTACGTA",
+        "-n",
+        "1",
+        "--ctx",
+        "12",
+        "--gpu",
+        "0,1,2,3",
+        "--top-k",
+        "1",
+    ]
+    long_chunked = run_checked(
+        [*long_prompt_command, "--dump-logits", str(long_prompt_logits)]
+    )
+    long_forced = run_checked(
+        [
+            *long_prompt_command,
+            "--force-prompt-threshold",
+            "8",
+            "--dump-logits",
+            str(long_forced_logits),
+        ]
+    )
+    if long_chunked.stdout != long_forced.stdout:
+        raise AssertionError(
+            "multi-token continuation changed the greedy token relative to "
+            "one-token cached decode"
+        )
+    _, long_chunked_values = npy_f32(long_prompt_logits)
+    _, long_forced_values = npy_f32(long_forced_logits)
+    long_cosine = cosine(long_chunked_values, long_forced_values)
+    if (
+        long_cosine < 0.9999
+        or max(
+            range(len(long_chunked_values)), key=long_chunked_values.__getitem__
+        )
+        != max(range(len(long_forced_values)), key=long_forced_values.__getitem__)
+    ):
+        raise AssertionError(
+            "multi-token continuation does not match one-token cached decode "
+            f"(cosine={long_cosine})"
+        )
+    chunked_metrics = metrics(long_chunked)
+    forced_metrics = metrics(long_forced)
+    if (
+        chunked_metrics["prefill_tokens"] != 9
+        or chunked_metrics["teacher_force_tokens"] != 0
+        or forced_metrics["prefill_tokens"] != 8
+        or forced_metrics["teacher_force_tokens"] != 1
+    ):
+        raise AssertionError(
+            "chunked prefill and teacher-force metrics do not expose their "
+            "distinct execution paths"
+        )
+
+    rejected_layer = subprocess.run(
+        [
+            *long_prompt_command,
+            "--dump-layer",
+            f"17:{args.work_dir / 'rejected-chunked-layer.npy'}",
+        ],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if (
+        rejected_layer.returncode == 0
+        or b"--dump-layer is unavailable when prefill spans multiple "
+        b"activation chunks" not in rejected_layer.stderr
+    ):
+        raise AssertionError(
+            "multi-chunk layer dump did not fail with its actionable "
+            "limitation"
         )
 
     score_input = args.work_dir / "score.txt"
@@ -225,6 +317,35 @@ def main() -> int:
     ):
         raise AssertionError(
             "score JSONL did not apply exactly one log-softmax normalization"
+        )
+
+    long_score_input = args.work_dir / "long-score.txt"
+    long_score_input.write_bytes(b"ACGTACGTA")
+    long_score_logits = args.work_dir / "long-score-logits.npy"
+    long_score_result = run_checked(
+        [
+            str(args.binary),
+            "-m",
+            str(model),
+            "--score",
+            str(long_score_input),
+            "--ctx",
+            "12",
+            "--gpu",
+            "0,1,2,3",
+            "--dump-logits",
+            str(long_score_logits),
+        ]
+    )
+    long_score = json.loads(long_score_result.stdout)
+    if (
+        long_score["tokens"] != 9
+        or long_score["scored_tokens"] != 8
+        or npy_shape(long_score_logits) != (9, 512)
+        or metrics(long_score_result)["prefill_tokens"] != 9
+    ):
+        raise AssertionError(
+            "score mode did not concatenate logits across activation chunks"
         )
 
     print("CUDA CLI tests passed")

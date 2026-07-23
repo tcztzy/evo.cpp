@@ -45,6 +45,15 @@ def main() -> int:
                     f"{relative}:{line_number}: use a task-specific exit "
                     "variable instead of shell-special 'status'"
                 )
+            if (
+                path.suffix == ".sh"
+                and b'awk "' in line
+                and b"$" in line.split(b'awk "', maxsplit=1)[1]
+            ):
+                failures.append(
+                    f"{relative}:{line_number}: single-quote awk programs so "
+                    "the shell cannot expand their field variables"
+                )
     if failures:
         raise AssertionError("\n".join(failures))
     return 0

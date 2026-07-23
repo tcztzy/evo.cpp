@@ -250,6 +250,77 @@ __global__ void fir_prefill_kernel(
   }
 }
 
+__global__ void fir_continue_kernel(
+    const __nv_bfloat16 *const input, const __nv_bfloat16 *const weight,
+    const __nv_bfloat16 *const bias, const float *const cache,
+    __nv_bfloat16 *const output, const std::size_t length,
+    const std::size_t channels, const std::size_t channels_per_group,
+    const std::size_t kernel_size, const bool cross_correlation,
+    const bool multiply_bias) {
+  const std::size_t elements = length * channels;
+  const std::size_t cache_size = kernel_size - 1;
+  for (std::size_t index =
+           static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+       index < elements;
+       index += static_cast<std::size_t>(blockDim.x) * gridDim.x) {
+    const std::size_t time = index / channels;
+    const std::size_t channel = index % channels;
+    const std::size_t group = channel / channels_per_group;
+    float total = 0.0F;
+    for (std::size_t state_index = 0; state_index < cache_size;
+         ++state_index) {
+      const std::size_t history = time + state_index;
+      const float source =
+          history < cache_size
+              ? cache[channel * cache_size + history]
+              : __bfloat162float(
+                    input[(history - cache_size) * channels + channel]);
+      const std::size_t tap =
+          cross_correlation ? state_index : cache_size - state_index;
+      total += source *
+               __bfloat162float(weight[group * kernel_size + tap]);
+    }
+    const float current = __bfloat162float(input[index]);
+    const std::size_t current_tap = cross_correlation ? cache_size : 0;
+    total += current *
+             __bfloat162float(weight[group * kernel_size + current_tap]);
+    if (bias != nullptr) {
+      const float bias_value = __bfloat162float(bias[channel]);
+      total += multiply_bias ? bias_value * current : bias_value;
+    }
+    output[index] = __float2bfloat16_rn(total);
+  }
+}
+
+__global__ void advance_fir_cache_kernel(
+    const __nv_bfloat16 *const input, float *const cache,
+    const std::size_t length, const std::size_t channels,
+    const std::size_t cache_size) {
+  for (std::size_t channel =
+           static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+       channel < channels;
+       channel += static_cast<std::size_t>(blockDim.x) * gridDim.x) {
+    if (length >= cache_size) {
+      for (std::size_t state_index = 0; state_index < cache_size;
+           ++state_index) {
+        const std::size_t time = length - cache_size + state_index;
+        cache[channel * cache_size + state_index] =
+            __bfloat162float(input[time * channels + channel]);
+      }
+      continue;
+    }
+    const std::size_t retained = cache_size - length;
+    for (std::size_t state_index = 0; state_index < retained; ++state_index) {
+      cache[channel * cache_size + state_index] =
+          cache[channel * cache_size + state_index + length];
+    }
+    for (std::size_t time = 0; time < length; ++time) {
+      cache[channel * cache_size + retained + time] =
+          __bfloat162float(input[time * channels + channel]);
+    }
+  }
+}
+
 __global__ void fir_decode_kernel(
     const __nv_bfloat16 *const input, const __nv_bfloat16 *const weight,
     const __nv_bfloat16 *const bias, float *const cache,
@@ -978,6 +1049,57 @@ Status bf16_fir_prefill_direct(
   return fill_fir_cache(input, length, channels, kernel_size, cache, stream);
 }
 
+Status bf16_fir_continue_direct(
+    const DeviceBuffer &input, const DeviceBuffer &weight,
+    const DeviceBuffer *const bias, const std::size_t length,
+    const std::size_t channels, const std::size_t filter_groups,
+    const std::size_t kernel_size, const FirOrientation orientation,
+    const FirBiasMode bias_mode, DeviceBuffer *const output,
+    FirCache *const cache, const Stream &stream) {
+  if (cache == nullptr ||
+      (orientation != FirOrientation::kCrossCorrelation &&
+       orientation != FirOrientation::kCausalConvolution) ||
+      (bias_mode != FirBiasMode::kAdd &&
+       bias_mode != FirBiasMode::kMultiplyInput)) {
+    return {ErrorCode::kInvalidArgument,
+            "continued FIR cache or mode is invalid"};
+  }
+  auto status =
+      validate_fir_buffers(input, weight, bias, length, channels, filter_groups,
+                           kernel_size, output, stream);
+  if (!status.ok())
+    return status;
+  status = validate_cache(cache, input.device(), channels, kernel_size);
+  if (!status.ok())
+    return status;
+  status = select_device(input.device());
+  if (!status.ok())
+    return status;
+  std::size_t elements = 0;
+  if (!multiply(length, channels, &elements)) {
+    return {ErrorCode::kInvalidArgument,
+            "continued FIR dimensions overflow"};
+  }
+  fir_continue_kernel<<<grid_for(elements), kThreads, 0, stream.get()>>>(
+      static_cast<const __nv_bfloat16 *>(input.data()),
+      static_cast<const __nv_bfloat16 *>(weight.data()),
+      bias == nullptr ? nullptr
+                      : static_cast<const __nv_bfloat16 *>(bias->data()),
+      static_cast<const float *>(cache->state.data()),
+      static_cast<__nv_bfloat16 *>(output->data()), length, channels,
+      channels / filter_groups, kernel_size,
+      orientation == FirOrientation::kCrossCorrelation,
+      bias_mode == FirBiasMode::kMultiplyInput);
+  status = launch_status("continued direct FIR kernel");
+  if (!status.ok())
+    return status;
+  advance_fir_cache_kernel<<<grid_for(channels), kThreads, 0, stream.get()>>>(
+      static_cast<const __nv_bfloat16 *>(input.data()),
+      static_cast<float *>(cache->state.data()), length, channels,
+      kernel_size - 1);
+  return launch_status("advance continued FIR cache kernel");
+}
+
 Status bf16_fir_prefill_fft(
     const DeviceBuffer &input, const DeviceBuffer &weight,
     const DeviceBuffer *const bias, const std::size_t length,
@@ -1142,6 +1264,36 @@ Status bf16_hcs_decode(const DeviceBuffer &x2, const DeviceBuffer &x1,
                                 output, stream);
 }
 
+Status bf16_hcs_continue(
+    const DeviceBuffer &x2, const DeviceBuffer &x1, const DeviceBuffer &value,
+    const DeviceBuffer &weight, const std::size_t length,
+    const std::size_t width, const std::size_t filter_groups,
+    const std::size_t kernel_size, FirCache *const cache,
+    DeviceBuffer *const scratch, DeviceBuffer *const output,
+    const Stream &stream) {
+  if (scratch == nullptr || output == nullptr) {
+    return {ErrorCode::kInvalidArgument,
+            "HCS continuation requires scratch and output buffers"};
+  }
+  std::size_t elements = 0;
+  if (!multiply(length, width, &elements)) {
+    return {ErrorCode::kInvalidArgument,
+            "HCS continuation dimensions overflow"};
+  }
+  auto status = bf16_gated_elementwise(
+      x1, value, elements, GatedActivation::kIdentity, scratch, stream);
+  if (!status.ok())
+    return status;
+  status = bf16_fir_continue_direct(
+      *scratch, weight, nullptr, length, width, filter_groups, kernel_size,
+      FirOrientation::kCrossCorrelation, FirBiasMode::kAdd, output, cache,
+      stream);
+  if (!status.ok())
+    return status;
+  return bf16_gated_elementwise(*output, x2, elements,
+                                GatedActivation::kIdentity, output, stream);
+}
+
 Status bf16_hcm_prefill(const DeviceBuffer &x2, const DeviceBuffer &x1,
                         const DeviceBuffer &value, const DeviceBuffer &weight,
                         const DeviceBuffer &direct, const std::size_t length,
@@ -1196,6 +1348,36 @@ Status bf16_hcm_decode(const DeviceBuffer &x2, const DeviceBuffer &x1,
                                 output, stream);
 }
 
+Status bf16_hcm_continue(
+    const DeviceBuffer &x2, const DeviceBuffer &x1, const DeviceBuffer &value,
+    const DeviceBuffer &weight, const DeviceBuffer &direct,
+    const std::size_t length, const std::size_t width,
+    const std::size_t filter_groups, const std::size_t kernel_size,
+    FirCache *const cache, DeviceBuffer *const scratch,
+    DeviceBuffer *const output, const Stream &stream) {
+  if (scratch == nullptr || output == nullptr) {
+    return {ErrorCode::kInvalidArgument,
+            "HCM continuation requires scratch and output buffers"};
+  }
+  std::size_t elements = 0;
+  if (!multiply(length, width, &elements)) {
+    return {ErrorCode::kInvalidArgument,
+            "HCM continuation dimensions overflow"};
+  }
+  auto status = bf16_gated_elementwise(
+      x1, value, elements, GatedActivation::kIdentity, scratch, stream);
+  if (!status.ok())
+    return status;
+  status = bf16_fir_continue_direct(
+      *scratch, weight, &direct, length, width, filter_groups, kernel_size,
+      FirOrientation::kCausalConvolution, FirBiasMode::kMultiplyInput, output,
+      cache, stream);
+  if (!status.ok())
+    return status;
+  return bf16_gated_elementwise(*output, x2, elements,
+                                GatedActivation::kIdentity, output, stream);
+}
+
 Status bf16_hcl_prefill(const DeviceBuffer &x2, const DeviceBuffer &x1,
                         const DeviceBuffer &value, const DeviceBuffer &direct,
                         const DeviceBuffer &log_poles,
@@ -1205,7 +1387,9 @@ Status bf16_hcl_prefill(const DeviceBuffer &x2, const DeviceBuffer &x1,
                         DeviceBuffer *const scratch, DeviceBuffer *const output,
                         FftWorkspace *const workspace, const Stream &stream) {
   if (scratch == nullptr ||
-      (mode != HclPrefillMode::kRecurrence && mode != HclPrefillMode::kFft)) {
+      (mode != HclPrefillMode::kRecurrence &&
+       mode != HclPrefillMode::kFft &&
+       mode != HclPrefillMode::kRecurrenceContinue)) {
     return {ErrorCode::kInvalidArgument,
             "HCL prefill scratch or mode is invalid"};
   }
@@ -1229,9 +1413,11 @@ Status bf16_hcl_prefill(const DeviceBuffer &x2, const DeviceBuffer &x1,
   status = select_device(x2.device());
   if (!status.ok())
     return status;
-  status = cache->state.zero(stream);
-  if (!status.ok())
-    return status;
+  if (mode != HclPrefillMode::kRecurrenceContinue) {
+    status = cache->state.zero(stream);
+    if (!status.ok())
+      return status;
+  }
   hcl_gate_kernel<<<grid_for(elements), kThreads, 0, stream.get()>>>(
       static_cast<const __nv_bfloat16 *>(x1.data()),
       static_cast<const __nv_bfloat16 *>(value.data()),
@@ -1240,7 +1426,7 @@ Status bf16_hcl_prefill(const DeviceBuffer &x2, const DeviceBuffer &x1,
   if (!status.ok())
     return status;
 
-  if (mode == HclPrefillMode::kRecurrence) {
+  if (mode != HclPrefillMode::kFft) {
     hcl_recurrence_prefill_kernel<<<grid_for(width), kThreads, 0,
                                     stream.get()>>>(
         static_cast<const __nv_bfloat16 *>(x2.data()),
