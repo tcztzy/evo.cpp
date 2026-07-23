@@ -188,6 +188,67 @@ Status upload_tensor(const ModelFile &model, const std::string &name,
   return Status::Ok();
 }
 
+Status projection_fp8_scales(const ModelFile &model,
+                             const std::string &prefix,
+                             float *const input_scale,
+                             float *const weight_scale,
+                             float *const output_scale) {
+  const TensorInfo *scale_tensor = nullptr;
+  const TensorInfo *inverse_tensor = nullptr;
+  const TensorInfo *history_tensor = nullptr;
+  auto status = checked_tensor(
+      model, prefix + ".fp8_scale_fwd", TensorDType::kF32, {2},
+      &scale_tensor);
+  if (!status.ok())
+    return status;
+  status = checked_tensor(
+      model, prefix + ".fp8_scale_inv_fwd", TensorDType::kF32, {2},
+      &inverse_tensor);
+  if (!status.ok())
+    return status;
+  status = checked_tensor(
+      model, prefix + ".fp8_amax_history_fwd", TensorDType::kF32, {16, 2},
+      &history_tensor);
+  if (!status.ok())
+    return status;
+
+  std::array<float, 2> scales{};
+  std::array<float, 2> inverse{};
+  std::array<float, 32> history{};
+  std::memcpy(scales.data(), model.tensor_data(*scale_tensor),
+              sizeof(scales));
+  std::memcpy(inverse.data(), model.tensor_data(*inverse_tensor),
+              sizeof(inverse));
+  std::memcpy(history.data(), model.tensor_data(*history_tensor),
+              sizeof(history));
+  if (std::any_of(scales.begin(), scales.end(), [](const float value) {
+        return !std::isfinite(value) || value <= 0.0F;
+      }) ||
+      std::any_of(inverse.begin(), inverse.end(), [](const float value) {
+        return !std::isfinite(value) || value <= 0.0F;
+      }) ||
+      std::any_of(history.begin(), history.end(), [](const float value) {
+        return !std::isfinite(value) || value < 0.0F;
+      })) {
+    return {ErrorCode::kModelFormat,
+            prefix + " contains invalid software-FP8 scale state"};
+  }
+  if (inverse[0] != 1.0F / scales[0] ||
+      inverse[1] != 1.0F / scales[1]) {
+    return {ErrorCode::kModelFormat,
+            prefix + " inverse scales do not match forward scales"};
+  }
+  const float combined_inverse = inverse[0] * inverse[1];
+  if (!std::isfinite(combined_inverse) || combined_inverse <= 0.0F) {
+    return {ErrorCode::kModelFormat,
+            prefix + " combined inverse scale is invalid"};
+  }
+  *input_scale = scales[0];
+  *weight_scale = scales[1];
+  *output_scale = combined_inverse;
+  return Status::Ok();
+}
+
 Status allocate_bf16(DeviceBuffer *const buffer, const int device,
                      const std::size_t elements, const char *const name) {
   std::size_t bytes = 0;
@@ -257,6 +318,9 @@ Status write_npy(const std::string &path, const std::vector<float> &values,
 
 struct Layer final {
   MixerType type{MixerType::kHcs};
+  bool software_fp8_projection{false};
+  float projection_input_scale{1.0F};
+  float projection_output_scale{1.0F};
   DeviceBuffer pre_norm;
   DeviceBuffer post_norm;
   DeviceBuffer projection;
@@ -378,6 +442,7 @@ Status read_runtime_model_config(const ModelFile &model,
   bool column_split_hyena = true;
   bool interleave = false;
   bool flip = true;
+  bool use_fp8_input_projections = false;
   status = metadata_bool(model, "config.tie_embeddings", &tie_embeddings);
   if (!status.ok())
     return status;
@@ -399,11 +464,34 @@ Status read_runtime_model_config(const ModelFile &model,
   status = metadata_bool(model, "config.hyena_flip_x1x2", &flip);
   if (!status.ok())
     return status;
+  if (model.find_metadata("config.use_fp8_input_projections") != nullptr) {
+    status = metadata_bool(model, "config.use_fp8_input_projections",
+                           &use_fp8_input_projections);
+    if (!status.ok())
+      return status;
+  } else if (!candidate.test_fixture) {
+    return {ErrorCode::kModelFormat,
+            "required metadata is missing: config.use_fp8_input_projections"};
+  }
   if (!tie_embeddings || (!candidate.test_fixture && !column_split) ||
-      column_split_hyena || !interleave || flip)
+      column_split_hyena || !interleave || flip ||
+      (!candidate.test_fixture && !use_fp8_input_projections))
     return {ErrorCode::kUnsupported,
             "model semantic flags do not match supported Evo 2"};
   candidate.qkv_head_major = column_split;
+  candidate.use_fp8_input_projections = use_fp8_input_projections;
+
+  if (!candidate.test_fixture) {
+    std::string fp8_reference;
+    status = metadata_string(model, "fp8.reference", &fp8_reference);
+    if (!status.ok())
+      return status;
+    if (fp8_reference != "TransformerEngine-2.3-HYBRID") {
+      return {ErrorCode::kUnsupported,
+              "unsupported software-FP8 checkpoint reference: " +
+                  fp8_reference};
+    }
+  }
 
   std::vector<std::size_t> hcs;
   std::vector<std::size_t> hcm;
@@ -584,11 +672,48 @@ struct SingleGpuModel::Impl final {
                                       config.head_dim());
     }
 
-    status = upload_tensor(model, prefix + ".projections.weight",
-                           TensorDType::kBF16, {config.width * 3, config.width},
-                           device, stream, &layer->projection);
-    if (!status.ok())
-      return status;
+    if (config.use_fp8_input_projections && !config.test_fixture) {
+      float weight_scale = 0.0F;
+      status = projection_fp8_scales(
+          model, prefix + ".projections", &layer->projection_input_scale,
+          &weight_scale, &layer->projection_output_scale);
+      if (!status.ok())
+        return status;
+      DeviceBuffer original_projection;
+      status = upload_tensor(
+          model, prefix + ".projections.weight", TensorDType::kBF16,
+          {config.width * 3, config.width}, device, stream,
+          &original_projection);
+      if (!status.ok())
+        return status;
+      std::size_t projection_elements = 0;
+      if (!multiply(config.width * 3, config.width,
+                    &projection_elements)) {
+        return {ErrorCode::kInvalidArgument,
+                "projection weight dimensions overflow"};
+      }
+      status = layer->projection.allocate(device, projection_elements);
+      if (!status.ok())
+        return status;
+      status = software_e4m3_quantize_bf16_codes(
+          original_projection, projection_elements, weight_scale,
+          &layer->projection, stream);
+      if (!status.ok())
+        return status;
+      status = stream.synchronize();
+      if (!status.ok())
+        return {status.code(),
+                "software-FP8 projection quantization: " +
+                    status.message()};
+      layer->software_fp8_projection = true;
+    } else {
+      status = upload_tensor(
+          model, prefix + ".projections.weight", TensorDType::kBF16,
+          {config.width * 3, config.width}, device, stream,
+          &layer->projection);
+      if (!status.ok())
+        return status;
+    }
     status = upload_tensor(model, prefix + ".out_filter_dense.weight",
                            TensorDType::kBF16, {config.width, config.width},
                            device, stream, &layer->output_weight);
@@ -702,9 +827,16 @@ struct SingleGpuModel::Impl final {
 
   [[nodiscard]] Status run_mixer(Layer *const layer, const std::size_t rows,
                                  const bool prefill) {
-    auto status = bf16_linear(blas, arena.normalized, layer->projection,
-                              nullptr, rows, config.width, config.width * 3,
-                              &arena.projection, &arena.blas_workspace, stream);
+    auto status =
+        layer->software_fp8_projection
+            ? software_e4m3_h100_linear(
+                  arena.normalized, layer->projection, rows, config.width,
+                  config.width * 3, layer->projection_input_scale,
+                  layer->projection_output_scale, &arena.mixer_scratch,
+                  &arena.projection, stream)
+            : bf16_linear(blas, arena.normalized, layer->projection, nullptr,
+                          rows, config.width, config.width * 3,
+                          &arena.projection, &arena.blas_workspace, stream);
     if (!status.ok())
       return status;
     if (layer->type == MixerType::kAttention) {

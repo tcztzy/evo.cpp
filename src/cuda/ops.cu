@@ -8,6 +8,7 @@
 #include <string>
 
 #include <cuda_bf16.h>
+#include <cuda_fp8.h>
 
 namespace evo2c::cuda {
 namespace {
@@ -137,6 +138,211 @@ __global__ void add_kernel(__nv_bfloat16 *const output,
     output[index] = __float2bfloat16_rn(__bfloat162float(output[index]) +
                                         __bfloat162float(residual[index]));
   }
+}
+
+__global__ void software_lowp_kernel(
+    const __nv_bfloat16 *const input, std::uint8_t *const codes,
+    float *const dequantized, const std::size_t elements, const float scale) {
+  const float scale_inverse = __frcp_rn(scale);
+  for (std::size_t index =
+           static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+       index < elements;
+       index += static_cast<std::size_t>(blockDim.x) * gridDim.x) {
+    const float input_value = __bfloat162float(input[index]);
+    const __nv_fp8_e4m3 quantized(input_value * scale);
+    if (codes != nullptr)
+      codes[index] = quantized.__x;
+    dequantized[index] = static_cast<float>(quantized) * scale_inverse;
+  }
+}
+
+__global__ void software_lowp_codes_kernel(
+    const __nv_bfloat16 *const input, std::uint8_t *const codes,
+    const std::size_t elements, const float scale) {
+  for (std::size_t index =
+           static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+       index < elements;
+       index += static_cast<std::size_t>(blockDim.x) * gridDim.x) {
+    const float input_value = __bfloat162float(input[index]);
+    const __nv_fp8_e4m3 quantized(input_value * scale);
+    codes[index] = quantized.__x;
+  }
+}
+
+__device__ int normal_exponent(const float value) {
+  return static_cast<int>((__float_as_uint(fabsf(value)) >> 23U) & 0xffU) -
+         127;
+}
+
+__device__ std::int32_t align_significand(
+    const float value, const int operand_exponent,
+    const int maximum_exponent, const bool denormalized_product) {
+  if (value == 0.0F)
+    return 0;
+  const std::uint32_t bits = __float_as_uint(value);
+  const std::uint32_t magnitude = bits & 0x7fffffffU;
+  std::uint32_t significand =
+      (magnitude & 0x7fffffU) | 0x800000U;
+  if (denormalized_product) {
+    const int normalized_exponent =
+        static_cast<int>((magnitude >> 23U) & 0xffU) - 127;
+    significand <<= static_cast<unsigned int>(
+        normalized_exponent - operand_exponent);
+  }
+  significand >>= 10U;
+  const int shift = maximum_exponent - operand_exponent;
+  if (shift > 31)
+    significand = 0;
+  else if (shift > 0)
+    significand >>= static_cast<unsigned int>(shift);
+  const auto aligned = static_cast<std::int32_t>(significand);
+  return (bits & 0x80000000U) == 0U ? aligned : -aligned;
+}
+
+__device__ float truncate_e8m13(const float value) {
+  return __uint_as_float(__float_as_uint(value) & 0xfffffc00U);
+}
+
+__device__ std::uint16_t pack_e4m3_integer(const std::uint8_t code) {
+  const auto magnitude = static_cast<std::uint8_t>(code & 0x7fU);
+  const auto exponent_field =
+      static_cast<unsigned int>((magnitude >> 3U) & 0x0fU);
+  const auto mantissa = static_cast<unsigned int>(magnitude & 0x07U);
+  int exponent = 0;
+  std::uint32_t significand = 0;
+  if (exponent_field == 0U) {
+    if (mantissa == 0U)
+      return 0U;
+    const int leading_bit = 31 - __clz(mantissa);
+    exponent = -9 + leading_bit;
+    significand =
+        mantissa << static_cast<unsigned int>(3 - leading_bit);
+  } else {
+    exponent = static_cast<int>(exponent_field) - 7;
+    significand = 8U + mantissa;
+  }
+  constexpr int exponent_bias = 16;
+  return static_cast<std::uint16_t>(
+      significand |
+      (static_cast<std::uint32_t>(exponent + exponent_bias) << 5U) |
+      ((code & 0x80U) != 0U ? 0x0400U : 0U));
+}
+
+__device__ std::int32_t aligned_e4m3_product(
+    const std::uint16_t left, const std::uint16_t right,
+    const int maximum_exponent) {
+  constexpr int twice_exponent_bias = 32;
+  const int exponent =
+      static_cast<int>((left >> 5U) & 0x1fU) +
+      static_cast<int>((right >> 5U) & 0x1fU) -
+      twice_exponent_bias;
+  const int shift = maximum_exponent - exponent;
+  if (shift > 31)
+    return 0;
+  std::uint32_t value =
+      static_cast<std::uint32_t>(left & 0x1fU) *
+      static_cast<std::uint32_t>(right & 0x1fU) * 128U;
+  if (shift > 0)
+    value >>= static_cast<unsigned int>(shift);
+  const auto aligned = static_cast<std::int32_t>(value);
+  return ((left ^ right) & 0x0400U) == 0U ? aligned : -aligned;
+}
+
+template <unsigned int TileRows, unsigned int TileColumns>
+__global__ void software_h100_qgmma_tiled_kernel(
+    const std::uint8_t *const input_codes,
+    const std::uint8_t *const weight_codes,
+    __nv_bfloat16 *const output, const std::size_t rows,
+    const std::size_t in_features, const std::size_t out_features,
+    const float output_scale) {
+  constexpr unsigned int tile_inner = 32;
+  constexpr unsigned int threads = TileRows * TileColumns;
+  static_assert((TileRows == 1 && TileColumns == 32) ||
+                (TileRows == 16 && TileColumns == 16));
+  static_assert(threads <= 256);
+
+  __shared__ std::uint16_t input_tile[TileRows][tile_inner];
+  // K-major plus one padded column makes a warp's fixed-K column scan
+  // contiguous and avoids the 16-way bank conflict of [column][K].
+  __shared__ std::uint16_t weight_tile[tile_inner][TileColumns + 1];
+  const unsigned int thread = threadIdx.x;
+  const unsigned int local_row = thread / TileColumns;
+  const unsigned int local_column = thread % TileColumns;
+  const std::size_t row =
+      static_cast<std::size_t>(blockIdx.y) * TileRows + local_row;
+  const std::size_t column =
+      static_cast<std::size_t>(blockIdx.x) * TileColumns + local_column;
+  const bool valid_output = row < rows && column < out_features;
+  float accumulator = 0.0F;
+
+  for (std::size_t inner_start = 0; inner_start < in_features;
+       inner_start += tile_inner) {
+    for (unsigned int load = thread; load < TileRows * tile_inner;
+         load += threads) {
+      const unsigned int load_row = load / tile_inner;
+      const unsigned int load_inner = load % tile_inner;
+      const std::size_t global_row =
+          static_cast<std::size_t>(blockIdx.y) * TileRows + load_row;
+      input_tile[load_row][load_inner] = pack_e4m3_integer(
+          global_row < rows
+              ? input_codes[global_row * in_features + inner_start +
+                            load_inner]
+              : 0U);
+    }
+    for (unsigned int load = thread;
+         load < TileColumns * tile_inner; load += threads) {
+      const unsigned int load_column = load / tile_inner;
+      const unsigned int load_inner = load % tile_inner;
+      const std::size_t global_column =
+          static_cast<std::size_t>(blockIdx.x) * TileColumns + load_column;
+      weight_tile[load_inner][load_column] = pack_e4m3_integer(
+          global_column < out_features
+              ? weight_codes[global_column * in_features + inner_start +
+                             load_inner]
+              : 0U);
+    }
+    __syncthreads();
+
+    if (valid_output) {
+      int maximum_exponent =
+          accumulator == 0.0F ? -1024 : normal_exponent(accumulator);
+#pragma unroll
+      for (unsigned int inner = 0; inner < tile_inner; ++inner) {
+        const std::uint16_t left = input_tile[local_row][inner];
+        const std::uint16_t right = weight_tile[inner][local_column];
+        if ((left & 0x1fU) != 0U && (right & 0x1fU) != 0U)
+          maximum_exponent =
+              max(maximum_exponent,
+                  static_cast<int>((left >> 5U) & 0x1fU) +
+                      static_cast<int>((right >> 5U) & 0x1fU) - 32);
+      }
+
+      std::int32_t aligned_sum =
+          accumulator == 0.0F
+              ? 0
+              : align_significand(accumulator,
+                                  normal_exponent(accumulator),
+                                  maximum_exponent, false);
+#pragma unroll
+      for (unsigned int inner = 0; inner < tile_inner; ++inner) {
+        const std::uint16_t left = input_tile[local_row][inner];
+        const std::uint16_t right = weight_tile[inner][local_column];
+        if ((left & 0x1fU) != 0U && (right & 0x1fU) != 0U)
+          aligned_sum +=
+              aligned_e4m3_product(left, right, maximum_exponent);
+      }
+      accumulator =
+          aligned_sum == 0
+              ? 0.0F
+              : truncate_e8m13(
+                    ldexpf(static_cast<float>(aligned_sum),
+                           maximum_exponent - 13));
+    }
+    __syncthreads();
+  }
+  if (valid_output)
+    output[row * out_features + column] =
+        __float2bfloat16_rn(accumulator * output_scale);
 }
 
 struct MatmulObjects final {
@@ -345,6 +551,186 @@ Status bf16_linear(const BlasLt &handle, const DeviceBuffer &input,
                      workspace_bytes, stream.get()),
       "cublasLtMatmul");
   return status;
+}
+
+Status software_e4m3_quantize_bf16(
+    const DeviceBuffer &input, const std::size_t elements, const float scale,
+    DeviceBuffer *const codes, DeviceBuffer *const dequantized_f32,
+    const Stream &stream) {
+  if (dequantized_f32 == nullptr || !stream.valid() || !std::isfinite(scale) ||
+      scale <= 0.0F) {
+    return {ErrorCode::kInvalidArgument,
+            "software_e4m3_quantize_bf16 received invalid arguments"};
+  }
+  std::size_t input_bytes = 0;
+  std::size_t output_bytes = 0;
+  auto status = required_bytes(elements, sizeof(__nv_bfloat16), &input_bytes,
+                               "software E4M3 input");
+  if (!status.ok())
+    return status;
+  status = required_bytes(elements, sizeof(float), &output_bytes,
+                          "software E4M3 dequantized output");
+  if (!status.ok())
+    return status;
+  const int device = input.device();
+  if (stream.device() != device) {
+    return {ErrorCode::kInvalidArgument,
+            "software E4M3 stream is on a different CUDA device"};
+  }
+  status = buffer_size(input, input_bytes, device, "software E4M3 input");
+  if (!status.ok())
+    return status;
+  status = buffer_size(*dequantized_f32, output_bytes, device,
+                       "software E4M3 dequantized output");
+  if (!status.ok())
+    return status;
+  if (codes != nullptr) {
+    status = buffer_size(*codes, elements, device, "software E4M3 codes");
+    if (!status.ok())
+      return status;
+  }
+  status = select_device(device);
+  if (!status.ok())
+    return status;
+  software_lowp_kernel<<<grid_for(elements), kThreads, 0, stream.get()>>>(
+      static_cast<const __nv_bfloat16 *>(input.data()),
+      codes == nullptr ? nullptr
+                       : static_cast<std::uint8_t *>(codes->data()),
+      static_cast<float *>(dequantized_f32->data()), elements, scale);
+  return launch_status("software_lowp_kernel");
+}
+
+Status software_e4m3_quantize_bf16_codes(
+    const DeviceBuffer &input, const std::size_t elements, const float scale,
+    DeviceBuffer *const codes, const Stream &stream) {
+  if (codes == nullptr || !stream.valid() ||
+      !std::isfinite(scale) || scale <= 0.0F) {
+    return {ErrorCode::kInvalidArgument,
+            "software_e4m3_quantize_bf16_codes received invalid arguments"};
+  }
+  std::size_t input_bytes = 0;
+  auto status =
+      required_bytes(elements, sizeof(__nv_bfloat16), &input_bytes,
+                     "software E4M3 code input");
+  if (!status.ok())
+    return status;
+  const int device = input.device();
+  if (stream.device() != device) {
+    return {ErrorCode::kInvalidArgument,
+            "software E4M3 payload stream is on a different CUDA device"};
+  }
+  status =
+      buffer_size(input, input_bytes, device, "software E4M3 code input");
+  if (!status.ok())
+    return status;
+  status = buffer_size(*codes, elements, device,
+                       "software E4M3 code output");
+  if (!status.ok())
+    return status;
+  status = select_device(device);
+  if (!status.ok())
+    return status;
+  software_lowp_codes_kernel<<<grid_for(elements), kThreads, 0,
+                               stream.get()>>>(
+      static_cast<const __nv_bfloat16 *>(input.data()),
+      static_cast<std::uint8_t *>(codes->data()), elements, scale);
+  return launch_status("software_lowp_codes_kernel");
+}
+
+Status software_e4m3_h100_linear(
+    const DeviceBuffer &input, const DeviceBuffer &weight_codes,
+    const std::size_t rows, const std::size_t in_features,
+    const std::size_t out_features, const float input_scale,
+    const float output_scale, DeviceBuffer *const input_codes_workspace,
+    DeviceBuffer *const output,
+    const Stream &stream) {
+  if (input_codes_workspace == nullptr || output == nullptr ||
+      !stream.valid() || rows == 0 ||
+      in_features == 0 || in_features % 32U != 0 || out_features == 0 ||
+      !std::isfinite(input_scale) || input_scale <= 0.0F ||
+      !std::isfinite(output_scale) || output_scale <= 0.0F) {
+    return {ErrorCode::kInvalidArgument,
+            "software_e4m3_h100_linear received invalid arguments"};
+  }
+  std::size_t input_elements = 0;
+  std::size_t weight_elements = 0;
+  std::size_t output_elements = 0;
+  if (!multiply(rows, in_features, &input_elements) ||
+      !multiply(out_features, in_features, &weight_elements) ||
+      !multiply(rows, out_features, &output_elements)) {
+    return {ErrorCode::kInvalidArgument,
+            "software E4M3 linear dimensions overflow"};
+  }
+  std::size_t input_bytes = 0;
+  std::size_t output_bytes = 0;
+  auto status = required_bytes(input_elements, sizeof(__nv_bfloat16),
+                               &input_bytes, "software E4M3 linear input");
+  if (!status.ok())
+    return status;
+  status = required_bytes(output_elements, sizeof(__nv_bfloat16),
+                          &output_bytes, "software E4M3 linear output");
+  if (!status.ok())
+    return status;
+  const int device = input.device();
+  if (stream.device() != device) {
+    return {ErrorCode::kInvalidArgument,
+            "software E4M3 linear stream is on a different CUDA device"};
+  }
+  status = buffer_size(input, input_bytes, device,
+                       "software E4M3 linear input");
+  if (!status.ok())
+    return status;
+  status = buffer_size(weight_codes, weight_elements, device,
+                       "software E4M3 linear weight codes");
+  if (!status.ok())
+    return status;
+  status = buffer_size(*input_codes_workspace, input_elements, device,
+                       "software E4M3 linear input-code workspace");
+  if (!status.ok())
+    return status;
+  status = buffer_size(*output, output_bytes, device,
+                       "software E4M3 linear output");
+  if (!status.ok())
+    return status;
+  status = select_device(device);
+  if (!status.ok())
+    return status;
+  software_lowp_codes_kernel<<<grid_for(input_elements), kThreads, 0,
+                               stream.get()>>>(
+      static_cast<const __nv_bfloat16 *>(input.data()),
+      static_cast<std::uint8_t *>(input_codes_workspace->data()),
+      input_elements, input_scale);
+  auto status_launch = launch_status("software QGMMA input quantization");
+  if (!status_launch.ok())
+    return status_launch;
+  constexpr unsigned int decode_columns = 32;
+  constexpr unsigned int prefill_rows = 16;
+  constexpr unsigned int prefill_columns = 16;
+  const dim3 grid(static_cast<unsigned int>(
+                      (out_features +
+                       (rows == 1 ? decode_columns : prefill_columns) - 1U) /
+                      (rows == 1 ? decode_columns : prefill_columns)),
+                  static_cast<unsigned int>(
+                      rows == 1 ? 1 : (rows + prefill_rows - 1U) /
+                                             prefill_rows));
+  if (rows == 1) {
+    software_h100_qgmma_tiled_kernel<1, decode_columns>
+        <<<grid, decode_columns, 0, stream.get()>>>(
+            static_cast<const std::uint8_t *>(
+                input_codes_workspace->data()),
+            static_cast<const std::uint8_t *>(weight_codes.data()),
+            static_cast<__nv_bfloat16 *>(output->data()), rows, in_features,
+            out_features, output_scale);
+  } else {
+    software_h100_qgmma_tiled_kernel<prefill_rows, prefill_columns>
+        <<<grid, prefill_rows * prefill_columns, 0, stream.get()>>>(
+            static_cast<const std::uint8_t *>(
+                input_codes_workspace->data()),
+            static_cast<const std::uint8_t *>(weight_codes.data()),
+            static_cast<__nv_bfloat16 *>(output->data()), rows, in_features,
+            out_features, output_scale);
+  }
+  return launch_status("software_h100_qgmma_tiled_kernel");
 }
 
 Status bf16_rms_norm(const DeviceBuffer &input, const DeviceBuffer &scale,

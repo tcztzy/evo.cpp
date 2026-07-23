@@ -45,16 +45,114 @@ class CheckpointTests(unittest.TestCase):
             "block._extra_state": io.BytesIO(b"documented Transformer Engine state"),
         }
 
+    def fp8_payload(self, **changes: object) -> io.BytesIO:
+        scale = torch.tensor([2.0, 4.0, 1.0], dtype=torch.float32)
+        history = torch.zeros((16, 3), dtype=torch.float32)
+        history[:, 0] = 224.0
+        history[:, 1] = 112.0
+        payload: dict[str, object] = {
+            "scale_fwd": scale,
+            "scale_inv_fwd": scale.reciprocal(),
+            "amax_history_fwd": history,
+            "scale_bwd": torch.ones(2, dtype=torch.float32),
+            "scale_inv_bwd": torch.ones(2, dtype=torch.float32),
+            "amax_history_bwd": torch.zeros((16, 2), dtype=torch.float32),
+            "extra_fp8_variables": {
+                "fp8_checkpoint": True,
+                "num_gemms": 1,
+                "fp8_max_fwd": 448.0,
+                "fp8_max_bwd": 57344.0,
+            },
+        }
+        payload.update(changes)
+        stream = io.BytesIO()
+        torch.save(payload, stream)
+        stream.seek(0)
+        return stream
+
     def test_mmap_load_validates_and_exposes_bit_exact_chunks(self) -> None:
         state = self.valid_state()
         expected_bf16 = bytes(state["bf16.weight"].view(torch.uint8).reshape(-1).numpy())
         expected_f32 = bytes(state["f32.scale"].view(torch.uint8).reshape(-1).numpy())
         path = self.save(state)
 
-        sources, extra_names = load_checkpoint(path, self.manifest, expected_extra_states=1)
+        sources, extra_names, fp8_sources = load_checkpoint(
+            path, self.manifest, expected_extra_states=1
+        )
         self.assertEqual(extra_names, ["block._extra_state"])
+        self.assertEqual(fp8_sources, [])
         self.assertEqual(b"".join(bytes(chunk) for chunk in sources[0].iter_chunks(3)), expected_bf16)
         self.assertEqual(b"".join(bytes(chunk) for chunk in sources[1].iter_chunks(3)), expected_f32)
+
+    def test_projection_fp8_state_is_extracted_bit_exactly(self) -> None:
+        state = self.valid_state()
+        state["blocks.0.projections._extra_state"] = self.fp8_payload()
+        del state["block._extra_state"]
+        _, extra_names, fp8_sources = load_checkpoint(
+            self.save(state),
+            self.manifest,
+            expected_extra_states=1,
+            fp8_projection_layers=(0,),
+        )
+        self.assertEqual(extra_names, ["blocks.0.projections._extra_state"])
+        self.assertEqual(
+            [source.name for source in fp8_sources],
+            [
+                "blocks.0.projections.fp8_scale_fwd",
+                "blocks.0.projections.fp8_scale_inv_fwd",
+                "blocks.0.projections.fp8_amax_history_fwd",
+            ],
+        )
+        self.assertEqual([source.shape for source in fp8_sources], [(2,), (2,), (16, 2)])
+        expected = [
+            torch.tensor([2.0, 4.0], dtype=torch.float32),
+            torch.tensor([0.5, 0.25], dtype=torch.float32),
+            torch.tensor([[224.0, 112.0]] * 16, dtype=torch.float32),
+        ]
+        for source, tensor in zip(fp8_sources, expected, strict=True):
+            actual = b"".join(bytes(chunk) for chunk in source.iter_chunks(7))
+            self.assertEqual(actual, bytes(tensor.view(torch.uint8).reshape(-1).numpy()))
+
+    def test_projection_fp8_state_rejects_invalid_metadata(self) -> None:
+        invalid = {
+            "inverse": {
+                "scale_inv_fwd": torch.tensor([0.25, 0.25, 1.0], dtype=torch.float32)
+            },
+            "history": {
+                "amax_history_fwd": torch.ones((15, 3), dtype=torch.float32)
+            },
+            "maximum": {
+                "extra_fp8_variables": {
+                    "fp8_checkpoint": True,
+                    "num_gemms": 1,
+                    "fp8_max_fwd": 240.0,
+                    "fp8_max_bwd": 57344.0,
+                }
+            },
+        }
+        for name, changes in invalid.items():
+            with self.subTest(name=name):
+                state = self.valid_state()
+                state["blocks.0.projections._extra_state"] = self.fp8_payload(**changes)
+                del state["block._extra_state"]
+                with self.assertRaisesRegex(CheckpointError, "blocks.0.projections"):
+                    load_checkpoint(
+                        self.save(state, f"{name}.pt"),
+                        self.manifest,
+                        expected_extra_states=1,
+                        fp8_projection_layers=(0,),
+                    )
+
+    def test_projection_fp8_state_must_exist_for_every_hyena_layer(self) -> None:
+        with self.assertRaisesRegex(
+            CheckpointError, "missing FP8 projection extra state"
+        ):
+            load_checkpoint(
+                self.save(self.valid_state()),
+                self.manifest,
+                expected_extra_states=1,
+                fp8_projection_layers=(0,),
+            )
 
     def test_missing_unknown_and_wrong_dtype_fail_closed(self) -> None:
         state = self.valid_state()

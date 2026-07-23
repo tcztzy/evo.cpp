@@ -40,6 +40,7 @@ struct RuntimeModelConfig final {
   float epsilon{0.0F};
   float rope_scale{0.0F};
   bool qkv_head_major{false};
+  bool use_fp8_input_projections{false};
   bool test_fixture{false};
   std::vector<MixerType> mixer_types;
 

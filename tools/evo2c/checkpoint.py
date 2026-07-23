@@ -44,12 +44,111 @@ def _torch_dtype_name(torch: Any, tensor: Any) -> str | None:
     return None
 
 
+def _projection_fp8_sources(
+    torch: Any,
+    extra_states: dict[str, Any],
+    layers: Sequence[int],
+) -> list[TorchTensorSource]:
+    sources: list[TorchTensorSource] = []
+    for layer in layers:
+        key = f"blocks.{layer}.projections._extra_state"
+        stream = extra_states.get(key)
+        if stream is None:
+            raise CheckpointError(f"missing FP8 projection extra state: {key}")
+        stream.seek(0)
+        try:
+            state = torch.load(stream, map_location="cpu", weights_only=True)
+        except Exception as error:
+            raise CheckpointError(f"failed to load {key}: {error}") from error
+        if not isinstance(state, dict):
+            raise CheckpointError(f"{key} payload must be a dictionary")
+
+        scale = state.get("scale_fwd")
+        scale_inv = state.get("scale_inv_fwd")
+        history = state.get("amax_history_fwd")
+        tensors = (
+            ("scale_fwd", scale, (3,)),
+            ("scale_inv_fwd", scale_inv, (3,)),
+            ("amax_history_fwd", history, (16, 3)),
+        )
+        for name, tensor, shape in tensors:
+            if (
+                not isinstance(tensor, torch.Tensor)
+                or tensor.dtype != torch.float32
+                or tuple(tensor.shape) != shape
+                or tensor.device.type != "cpu"
+                or not tensor.is_contiguous()
+            ):
+                raise CheckpointError(
+                    f"{key} {name} must be dense CPU F32{shape}"
+                )
+            if not bool(torch.isfinite(tensor).all()):
+                raise CheckpointError(f"{key} {name} contains non-finite values")
+        if not bool((scale > 0.0).all()) or not bool((scale_inv > 0.0).all()):
+            raise CheckpointError(f"{key} forward scales must be positive")
+        if not torch.equal(scale_inv, scale.reciprocal()):
+            raise CheckpointError(
+                f"{key} scale_inv_fwd is not the float32 reciprocal of scale_fwd"
+            )
+        if not bool((history >= 0.0).all()):
+            raise CheckpointError(f"{key} amax_history_fwd must be nonnegative")
+        history_max = history.max(dim=0).values
+        expected_scale = torch.where(
+            history_max > 0.0,
+            torch.full_like(history_max, 448.0) / history_max,
+            scale,
+        )
+        if not bool(
+            torch.allclose(scale[:2], expected_scale[:2], rtol=2e-7, atol=0.0)
+        ):
+            raise CheckpointError(
+                f"{key} input/weight scales do not match E4M3 delayed-scale history"
+            )
+
+        variables = state.get("extra_fp8_variables")
+        required_variables = {
+            "fp8_checkpoint": True,
+            "num_gemms": 1,
+            "fp8_max_fwd": 448.0,
+            "fp8_max_bwd": 57344.0,
+        }
+        if not isinstance(variables, dict) or any(
+            variables.get(name) != value
+            for name, value in required_variables.items()
+        ):
+            raise CheckpointError(
+                f"{key} does not describe one HYBRID E4M3/E5M2 GEMM"
+            )
+
+        prefix = f"blocks.{layer}.projections"
+        exported = (
+            (f"{prefix}.fp8_scale_fwd", scale[:2].clone()),
+            (f"{prefix}.fp8_scale_inv_fwd", scale_inv[:2].clone()),
+            (
+                f"{prefix}.fp8_amax_history_fwd",
+                history[:, :2].contiguous(),
+            ),
+        )
+        for name, tensor in exported:
+            sources.append(
+                TorchTensorSource(
+                    name=name,
+                    dtype="F32",
+                    shape=tuple(tensor.shape),
+                    nbytes=tensor.numel() * tensor.element_size(),
+                    tensor=tensor,
+                )
+            )
+    return sources
+
+
 def load_checkpoint(
     path: Path,
     manifest: Sequence[TensorSpec],
     *,
     expected_extra_states: int = EXPECTED_EXTRA_STATE_COUNT,
-) -> tuple[list[TorchTensorSource], list[str]]:
+    fp8_projection_layers: Sequence[int] = (),
+) -> tuple[list[TorchTensorSource], list[str], list[TorchTensorSource]]:
     """mmap a checkpoint, validate all entries, and return zero-copy tensor sources."""
     if path.name.rpartition(".part")[2].isdigit():
         raise CheckpointError("input is a checkpoint part; merge all .partN files in order first")
@@ -82,6 +181,9 @@ def load_checkpoint(
         raise CheckpointError(
             f"checkpoint has {len(non_tensors)} TE extra-state entries; expected {expected_extra_states}"
         )
+    fp8_sources = _projection_fp8_sources(
+        torch, non_tensors, fp8_projection_layers
+    )
 
     expected = {spec.name: spec for spec in manifest}
     missing = sorted(expected.keys() - tensors.keys())
@@ -125,4 +227,4 @@ def load_checkpoint(
                 tensor=tensor,
             )
         )
-    return sources, sorted(non_tensors)
+    return sources, sorted(non_tensors), fp8_sources

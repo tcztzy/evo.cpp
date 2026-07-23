@@ -33,6 +33,30 @@ struct MlpWorkspace final {
                                  std::size_t out_features, DeviceBuffer *output,
                                  DeviceBuffer *workspace, const Stream &stream);
 
+// Convert BF16 values with NVIDIA satfinite E4M3 semantics using a fixed
+// per-tensor scale. `codes` is optional; dequantized_f32 is required.
+[[nodiscard]] Status software_e4m3_quantize_bf16(
+    const DeviceBuffer &input, std::size_t elements, float scale,
+    DeviceBuffer *codes, DeviceBuffer *dequantized_f32, const Stream &stream);
+
+// Convert BF16 to the one-byte scaled E4M3 payload used by software QGMMA.
+[[nodiscard]] Status software_e4m3_quantize_bf16_codes(
+    const DeviceBuffer &input, std::size_t elements, float scale,
+    DeviceBuffer *codes, const Stream &stream);
+
+// Emulate H100 QGMMA on sm80: each K=32 block globally aligns the raw E4M3
+// products and incoming accumulator to (2 integer, 13 fractional) bits,
+// truncates aligned operands, sums once, and truncates the normalized result.
+// Input is BF16 [rows,in], weight_codes is raw E4M3 [out,in],
+// input_codes_workspace holds at least rows*in bytes, and output is BF16
+// [rows,out].
+[[nodiscard]] Status software_e4m3_h100_linear(
+    const DeviceBuffer &input, const DeviceBuffer &weight_codes,
+    std::size_t rows, std::size_t in_features, std::size_t out_features,
+    float input_scale, float output_scale,
+    DeviceBuffer *input_codes_workspace, DeviceBuffer *output,
+    const Stream &stream);
+
 // Input/output BF16 [rows,width], scale F32 [width].
 [[nodiscard]] Status bf16_rms_norm(const DeviceBuffer &input,
                                    const DeviceBuffer &scale, std::size_t rows,

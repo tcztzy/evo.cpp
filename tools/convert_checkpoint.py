@@ -51,10 +51,25 @@ def main() -> int:
 
         config = load_config(args.config)
         manifest = checkpoint_manifest(config)
+        projection_layers = tuple(
+            sorted(
+                config.hcs_layer_idxs
+                + config.hcm_layer_idxs
+                + config.hcl_layer_idxs
+            )
+        )
         print(f"mmap loading {args.input} ...", file=sys.stderr, flush=True)
-        sources, skipped = load_checkpoint(args.input, manifest)
+        sources, skipped, fp8_sources = load_checkpoint(
+            args.input,
+            manifest,
+            fp8_projection_layers=projection_layers,
+        )
         print(
-            f"validated {len(sources)} tensors; skipping {len(skipped)} documented TE extra-state entries",
+            f"validated {len(sources)} checkpoint tensors and extracted "
+            f"{len(fp8_sources)} software-FP8 tensors from "
+            f"{len(projection_layers)} Hyena projections; "
+            f"skipping {len(skipped) - len(projection_layers)} other documented "
+            "TE extra-state entries",
             file=sys.stderr,
         )
         if args.dry_run:
@@ -64,10 +79,21 @@ def main() -> int:
         metadata = config_metadata(config, args.input.name, args.input.stat().st_size)
         if args.source_sha256 is not None:
             metadata["checkpoint.sha256"] = args.source_sha256.lower()
+        metadata.update(
+            {
+                "fp8.software_projection_count": len(projection_layers),
+                "fp8.forward_format": "E4M3FN",
+                "fp8.backward_format": "E5M2",
+                "fp8.amax_history_length": 16,
+                "fp8.max_forward": 448.0,
+                "fp8.inference_scale_update": False,
+                "fp8.reference": "TransformerEngine-2.3-HYBRID",
+            }
+        )
         write_model(
             args.output,
             metadata,
-            sources,
+            sources + fp8_sources,
             force=args.force,
             chunk_size=args.chunk_mib * 1024 * 1024,
             progress=progress,
