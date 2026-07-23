@@ -85,6 +85,7 @@ if(EVO2C_CUDA)
     evo2c_cuda STATIC
     src/cuda/attention.cu
     src/cuda/hyena.cu
+    src/cuda/model.cu
     src/cuda/ops.cu
     src/cuda/runtime.cu)
   target_include_directories(
@@ -152,6 +153,19 @@ if(EVO2C_CUDA)
     if(EVO2C_WARNINGS_AS_ERRORS)
       target_compile_options(
         evo2c-cuda-attention-tests PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Werror>)
+    endif()
+
+    add_executable(evo2c-cuda-model-tests tests/test_cuda_model.cu)
+    target_link_libraries(evo2c-cuda-model-tests PRIVATE evo2c_cuda)
+    set_target_properties(
+      evo2c-cuda-model-tests
+      PROPERTIES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+    target_compile_options(
+      evo2c-cuda-model-tests
+      PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra,-Wconversion,-Wshadow>)
+    if(EVO2C_WARNINGS_AS_ERRORS)
+      target_compile_options(
+        evo2c-cuda-model-tests PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Werror>)
     endif()
   endif()
 endif()
@@ -238,9 +252,21 @@ if(BUILD_TESTING)
     add_test(NAME cuda_ops COMMAND evo2c-cuda-ops-tests)
     add_test(NAME cuda_hyena COMMAND evo2c-cuda-hyena-tests)
     add_test(NAME cuda_attention COMMAND evo2c-cuda-attention-tests)
+    add_test(
+      NAME cuda_model
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cuda_model.py
+        --binary $<TARGET_FILE:evo2c-cuda-model-tests>
+        --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_tiny_model.py
+        --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/cuda_model)
     set_tests_properties(cuda_smoke PROPERTIES LABELS "gpu;cuda")
     set_tests_properties(cuda_ops PROPERTIES LABELS "gpu;cuda")
     set_tests_properties(cuda_hyena PROPERTIES LABELS "gpu;cuda")
     set_tests_properties(cuda_attention PROPERTIES LABELS "gpu;cuda")
+    set_tests_properties(
+      cuda_model
+      PROPERTIES
+        LABELS "gpu;cuda"
+        ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools")
   endif()
 endif()
