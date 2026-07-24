@@ -43,6 +43,10 @@ def main() -> int:
     build = (
         args.source_dir / "scripts" / "gpu02_build.sh"
     ).read_text(encoding="utf-8")
+    assert 'rsync_retries="${EVO2C_RSYNC_RETRIES:-12}"' in build
+    assert "until rsync -az --delete --delay-updates" in build
+    assert 'if (( rsync_attempt >= rsync_retries ))' in build
+    assert 'sleep "$rsync_retry_delay"' in build
     configure_index = build.index('  -S "$source_dir"')
     compile_index = build.index('  --build "$build_dir"')
     assert configure_index < compile_index, (
