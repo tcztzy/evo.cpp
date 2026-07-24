@@ -6,6 +6,8 @@ import dataclasses
 import importlib
 import math
 import re
+import sys
+import types
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -333,8 +335,8 @@ def _validate_source_metadata(
         if any(item.dtype not in {"BF16", "F32"} for item in inputs):
             raise CheckpointError(f"{'/'.join(sources)} must be BF16 or F32")
     elif transform in {"hcm_filter", "hcl_filter"}:
-        if any(item.dtype != "F32" for item in inputs):
-            raise CheckpointError(f"{'/'.join(sources)} must be F32")
+        if any(item.dtype not in {"BF16", "F32"} for item in inputs):
+            raise CheckpointError(f"{'/'.join(sources)} must be BF16 or F32")
 
 
 def resolve_dcp_directory(path: Path) -> Path:
@@ -376,6 +378,40 @@ def _torch_dtype_name(torch: Any, dtype: Any) -> str | None:
     return None
 
 
+_MCORE_PLAN_MODULE = "megatron.core.dist_checkpointing.strategies.torch"
+
+
+def _install_mcore_save_plan_stub() -> None:
+    """Provide the one non-tensor class referenced by official NeMo2 metadata."""
+    if _MCORE_PLAN_MODULE in sys.modules:
+        return
+    module_names = (
+        "megatron",
+        "megatron.core",
+        "megatron.core.dist_checkpointing",
+        "megatron.core.dist_checkpointing.strategies",
+        _MCORE_PLAN_MODULE,
+    )
+    parent: types.ModuleType | None = None
+    for module_name in module_names:
+        module = sys.modules.get(module_name)
+        if module is None:
+            module = types.ModuleType(module_name)
+            if module_name != _MCORE_PLAN_MODULE:
+                module.__path__ = []  # type: ignore[attr-defined]
+            sys.modules[module_name] = module
+        if parent is not None:
+            setattr(parent, module_name.rsplit(".", 1)[1], module)
+        parent = module
+
+    class MCoreSavePlan:
+        """Ignored save-time planner state; tensor storage metadata is standard DCP."""
+
+    MCoreSavePlan.__module__ = _MCORE_PLAN_MODULE
+    MCoreSavePlan.__qualname__ = "MCoreSavePlan"
+    setattr(parent, "MCoreSavePlan", MCoreSavePlan)
+
+
 class DcpReader:
     """Read selected DCP tensors one at a time on CPU."""
 
@@ -397,6 +433,20 @@ class DcpReader:
         self._reader = dcp.FileSystemReader(str(self.directory))
         try:
             checkpoint_metadata = self._reader.read_metadata()
+        except ModuleNotFoundError as error:
+            if error.name != "megatron":
+                raise CheckpointError(
+                    f"failed to read DCP metadata from {self.directory}: {error}"
+                ) from error
+            _install_mcore_save_plan_stub()
+            try:
+                checkpoint_metadata = self._reader.read_metadata()
+            except Exception as retry_error:
+                raise CheckpointError(
+                    f"failed to read DCP metadata from {self.directory} "
+                    f"after installing the MCoreSavePlan compatibility stub: "
+                    f"{retry_error}"
+                ) from retry_error
         except Exception as error:
             raise CheckpointError(
                 f"failed to read DCP metadata from {self.directory}: {error}"

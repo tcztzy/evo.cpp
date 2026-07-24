@@ -1,7 +1,7 @@
 # evo2c
 
 `evo2c` is a standalone C++17/CUDA inference runtime for Evo 2 40B and
-40B-base. It runs the model on four Ampere `sm_80` GPUs without PyTorch,
+40B-base. It runs the model on two to four Ampere `sm_80` GPUs without PyTorch,
 Vortex, Transformer Engine, Hopper, or hardware FP8 instructions.
 
 The implementation is intentionally narrow, in the style of `llama.cpp` and
@@ -10,19 +10,22 @@ an offline converter, and reproducible reference vectors.
 
 ## What works
 
-- Four-GPU layer pipeline for the 50-layer StripedHyena 2 model.
+- Two-to-four-GPU layer pipeline for the 50-layer StripedHyena 2 model.
 - Byte tokenizer, FASTA/text scoring, greedy or sampled generation.
 - HCS, HCM, HCL, MHA/RoPE, MLP, KV/FIR/IIR caches, and cached decode.
 - Exact Transformer Engine 2.3 E4M3FN projection scales extracted from the
   checkpoint.
 - Software H100-QGMMA accumulation on A800, with one-byte cached E4M3 weights.
+- Native BF16 Hyena projections for NVIDIA's BioNeMo
+  `evo2/40b-1m-fp8-bf16:1.0` checkpoint; precision is selected from checked
+  model metadata, not a runtime fallback.
 - Parallel per-GPU stage loading and static E4M3 weight preparation.
 - State-preserving chunked prefill with an 8192-token activation arena
   independent of the logical context capacity.
 - Fixed-page Q8 KV at context capacities of 131072 tokens and above, with
   on-read F32 dequantization inside online-softmax attention.
 - `EVO2C` v1 mmap model validation before any CUDA allocation.
-- CPU, CUDA, SASS, converter, four-GPU CLI, and official continuation gates.
+- CPU, CUDA, SASS, converter, multi-GPU CLI, and official continuation gates.
 
 The quality-gated production target is batch 1 with `--ctx 8192`. A real 40B
 8193-token prompt has additionally crossed the activation boundary under
@@ -45,6 +48,8 @@ From this repository on the client:
 scripts/gpu02_build.sh
 scripts/gpu02_test.sh
 scripts/gpu02_prepare_40b.sh
+scripts/gpu02_prepare_bionemo_40b.sh
+scripts/gpu02_validate_bionemo_40b.sh
 scripts/gpu02_quality.sh
 ```
 
@@ -64,6 +69,27 @@ $HOME/evo2c-models/evo2-40b-e4m3sw.evo2
 
 The validated file is 82,252,717,056 bytes with SHA256
 `d1619e3b2eef0fba7c5838bb61982e891cf63d55385ced865af06693222d6687`.
+
+For native BF16 inference, `gpu02_prepare_bionemo_40b.sh` instead retrieves
+the official NGC archive into the separate cache
+`/build/grp_icg/users/tang/.cache/bionemo`, verifies its fixed size and
+SHA256, validates the NeMo2 DCP manifest, and streams it to:
+
+```text
+$HOME/evo2c-models/evo2-40b-bionemo-bf16.evo2
+```
+
+The validated BF16 file is 82,254,509,184 bytes with SHA256
+`3fb2ec7ed2c89c4f88dcb9c4c6f675e46c2b37722ee82778ce0ff84794dfa5c8`.
+This NGC path does not use `HF_ENDPOINT`; the Hugging Face mirror remains
+configured only for the original ARC checkpoint.
+
+The real-model BioNeMo gate passed on two A800s at `--ctx 8192`: the 16×512
+score logits retained minimum cosine 0.999998748 to the official BioNeMo 2.4
+BF16 oracle with finite values and exact top-1, and greedy generation was
+byte-identical (`ACGTACGT`). Peak native allocation was 45.4 GB per GPU.
+`EVO2C_BIONEMO_GPU_LIST` selects any two to four unique devices for the
+detached validation script; its default remains `0,1,2,3`.
 
 On gpu02, define the container paths once:
 
@@ -190,6 +216,12 @@ python3 tools/convert_checkpoint.py \
   --config configs/evo2-40b-1m.yml \
   --output evo2-40b-e4m3sw.evo2 \
   --dtype bf16
+
+python3 tools/convert_bionemo_checkpoint.py \
+  --input /path/to/nemo2/weights \
+  --config configs/evo2-40b-1m-bionemo-bf16.yml \
+  --output evo2-40b-bionemo-bf16.evo2 \
+  --source-sha256 544b47e033d1fb0261b686a53f7c4fe240cd290253187d31e8c99dea9e35a680
 ```
 
 ## Validation commands
@@ -201,7 +233,7 @@ scripts/local_test.sh build-release
 EVO2C_SANITIZE=ON scripts/local_test.sh build-sanitize
 ```
 
-Both suites currently pass all 18 entries; three dependency-gated
+Both suites currently pass all 20 entries; four dependency-gated
 PyTorch/Triton/Vortex oracles report their declared skip status when those
 packages are unavailable. The production target is validated on gpu02 with:
 
@@ -210,16 +242,17 @@ scripts/gpu02_build.sh
 scripts/gpu02_test.sh
 ```
 
-The gpu02 suite passes all 26 entries: the CPU/converter contracts plus nine
-CUDA tests, including two four-GPU tests. Four optional external-reference
+The gpu02 suite passes all 28 entries: the CPU/converter contracts plus nine
+CUDA tests, including two multi-GPU tests. Five optional external-reference
 tests are skipped in the pinned runtime. Build warnings are errors in all
 canonical entrypoints.
 
 ## Limits
 
 - The runtime is deliberately limited to Evo 2 40B/40B-base, batch 1, and
-  exactly four CUDA devices. It is not a general model framework or server.
+  two to four CUDA devices. It is not a general model framework or server.
 - The checked production environment is four Ampere `sm_80` A800 80GB cards.
+  BioNeMo BF16 is additionally validated with a two-card 25+25 layer split.
   Other CUDA architectures and smaller cards are not claimed.
 - The official continuation quality gate is `--ctx 8192`. A real 8193-token
   prompt validates chunking at `--ctx 32768`; 131K and 1M runs validate logical

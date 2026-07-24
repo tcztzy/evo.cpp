@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import pickle
 import sys
 import tempfile
 import unittest
@@ -19,6 +20,7 @@ except ModuleNotFoundError:
 from evo2c.bionemo_checkpoint import (
     DcpReader,
     MappingGroup,
+    _install_mcore_save_plan_stub,
     _transform_tensors,
 )
 from evo2c.model_config import TensorSpec, load_config
@@ -56,6 +58,45 @@ class BioNeMoDcpTests(unittest.TestCase):
             bytes(actual.view(torch.uint8).reshape(-1).numpy()),
             bytes(expected.view(torch.uint8).reshape(-1).numpy()),
         )
+
+    def test_dcp_reader_accepts_official_mcore_save_plan_without_megatron(self) -> None:
+        expected = torch.tensor([1.0, -2.0, 3.5], dtype=torch.bfloat16)
+        checkpoint = self.directory / "mcore-weights"
+        writer = dcp.FileSystemWriter(
+            str(checkpoint), single_file_per_rank=False, thread_count=1
+        )
+        dcp.save(
+            state_dict={"module.test.weight": expected},
+            storage_writer=writer,
+            no_dist=True,
+        )
+        filesystem_reader = dcp.FileSystemReader(str(checkpoint))
+        metadata = filesystem_reader.read_metadata()
+        self.assertIsNotNone(metadata.storage_meta)
+
+        module_names = (
+            "megatron",
+            "megatron.core",
+            "megatron.core.dist_checkpointing",
+            "megatron.core.dist_checkpointing.strategies",
+            "megatron.core.dist_checkpointing.strategies.torch",
+        )
+        saved_modules = {name: sys.modules.get(name) for name in module_names}
+        _install_mcore_save_plan_stub()
+        plan_type = sys.modules[module_names[-1]].MCoreSavePlan
+        metadata.storage_meta.modules.append(plan_type())
+        with (checkpoint / ".metadata").open("wb") as output:
+            pickle.dump(metadata, output)
+        for name in reversed(module_names):
+            previous = saved_modules[name]
+            if previous is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous
+
+        reader = DcpReader(checkpoint)
+        actual = reader.load("test.weight")
+        self.assertTrue(torch.equal(actual, expected))
 
     def transform(
         self,
@@ -96,18 +137,28 @@ class BioNeMoDcpTests(unittest.TestCase):
         self.assertTrue(torch.equal(split["l2"], merged[3:]))
 
     def test_medium_and_long_filter_math_matches_bionemo_export(self) -> None:
-        h = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
-        decay = torch.tensor([[0.5, 0.25, 0.125], [2.0, 3.0, 4.0]])
+        h = torch.tensor(
+            [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=torch.bfloat16
+        )
+        decay = torch.tensor(
+            [[0.5, 0.25, 0.125], [2.0, 3.0, 4.0]], dtype=torch.bfloat16
+        )
         medium = self.transform(
             (TensorSpec("h", "F32", (2, 1, 3)),),
             "hcm_filter",
             [h, decay],
         )["h"]
-        self.assertTrue(torch.equal(medium[:, 0, :], h * decay))
+        self.assertTrue(torch.equal(medium[:, 0, :], h.float() * decay.float()))
 
-        poles = torch.tensor([[-1.0, 0.0], [0.5, -0.5]])
-        gamma = torch.tensor([[0.0, 0.25], [-0.25, 0.5]])
-        residues = torch.tensor([[0.1, 0.2], [0.3, 0.4]])
+        poles = torch.tensor(
+            [[-1.0, 0.0], [0.5, -0.5]], dtype=torch.bfloat16
+        )
+        gamma = torch.tensor(
+            [[0.0, 0.25], [-0.25, 0.5]], dtype=torch.bfloat16
+        )
+        residues = torch.tensor(
+            [[0.1, 0.2], [0.3, 0.4]], dtype=torch.bfloat16
+        )
         long_filter = self.transform(
             (
                 TensorSpec("log_poles", "F32", (2, 2, 1)),
@@ -116,9 +167,9 @@ class BioNeMoDcpTests(unittest.TestCase):
             "hcl_filter",
             [poles, gamma, residues],
         )
-        expected = -torch.exp(poles) * torch.exp(gamma)
+        expected = -torch.exp(poles.float()) * torch.exp(gamma.float())
         self.assertTrue(torch.equal(long_filter["log_poles"][:, :, 0], expected))
-        self.assertTrue(torch.equal(long_filter["residues"], residues))
+        self.assertTrue(torch.equal(long_filter["residues"], residues.float()))
 
     def test_rope_inverse_frequency_uses_40b_interpolated_base(self) -> None:
         inv_freq = self.transform(

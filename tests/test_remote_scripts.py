@@ -85,6 +85,76 @@ def main() -> int:
         '"' in prepare
     )
 
+    bionemo = (
+        args.source_dir / "scripts" / "gpu02_prepare_bionemo_40b.sh"
+    ).read_text(encoding="utf-8")
+    assert "/build/grp_icg/users/tang/.cache/bionemo" in bionemo
+    assert (
+        "https://api.ngc.nvidia.com/v2/models/nvidia/clara/"
+        "evo2-40b-1m-fp8-bf16-nemo2/versions/1.0/files/"
+        in bionemo
+    )
+    assert 'archive_size="63680606710"' in bionemo
+    assert (
+        'archive_sha256="'
+        "544b47e033d1fb0261b686a53f7c4fe240cd290253187d31e8c99dea9e35a680"
+        '"' in bionemo
+    )
+    assert 'expected_output_size="82254509184"' in bionemo
+    assert (
+        'expected_output_sha256="'
+        "3fb2ec7ed2c89c4f88dcb9c4c6f675e46c2b37722ee82778ce0ff84794dfa5c8"
+        '"' in bionemo
+    )
+    assert "convert_bionemo_checkpoint.py" in bionemo
+    assert "evo2-40b-1m-bionemo-bf16.yml" in bionemo
+    assert "--dry-run" in bionemo
+    assert "nohup setsid" in bionemo
+    assert 'status_partial="${status_file}.$$.partial"' in bionemo
+    assert 'until launch_output="$(' in bionemo
+    assert 'job_manifest="$(' in bionemo
+    assert '"$source_dir/tools/evo2c/bionemo_checkpoint.py"' in bionemo
+    assert 'test "$(cat "$status_file")" != "0"' in bionemo
+    assert 'checkpoint_dir="$resource_dir/checkpoint"' not in bionemo, (
+        "V32: locate the actual DCP .metadata instead of assuming archive layout"
+    )
+    assert "HF_ENDPOINT" not in bionemo, (
+        "V34: NGC retrieval is independent of the Hugging Face endpoint"
+    )
+
+    bionemo_validation = (
+        args.source_dir / "scripts" / "gpu02_validate_bionemo_40b.sh"
+    ).read_text(encoding="utf-8")
+    assert "evo2-40b-bionemo-bf16.evo2" in bionemo_validation
+    assert (
+        'expected_model_sha256="'
+        "3fb2ec7ed2c89c4f88dcb9c4c6f675e46c2b37722ee82778ce0ff84794dfa5c8"
+        '"' in bionemo_validation
+    )
+    assert (
+        'expected_greedy_sha256="'
+        "b28b7e7e6b70661dfee15d5290c4bca097ca145f721c4fbc4de73ad1d1660b8b"
+        '"' in bionemo_validation
+    )
+    assert "--score" in bionemo_validation
+    assert "-n 8 --ctx 8192" in bionemo_validation
+    assert "--top-k 1 --seed 1" in bionemo_validation
+    assert "--dump-logits" in bionemo_validation
+    assert "tools/compare_logits.py" in bionemo_validation
+    assert "--minimum-cosine 0.999" in bionemo_validation
+    assert "--reference-bytes" in bionemo_validation
+    assert bionemo_validation.count("apptainer exec --nv") == 2
+    assert "nohup setsid" in bionemo_validation
+    assert 'binary="$HOME/evo2c/build-gpu/evo2c"' in bionemo_validation
+    assert 'binary_sha256="$(sha256sum "$binary"' in bionemo_validation
+    assert 'status_partial="${status_file}.$$.partial"' in bionemo_validation
+    assert "nvidia-smi --query-gpu=" in bionemo_validation
+    assert "wait_for_exclusive_devices" in bionemo_validation
+    assert "EVO2C_BIONEMO_GPU_LIST" in bionemo_validation
+    assert 'gpu_tag="${gpu_list//,/}"' in bionemo_validation
+    assert 'test "$mode" = "Exclusive_Process"' in bionemo_validation
+    assert 'test "$(cat "$status_file")" != "0"' in bionemo_validation
+
     quality = (
         args.source_dir / "scripts" / "gpu02_quality.sh"
     ).read_text(encoding="utf-8")

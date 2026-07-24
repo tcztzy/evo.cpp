@@ -35,6 +35,75 @@ Validated generated artifacts:
 |---|---:|---|
 | `$HOME/evo2c-models/evo2_40b.pt` | 82,253,491,694 | `dd299612b1c1cdded0dfdcaf4d16f98fc97458261d80f4d662429f0ccb316bc3` |
 | `$HOME/evo2c-models/evo2-40b-e4m3sw.evo2` | 82,252,717,056 | `d1619e3b2eef0fba7c5838bb61982e891cf63d55385ced865af06693222d6687` |
+| `$HOME/evo2c-models/evo2-40b-bionemo-bf16.evo2` | 82,254,509,184 | `3fb2ec7ed2c89c4f88dcb9c4c6f675e46c2b37722ee82778ce0ff84794dfa5c8` |
+
+## BioNeMo 40B BF16 provenance and oracle
+
+The native BF16 model comes from NVIDIA's NGC resource
+`evo2/40b-1m-fp8-bf16:1.0`. The downloaded archive is 63,680,606,710 bytes
+with SHA256
+`544b47e033d1fb0261b686a53f7c4fe240cd290253187d31e8c99dea9e35a680`.
+Its NeMo2 DCP manifest contains 506 BF16 data tensors and 210 byte metadata
+entries. The EVO2C converter maps those data tensors to 537 output tensors and
+uses the same BF16-to-F32 filter materialization as NVIDIA's exporter.
+
+As an independent loader check, Megatron Bridge 0.4.1 converted the same DCP
+to its native checkpoint at
+`$HOME/evo2c-models/evo2-40b-bionemo-mbridge-bf16`. The resulting 515 files
+total 82,241,616,477 bytes; `.metadata` has SHA256
+`bbd16963098f00812b400d8488e6588918ba515d6006d27efcfd35c34411dace`.
+
+The numerical oracle uses BioNeMo Recipes 2.4 from source commit
+`b35c2556209282bd9389fba24f5931f6701e50c5`, Megatron Bridge 0.4.1,
+Megatron Core 0.17.0rc0, PyTorch
+`2.13.0a0+8145d630e8.nv26.06`, Transformer Engine
+`2.16.0+4220403e`, CUDA 13.3, and the
+`nvcr.io/nvidia/pytorch:26.06-py3` base image. The local Apptainer image is
+9,530,638,336 bytes with SHA256
+`1df753c08c3169357e5ecfb9497873250f78efbf1080494550b59d9ce5fe0943`.
+Because gpu02 cannot reach GitHub, all source dependencies are pinned to local
+mirrors; no Evo2 runtime code is patched. Triton is pointed at the driver
+mounted by Apptainer through `TRITON_LIBCUDA_PATH=/.singularity.d/libs`.
+
+The official TP=2 score oracle used `tests/vectors/t13_short.fasta` and emitted
+a finite 16×512 F32 logit matrix. Its NPY SHA256 is
+`9e16b0de532e57350b0b0ffdb9c48728b339c584925070ede75ea38d308d51d6`.
+The extraction report has SHA256
+`75221ee337d35b61c3a9008f7f661dff9bafc31329978211d588efaa65861b7f`.
+For prompt `ACGTACGTACGTACGT`, the official TP=2 greedy oracle generated the
+8-byte continuation `ACGTACGT`; its raw SHA256 is
+`b28b7e7e6b70661dfee15d5290c4bca097ca145f721c4fbc4de73ad1d1660b8b`.
+The JSONL record has SHA256
+`acd9ffbd04aab93f446dbedabce493c330b0a422b7f4177f5599967a27594721`.
+Generation took 8.71 seconds (0.9 tok/s) after model loading, with a reported
+55.546 GB peak per rank.
+
+The matching native gate ran on physical GPUs 1 and 2 while unrelated jobs
+occupied about 8.5 GiB on each card. Runtime binary SHA256 was
+`73b3c2ac5cdfd362ff9a4c4c973b81a4682437ddd1d08e92f60bb99e1f84c123`.
+EVO2C split the 50 layers evenly and reported peak allocation deltas of
+45,392,855,040 and 45,376,077,824 bytes, so both processes remained well
+below the 80 GiB physical limit even under contention.
+
+| Native phase | Work | Seconds | Throughput |
+|---|---:|---:|---:|
+| Score load | 40B model | 55.172 | — |
+| Score prefill | 16 tokens | 0.454 | 35.253 tok/s |
+| Greedy load | 40B model | 54.878 | — |
+| Greedy prefill | 16 tokens | 0.440 | 36.394 tok/s |
+| Greedy decode | 7 measured steps | 0.849 | 8.248 tok/s |
+
+The native score logits have SHA256
+`99c2c6de5291a7b9e525921f1c4fa9a089b94b96eab39320a4d87a738cda2244`.
+All values are finite, all 16 top-1 token IDs exactly match BioNeMo, and the
+minimum row cosine is 0.999998748027925. The native greedy output is
+byte-identical to the official `ACGTACGT`. The combined comparison report is
+3,110 bytes with SHA256
+`864f8f64ffaf18de005c770412c9ab31a1775c98556dd1da67ff49e0b984e44c`.
+All artifacts are under
+`$HOME/evo2c-artifacts/t22-bionemo-bf16-3fb2ec7e-gpu12`; its hash manifest has
+SHA256
+`fa68a8c1a061c992ba4f1fb3647309138ffaf15ca1fb29c02a446acbfd77f5b2`.
 
 From the local repository, build and test with:
 

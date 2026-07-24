@@ -54,10 +54,7 @@ def source_metadata(groups: list[MappingGroup]) -> dict[str, DcpTensorMetadata]:
         else:
             raise AssertionError(group.transform)
 
-        if group.transform in {"hcm_filter", "hcl_filter", "cast_f32"}:
-            dtypes = ["F32"] * len(sources)
-        else:
-            dtypes = ["BF16"] * len(sources)
+        dtypes = ["BF16"] * len(sources)
         for name, shape, dtype in zip(sources, shapes, dtypes, strict=True):
             result[name] = DcpTensorMetadata(
                 physical_name=f"module.{name}",
@@ -108,6 +105,10 @@ class BioNeMoMappingTests(unittest.TestCase):
         ]
         self.assertEqual(outputs, expected)
         self.assertEqual(len(self.metadata), 506)
+        self.assertEqual(
+            Counter(item.dtype for item in self.metadata.values()),
+            {"BF16": 506},
+        )
         self.assertEqual(
             next(
                 item

@@ -1501,9 +1501,10 @@ Status PipelineModel::load(const ModelFile &model,
                            const std::vector<int> &devices,
                            const std::size_t context_capacity,
                            const bool allow_test_fixture) {
-  if (impl_->loaded || context_capacity == 0 || devices.size() != 4) {
+  if (impl_->loaded || context_capacity == 0 || devices.size() < 2 ||
+      devices.size() > 4) {
     return {ErrorCode::kInvalidArgument,
-            "pipeline load requires exactly four devices, nonzero context, "
+            "pipeline load requires two to four devices, nonzero context, "
             "and an unloaded model"};
   }
   const std::set<int> unique_devices(devices.begin(), devices.end());

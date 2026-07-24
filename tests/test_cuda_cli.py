@@ -5,6 +5,7 @@ import argparse
 import ast
 import json
 import math
+import os
 import shutil
 import struct
 import subprocess
@@ -13,6 +14,15 @@ from pathlib import Path
 
 
 def visible_gpu_count() -> int:
+    cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if cuda_visible_devices is not None:
+        return len(
+            [
+                device
+                for device in cuda_visible_devices.split(",")
+                if device.strip() and device.strip() != "-1"
+            ]
+        )
     executable = shutil.which("nvidia-smi")
     if executable is None:
         return 0
@@ -88,9 +98,11 @@ def main() -> int:
     parser.add_argument("--generator", required=True, type=Path)
     parser.add_argument("--work-dir", required=True, type=Path)
     args = parser.parse_args()
-    if visible_gpu_count() < 4:
-        print("SKIP: four visible CUDA devices are required")
+    gpu_count = min(visible_gpu_count(), 4)
+    if gpu_count < 2:
+        print("SKIP: two visible CUDA devices are required")
         return 77
+    gpu_list = ",".join(str(index) for index in range(gpu_count))
 
     args.work_dir.mkdir(parents=True, exist_ok=True)
     model = args.work_dir / "tiny-50l-512v.evo2"
@@ -123,7 +135,7 @@ def main() -> int:
         "--ctx",
         "8",
         "--gpu",
-        "0,1,2,3",
+        gpu_list,
         "--top-k",
         "1",
         "--dump-logits",
@@ -153,7 +165,7 @@ def main() -> int:
         "--ctx",
         "8",
         "--gpu",
-        "0,1,2,3",
+        gpu_list,
         "--top-k",
         "1",
     ]
@@ -199,7 +211,7 @@ def main() -> int:
         "--ctx",
         "12",
         "--gpu",
-        "0,1,2,3",
+        gpu_list,
         "--top-k",
         "1",
     ]
@@ -260,7 +272,7 @@ def main() -> int:
             "--ctx",
             "131072",
             "--gpu",
-            "0,1,2,3",
+            gpu_list,
             "--top-k",
             "1",
         ]
@@ -310,7 +322,7 @@ def main() -> int:
             "--ctx",
             "8",
             "--gpu",
-            "0,1,2,3",
+            gpu_list,
             "--dump-logits",
             str(score_logits),
         ]
@@ -362,7 +374,7 @@ def main() -> int:
             "--ctx",
             "12",
             "--gpu",
-            "0,1,2,3",
+            gpu_list,
             "--dump-logits",
             str(long_score_logits),
         ]

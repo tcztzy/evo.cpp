@@ -118,13 +118,39 @@ int main(const int argc, char **argv) {
     require(evo2c::cuda::cuda_status(cudaGetDeviceCount(&device_count),
                                      "cudaGetDeviceCount"),
             "count CUDA devices");
-    if (device_count < 4) {
-      std::cout << "SKIP: four CUDA devices are required\n";
+    if (device_count < 2) {
+      std::cout << "SKIP: two CUDA devices are required\n";
       return 77;
     }
 
     evo2c::ModelFile file;
     require(file.open(argv[1]), "open synthetic pipeline model");
+    {
+      evo2c::cuda::PipelineModel two_gpu_model;
+      check(!two_gpu_model.load(file, {0}, 12, true).ok(),
+            "pipeline rejects fewer than two CUDA devices");
+      require(two_gpu_model.load(file, {0, 1}, 12, true),
+              "load two-GPU pipeline model");
+      const auto &two_gpu_stages = two_gpu_model.stages();
+      check(two_gpu_stages.size() == 2 &&
+                two_gpu_stages[0].layer_begin == 0 &&
+                two_gpu_stages[0].layer_end == 25 &&
+                two_gpu_stages[1].layer_begin == 25 &&
+                two_gpu_stages[1].layer_end == 50,
+            "two-GPU pipeline splits all 50 layers deterministically");
+      std::vector<float> two_gpu_logits;
+      require(two_gpu_model.prefill({2, 5, 7, 3}, &two_gpu_logits),
+              "two-GPU 50-layer prefill");
+      const auto expected_logits = read_f32(argv[2]);
+      check(all_close(two_gpu_logits, expected_logits, 0.08F, 0.06F) &&
+                cosine(two_gpu_logits, expected_logits) >= 0.999F,
+            "two-GPU pipeline logits match independent oracle");
+    }
+
+    if (device_count < 4) {
+      std::cout << "SKIP: four-GPU checks require four CUDA devices\n";
+      return failures == 0 ? 0 : 1;
+    }
     evo2c::cuda::PipelineModel model;
     check(!model.load(file, {0, 0, 1, 2}, 8, true).ok(),
           "pipeline rejects duplicate CUDA devices");
