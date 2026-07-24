@@ -481,14 +481,56 @@ Status read_runtime_model_config(const ModelFile &model,
             "required metadata is missing: config.use_fp8_input_projections"};
   }
   if (!tie_embeddings || (!candidate.test_fixture && !column_split) ||
-      column_split_hyena || !interleave || flip ||
-      (!candidate.test_fixture && !use_fp8_input_projections))
+      column_split_hyena || !interleave || flip)
     return {ErrorCode::kUnsupported,
             "model semantic flags do not match supported Evo 2"};
   candidate.qkv_head_major = column_split;
-  candidate.use_fp8_input_projections = use_fp8_input_projections;
 
-  if (!candidate.test_fixture) {
+  std::string projection_dtype;
+  if (model.find_metadata("hyena_projection_dtype") != nullptr) {
+    status =
+        metadata_string(model, "hyena_projection_dtype", &projection_dtype);
+    if (!status.ok())
+      return status;
+  } else if (candidate.test_fixture || use_fp8_input_projections) {
+    projection_dtype =
+        use_fp8_input_projections ? "E4M3_SW" : "BF16";
+  } else {
+    return {ErrorCode::kModelFormat,
+            "required metadata is missing: hyena_projection_dtype"};
+  }
+  if (projection_dtype == "BF16") {
+    candidate.hyena_projection_dtype = HyenaProjectionDType::kBF16;
+  } else if (projection_dtype == "E4M3_SW") {
+    candidate.hyena_projection_dtype = HyenaProjectionDType::kE4M3Sw;
+  } else {
+    return {ErrorCode::kUnsupported,
+            "unsupported Hyena projection dtype: " + projection_dtype};
+  }
+  const bool software_fp8 =
+      candidate.hyena_projection_dtype == HyenaProjectionDType::kE4M3Sw;
+  if (software_fp8 != use_fp8_input_projections) {
+    return {ErrorCode::kModelFormat,
+            "hyena_projection_dtype disagrees with "
+            "config.use_fp8_input_projections"};
+  }
+
+  std::string hcm_filter_dtype = "BF16";
+  if (model.find_metadata("hcm_filter_dtype") != nullptr) {
+    status = metadata_string(model, "hcm_filter_dtype", &hcm_filter_dtype);
+    if (!status.ok())
+      return status;
+  }
+  if (hcm_filter_dtype == "BF16") {
+    candidate.hcm_filter_dtype = HcmFilterDType::kBF16;
+  } else if (hcm_filter_dtype == "F32") {
+    candidate.hcm_filter_dtype = HcmFilterDType::kF32;
+  } else {
+    return {ErrorCode::kUnsupported,
+            "unsupported medium-Hyena filter dtype: " + hcm_filter_dtype};
+  }
+
+  if (!candidate.test_fixture && software_fp8) {
     std::string fp8_reference;
     status = metadata_string(model, "fp8.reference", &fp8_reference);
     if (!status.ok())
@@ -498,6 +540,10 @@ Status read_runtime_model_config(const ModelFile &model,
               "unsupported software-FP8 checkpoint reference: " +
                   fp8_reference};
     }
+  } else if (!software_fp8 &&
+             model.find_metadata("fp8.reference") != nullptr) {
+    return {ErrorCode::kModelFormat,
+            "BF16 Hyena projections must not declare fp8.reference"};
   }
 
   std::vector<std::size_t> hcs;
@@ -554,6 +600,53 @@ Status read_runtime_model_config(const ModelFile &model,
     candidate.mixer_types[index] = MixerType::kHcl;
   for (const auto index : attention)
     candidate.mixer_types[index] = MixerType::kAttention;
+
+  for (std::size_t index = 0; index < candidate.layers; ++index) {
+    const auto type = candidate.mixer_types[index];
+    const std::string prefix =
+        "blocks." + std::to_string(index) + ".projections";
+    if (type != MixerType::kAttention) {
+      const std::array<std::string, 3> fp8_names{
+          prefix + ".fp8_scale_fwd",
+          prefix + ".fp8_scale_inv_fwd",
+          prefix + ".fp8_amax_history_fwd"};
+      if (software_fp8) {
+        const TensorInfo *tensor = nullptr;
+        status = checked_tensor(model, fp8_names[0], TensorDType::kF32, {2},
+                                &tensor);
+        if (!status.ok())
+          return status;
+        status = checked_tensor(model, fp8_names[1], TensorDType::kF32, {2},
+                                &tensor);
+        if (!status.ok())
+          return status;
+        status = checked_tensor(model, fp8_names[2], TensorDType::kF32,
+                                {16, 2}, &tensor);
+        if (!status.ok())
+          return status;
+      } else if (std::any_of(
+                     fp8_names.begin(), fp8_names.end(),
+                     [&model](const std::string &name) {
+                       return model.find_tensor(name) != nullptr;
+                     })) {
+        return {ErrorCode::kModelFormat,
+                "BF16 Hyena projection contains software-FP8 tensors: " +
+                    prefix};
+      }
+    }
+    if (type == MixerType::kHcm) {
+      const TensorInfo *tensor = nullptr;
+      status = checked_tensor(
+          model, "blocks." + std::to_string(index) + ".filter.h",
+          candidate.hcm_filter_dtype == HcmFilterDType::kF32
+              ? TensorDType::kF32
+              : TensorDType::kBF16,
+          {candidate.hcm_filter_groups, 1, candidate.hcm_filter_length},
+          &tensor);
+      if (!status.ok())
+        return status;
+    }
+  }
   *config = std::move(candidate);
   return Status::Ok();
 }
@@ -685,7 +778,7 @@ struct SingleGpuModel::Impl final {
                                             config.heads, config.head_dim());
     }
 
-    if (config.use_fp8_input_projections && !config.test_fixture) {
+    if (config.hyena_projection_dtype == HyenaProjectionDType::kE4M3Sw) {
       float weight_scale = 0.0F;
       status = projection_fp8_scales(
           model, prefix + ".projections", &layer->projection_input_scale,
@@ -759,10 +852,13 @@ struct SingleGpuModel::Impl final {
                                          config.hcs_filter_length, stream);
     }
     if (layer->type == MixerType::kHcm) {
-      status =
-          upload_tensor(model, prefix + ".filter.h", TensorDType::kBF16,
-                        {config.hcm_filter_groups, 1, config.hcm_filter_length},
-                        device, stream, &layer->inner_filter);
+      status = upload_tensor(
+          model, prefix + ".filter.h",
+          config.hcm_filter_dtype == HcmFilterDType::kF32
+              ? TensorDType::kF32
+              : TensorDType::kBF16,
+          {config.hcm_filter_groups, 1, config.hcm_filter_length}, device,
+          stream, &layer->inner_filter);
       if (!status.ok())
         return status;
       status = upload_tensor(model, prefix + ".filter.D", TensorDType::kBF16,
@@ -922,25 +1018,30 @@ struct SingleGpuModel::Impl final {
           stream);
     }
     if (layer->type == MixerType::kHcm) {
+      const auto weight_type =
+          config.hcm_filter_dtype == HcmFilterDType::kF32
+              ? FirWeightType::kF32
+              : FirWeightType::kBF16;
       if (mode == ForwardMode::kPrefill) {
         return bf16_hcm_prefill(
             arena.x2, arena.x1, arena.value, layer->inner_filter,
             layer->direct, rows, config.width, config.hcm_filter_groups,
             config.hcm_filter_length, &layer->inner_cache,
-            &arena.mixer_scratch, &arena.mixer_output, &hcm_fft, stream);
+            &arena.mixer_scratch, &arena.mixer_output, &hcm_fft, stream,
+            weight_type);
       }
       if (mode == ForwardMode::kContinue) {
         return bf16_hcm_continue(
             arena.x2, arena.x1, arena.value, layer->inner_filter,
             layer->direct, rows, config.width, config.hcm_filter_groups,
             config.hcm_filter_length, &layer->inner_cache,
-            &arena.mixer_scratch, &arena.mixer_output, stream);
+            &arena.mixer_scratch, &arena.mixer_output, stream, weight_type);
       }
       return bf16_hcm_decode(
           arena.x2, arena.x1, arena.value, layer->inner_filter, layer->direct,
           config.width, config.hcm_filter_groups, config.hcm_filter_length,
           &layer->inner_cache, &arena.mixer_scratch, &arena.mixer_output,
-          stream);
+          stream, weight_type);
     }
     if (mode == ForwardMode::kContinue) {
       return bf16_hcl_prefill(

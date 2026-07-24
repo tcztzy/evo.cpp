@@ -103,6 +103,7 @@ def main() -> int:
                 "checkpoint.extra_state_count": len(reader.bytes_entries),
                 "config.use_fp8_input_projections": False,
                 "hyena_projection_dtype": "BF16",
+                "hcm_filter_dtype": "F32",
                 "bionemo.resource": NGC_RESOURCE,
                 "bionemo.mapping_reference": MAPPING_REFERENCE,
             }

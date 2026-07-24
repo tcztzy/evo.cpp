@@ -12,6 +12,7 @@ namespace evo2c::cuda {
 
 enum class FirOrientation { kCrossCorrelation, kCausalConvolution };
 enum class FirBiasMode { kAdd, kMultiplyInput };
+enum class FirWeightType { kBF16, kF32 };
 enum class HclPrefillMode { kRecurrence, kFft, kRecurrenceContinue };
 
 // F32 chronological state [channels,kernel_size-1]. Short sequences are
@@ -69,7 +70,7 @@ private:
                                      std::size_t, std::size_t, std::size_t,
                                      FirOrientation, FirBiasMode,
                                      DeviceBuffer *, FirCache *, FftWorkspace *,
-                                     const Stream &);
+                                     const Stream &, FirWeightType);
   friend Status bf16_hcl_prefill(const DeviceBuffer &, const DeviceBuffer &,
                                  const DeviceBuffer &, const DeviceBuffer &,
                                  const DeviceBuffer &, const DeviceBuffer &,
@@ -104,16 +105,17 @@ bf16_split_hyena_projection(const DeviceBuffer &projection, std::size_t length,
                             DeviceBuffer *x1, DeviceBuffer *value,
                             const Stream &stream);
 
-// BF16 sequence/input [length,channels], grouped weight
-// [filter_groups,kernel_size], optional per-channel BF16 bias, BF16 output.
-// filter_groups must divide channels and follows repeat_interleave semantics.
+// BF16 sequence/input [length,channels], explicitly selected BF16/F32 grouped
+// weight [filter_groups,kernel_size], optional per-channel BF16 bias, BF16
+// output. filter_groups divides channels and follows repeat_interleave.
 [[nodiscard]] Status
 bf16_fir_prefill_direct(const DeviceBuffer &input, const DeviceBuffer &weight,
                         const DeviceBuffer *bias, std::size_t length,
                         std::size_t channels, std::size_t filter_groups,
                         std::size_t kernel_size, FirOrientation orientation,
                         FirBiasMode bias_mode, DeviceBuffer *output,
-                        FirCache *cache, const Stream &stream);
+                        FirCache *cache, const Stream &stream,
+                        FirWeightType weight_type = FirWeightType::kBF16);
 
 // Continues a sequence from an initialized F32 FIR cache and updates that
 // cache with the final kernel_size-1 inputs.
@@ -123,14 +125,16 @@ bf16_fir_continue_direct(const DeviceBuffer &input, const DeviceBuffer &weight,
                          std::size_t channels, std::size_t filter_groups,
                          std::size_t kernel_size, FirOrientation orientation,
                          FirBiasMode bias_mode, DeviceBuffer *output,
-                         FirCache *cache, const Stream &stream);
+                         FirCache *cache, const Stream &stream,
+                         FirWeightType weight_type = FirWeightType::kBF16);
 
 [[nodiscard]] Status bf16_fir_prefill_fft(
     const DeviceBuffer &input, const DeviceBuffer &weight,
     const DeviceBuffer *bias, std::size_t length, std::size_t channels,
     std::size_t filter_groups, std::size_t kernel_size,
     FirOrientation orientation, FirBiasMode bias_mode, DeviceBuffer *output,
-    FirCache *cache, FftWorkspace *workspace, const Stream &stream);
+    FirCache *cache, FftWorkspace *workspace, const Stream &stream,
+    FirWeightType weight_type = FirWeightType::kBF16);
 
 // One BF16 token [channels] in, one BF16 token out; updates F32 cache.
 [[nodiscard]] Status
@@ -138,7 +142,8 @@ bf16_fir_decode(const DeviceBuffer &input, const DeviceBuffer &weight,
                 const DeviceBuffer *bias, std::size_t channels,
                 std::size_t filter_groups, std::size_t kernel_size,
                 FirOrientation orientation, FirBiasMode bias_mode,
-                FirCache *cache, DeviceBuffer *output, const Stream &stream);
+                FirCache *cache, DeviceBuffer *output, const Stream &stream,
+                FirWeightType weight_type = FirWeightType::kBF16);
 
 // HCS/HCM compose the inner gate x1*v, grouped FIR, and outer x2 gate. Scratch
 // is BF16 [length,width] for prefill and BF16 [width] for decode.
@@ -166,20 +171,23 @@ bf16_hcs_decode(const DeviceBuffer &x2, const DeviceBuffer &x1,
     const DeviceBuffer &weight, const DeviceBuffer &direct, std::size_t length,
     std::size_t width, std::size_t filter_groups, std::size_t kernel_size,
     FirCache *cache, DeviceBuffer *scratch, DeviceBuffer *output,
-    FftWorkspace *workspace, const Stream &stream);
+    FftWorkspace *workspace, const Stream &stream,
+    FirWeightType weight_type = FirWeightType::kBF16);
 
 [[nodiscard]] Status bf16_hcm_decode(
     const DeviceBuffer &x2, const DeviceBuffer &x1, const DeviceBuffer &value,
     const DeviceBuffer &weight, const DeviceBuffer &direct, std::size_t width,
     std::size_t filter_groups, std::size_t kernel_size, FirCache *cache,
-    DeviceBuffer *scratch, DeviceBuffer *output, const Stream &stream);
+    DeviceBuffer *scratch, DeviceBuffer *output, const Stream &stream,
+    FirWeightType weight_type = FirWeightType::kBF16);
 
 [[nodiscard]] Status bf16_hcm_continue(
     const DeviceBuffer &x2, const DeviceBuffer &x1, const DeviceBuffer &value,
     const DeviceBuffer &weight, const DeviceBuffer &direct, std::size_t length,
     std::size_t width, std::size_t filter_groups, std::size_t kernel_size,
     FirCache *cache, DeviceBuffer *scratch, DeviceBuffer *output,
-    const Stream &stream);
+    const Stream &stream,
+    FirWeightType weight_type = FirWeightType::kBF16);
 
 // HCL tensors: x2/x1/value and direct are BF16; log_poles/residues and cache
 // are F32. scratch is BF16 [length,width]. FFT mode requires an exact matching

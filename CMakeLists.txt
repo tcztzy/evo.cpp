@@ -392,7 +392,8 @@ if(BUILD_TESTING)
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cuda_model.py
         --binary $<TARGET_FILE:evo2c-cuda-model-tests>
         --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_tiny_model.py
-        --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/cuda_model)
+        --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/cuda_model
+        --check-precision-metadata)
     add_test(
       NAME cuda_pipeline
       COMMAND ${Python3_EXECUTABLE}

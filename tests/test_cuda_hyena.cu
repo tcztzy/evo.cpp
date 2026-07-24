@@ -346,7 +346,8 @@ void test_hcs(const int device, const evo2c::cuda::Stream &stream) {
         "HCS cached decode equals full causal last token");
 }
 
-void test_hcm_fft_decode(const int device, const evo2c::cuda::Stream &stream) {
+void test_hcm_fft_decode(const int device, const evo2c::cuda::Stream &stream,
+                         const bool f32_weight) {
   constexpr std::size_t length = 19;
   constexpr std::size_t width = 10;
   constexpr std::size_t groups = 5;
@@ -354,13 +355,18 @@ void test_hcm_fft_decode(const int device, const evo2c::cuda::Stream &stream) {
   const auto x2_f32 = quantize_bf16(values(length * width, 11, 31.0F));
   const auto x1_f32 = quantize_bf16(values(length * width, 43, 37.0F));
   const auto value_f32 = quantize_bf16(values(length * width, 79, 41.0F));
+  const auto raw_weight = values(groups * kernel, 101, 97.0F);
   const auto grouped_weight =
-      quantize_bf16(values(groups * kernel, 101, 97.0F));
+      f32_weight ? raw_weight : quantize_bf16(raw_weight);
   const auto direct_f32 = quantize_bf16(values(width, 137, 53.0F));
   auto x2 = upload_bf16(device, x2_f32, stream);
   auto x1 = upload_bf16(device, x1_f32, stream);
   auto value = upload_bf16(device, value_f32, stream);
-  auto weight = upload_bf16(device, grouped_weight, stream);
+  auto weight = f32_weight ? upload_f32(device, grouped_weight, stream)
+                           : upload_bf16(device, grouped_weight, stream);
+  const auto weight_type = f32_weight
+                               ? evo2c::cuda::FirWeightType::kF32
+                               : evo2c::cuda::FirWeightType::kBF16;
   auto direct = upload_bf16(device, direct_f32, stream);
   evo2c::cuda::DeviceBuffer gated;
   evo2c::cuda::DeviceBuffer filtered;
@@ -375,7 +381,7 @@ void test_hcm_fft_decode(const int device, const evo2c::cuda::Stream &stream) {
           "allocate HCM FFT workspace");
   require(evo2c::cuda::bf16_hcm_prefill(x2, x1, value, weight, direct, length,
                                         width, groups, kernel, &cache, &gated,
-                                        &filtered, &fft, stream),
+                                        &filtered, &fft, stream, weight_type),
           "HCM FFT prefill");
 
   std::vector<float> gated_f32(length * width);
@@ -415,7 +421,8 @@ void test_hcm_fft_decode(const int device, const evo2c::cuda::Stream &stream) {
           "allocate HCM decode output");
   require(evo2c::cuda::bf16_hcm_decode(
               next_x2_device, next_x1_device, next_value_device, weight, direct,
-              width, groups, kernel, &cache, &decode_scratch, &decoded, stream),
+              width, groups, kernel, &cache, &decode_scratch, &decoded, stream,
+              weight_type),
           "HCM decode");
   gated_f32.insert(gated_f32.end(), next_gated.begin(), next_gated.end());
   require(evo2c::cpu::causal_depthwise_fir(
@@ -452,7 +459,7 @@ void test_hcm_fft_decode(const int device, const evo2c::cuda::Stream &stream) {
   require(evo2c::cuda::bf16_hcm_continue(
               chunk_x2_device, chunk_x1_device, chunk_value_device, weight,
               direct, chunk_length, width, groups, kernel, &cache,
-              &chunk_scratch, &chunk_output, stream),
+              &chunk_scratch, &chunk_output, stream, weight_type),
           "continue HCM chunk");
   std::vector<float> chunk_gated(chunk_length * width);
   for (std::size_t index = 0; index < chunk_gated.size(); ++index)
@@ -664,7 +671,8 @@ int main() {
     test_projection_split(device, stream);
     test_short_fir_cache(device, stream);
     test_hcs(device, stream);
-    test_hcm_fft_decode(device, stream);
+    test_hcm_fft_decode(device, stream, false);
+    test_hcm_fft_decode(device, stream, true);
     test_hcl(device, stream);
     require(stream.synchronize(), "final stream synchronize");
     require(evo2c::cuda::synchronize_device(), "final device synchronize");

@@ -272,10 +272,16 @@ class LayerState:
 
 
 class TinyModel:
-    def __init__(self) -> None:
+    def __init__(self, *, add_fp8_residue: bool = False) -> None:
         self.tensors: dict[str, tuple[str, tuple[int, ...], list[float]]] = {}
         self.states = [LayerState() for _ in range(LAYERS)]
         self._build_weights()
+        if add_fp8_residue:
+            self.tensors["blocks.0.projections.fp8_scale_fwd"] = (
+                "F32",
+                (2,),
+                [1.0, 1.0],
+            )
 
     def add_bf16(self, name: str, shape: tuple[int, ...], scale: float, *, center: float = 0.0) -> None:
         count = math.prod(shape)
@@ -314,7 +320,7 @@ class TinyModel:
                 if layer in HCS:
                     self.add_bf16(f"{prefix}.filter.h", (HCS_GROUPS, 1, HCS_KERNEL), 0.02)
                 elif layer in HCM:
-                    self.add_bf16(f"{prefix}.filter.h", (HCM_GROUPS, 1, HCM_KERNEL), 0.02)
+                    self.add_f32(f"{prefix}.filter.h", (HCM_GROUPS, 1, HCM_KERNEL), 0.02)
                     self.add_bf16(f"{prefix}.filter.D", (WIDTH,), 0.003)
                 else:
                     self.add_bf16(f"{prefix}.filter.D", (WIDTH,), 0.003)
@@ -427,15 +433,24 @@ def write_f32(path: Path, rows: list[list[float]]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True, type=Path)
-    parser.add_argument("--expected-logits", required=True, type=Path)
-    parser.add_argument("--expected-decode", required=True, type=Path)
-    parser.add_argument("--expected-layer", required=True, type=Path)
+    parser.add_argument("--expected-logits", type=Path)
+    parser.add_argument("--expected-decode", type=Path)
+    parser.add_argument("--expected-layer", type=Path)
     parser.add_argument("--expected-chunked", type=Path)
+    parser.add_argument("--config-only", action="store_true")
+    parser.add_argument("--hyena-projection-dtype", default="BF16")
+    parser.add_argument("--use-fp8-input-projections", action="store_true")
+    parser.add_argument("--add-fp8-residue", action="store_true")
     args = parser.parse_args()
-    model = TinyModel()
-    logits, layer = model.forward(PROMPT, prefill=True)
-    decode, _ = model.forward([DECODE_TOKEN], prefill=False)
-    assert layer is not None
+    if not args.config_only and any(
+        path is None
+        for path in (args.expected_logits, args.expected_decode, args.expected_layer)
+    ):
+        parser.error(
+            "--expected-logits, --expected-decode, and --expected-layer "
+            "are required unless --config-only is used"
+        )
+    model = TinyModel(add_fp8_residue=args.add_fp8_residue)
     metadata = {
         "model.name": "tiny-evo2c-50l",
         "model.architecture": "StripedHyena2Test",
@@ -461,9 +476,21 @@ def main() -> int:
         "config.column_split_hyena": False,
         "config.interleave": True,
         "config.hyena_flip_x1x2": False,
+        "config.use_fp8_input_projections": args.use_fp8_input_projections,
+        "hyena_projection_dtype": args.hyena_projection_dtype,
+        "hcm_filter_dtype": "F32",
     }
     args.model.parent.mkdir(parents=True, exist_ok=True)
     write_model(args.model, metadata, model.sources(), force=True)
+    if args.config_only:
+        return 0
+
+    logits, layer = model.forward(PROMPT, prefill=True)
+    decode, _ = model.forward([DECODE_TOKEN], prefill=False)
+    assert layer is not None
+    assert args.expected_logits is not None
+    assert args.expected_decode is not None
+    assert args.expected_layer is not None
     write_f32(args.expected_logits, logits)
     write_f32(args.expected_decode, decode)
     write_f32(args.expected_layer, layer)

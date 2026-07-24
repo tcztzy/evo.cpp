@@ -93,10 +93,15 @@ Status validate_fir_buffers(const DeviceBuffer &input,
                             const std::size_t channels,
                             const std::size_t filter_groups,
                             const std::size_t kernel_size,
-                            DeviceBuffer *const output, const Stream &stream) {
+                            DeviceBuffer *const output, const Stream &stream,
+                            const FirWeightType weight_type) {
   if (output == nullptr || !stream.valid()) {
     return {ErrorCode::kInvalidArgument,
             "FIR requires an output and initialized stream"};
+  }
+  if (weight_type != FirWeightType::kBF16 &&
+      weight_type != FirWeightType::kF32) {
+    return {ErrorCode::kInvalidArgument, "FIR weight type is invalid"};
   }
   auto status =
       validate_fir_dimensions(length, channels, filter_groups, kernel_size);
@@ -115,7 +120,10 @@ Status validate_fir_buffers(const DeviceBuffer &input,
                      "FIR tensor");
   if (!status.ok())
     return status;
-  status = bytes_for(weight_elements, sizeof(__nv_bfloat16), &weight_bytes,
+  const std::size_t weight_element_size =
+      weight_type == FirWeightType::kF32 ? sizeof(float)
+                                        : sizeof(__nv_bfloat16);
+  status = bytes_for(weight_elements, weight_element_size, &weight_bytes,
                      "FIR weight");
   if (!status.ok())
     return status;
@@ -219,8 +227,18 @@ __global__ void fill_fir_cache_kernel(const __nv_bfloat16 *const input,
   }
 }
 
+__device__ __forceinline__ float fir_weight_value(const float value) {
+  return value;
+}
+
+__device__ __forceinline__ float
+fir_weight_value(const __nv_bfloat16 value) {
+  return __bfloat162float(value);
+}
+
+template <typename Weight>
 __global__ void fir_prefill_kernel(
-    const __nv_bfloat16 *const input, const __nv_bfloat16 *const weight,
+    const __nv_bfloat16 *const input, const Weight *const weight,
     const __nv_bfloat16 *const bias, __nv_bfloat16 *const output,
     const std::size_t length, const std::size_t channels,
     const std::size_t channels_per_group, const std::size_t kernel_size,
@@ -238,7 +256,7 @@ __global__ void fir_prefill_kernel(
       const std::size_t delay = cross_correlation ? kernel_size - 1 - tap : tap;
       if (time >= delay) {
         total += __bfloat162float(input[(time - delay) * channels + channel]) *
-                 __bfloat162float(weight[group * kernel_size + tap]);
+                 fir_weight_value(weight[group * kernel_size + tap]);
       }
     }
     if (bias != nullptr) {
@@ -250,8 +268,9 @@ __global__ void fir_prefill_kernel(
   }
 }
 
+template <typename Weight>
 __global__ void fir_continue_kernel(
-    const __nv_bfloat16 *const input, const __nv_bfloat16 *const weight,
+    const __nv_bfloat16 *const input, const Weight *const weight,
     const __nv_bfloat16 *const bias, const float *const cache,
     __nv_bfloat16 *const output, const std::size_t length,
     const std::size_t channels, const std::size_t channels_per_group,
@@ -277,13 +296,12 @@ __global__ void fir_continue_kernel(
                     input[(history - cache_size) * channels + channel]);
       const std::size_t tap =
           cross_correlation ? state_index : cache_size - state_index;
-      total += source *
-               __bfloat162float(weight[group * kernel_size + tap]);
+      total += source * fir_weight_value(weight[group * kernel_size + tap]);
     }
     const float current = __bfloat162float(input[index]);
     const std::size_t current_tap = cross_correlation ? cache_size : 0;
-    total += current *
-             __bfloat162float(weight[group * kernel_size + current_tap]);
+    total +=
+        current * fir_weight_value(weight[group * kernel_size + current_tap]);
     if (bias != nullptr) {
       const float bias_value = __bfloat162float(bias[channel]);
       total += multiply_bias ? bias_value * current : bias_value;
@@ -321,8 +339,9 @@ __global__ void advance_fir_cache_kernel(
   }
 }
 
+template <typename Weight>
 __global__ void fir_decode_kernel(
-    const __nv_bfloat16 *const input, const __nv_bfloat16 *const weight,
+    const __nv_bfloat16 *const input, const Weight *const weight,
     const __nv_bfloat16 *const bias, float *const cache,
     __nv_bfloat16 *const output, const std::size_t channels,
     const std::size_t channels_per_group, const std::size_t kernel_size,
@@ -339,11 +358,11 @@ __global__ void fir_decode_kernel(
       const std::size_t tap =
           cross_correlation ? state_index : cache_size - state_index;
       total += cache[channel * cache_size + state_index] *
-               __bfloat162float(weight[group * kernel_size + tap]);
+               fir_weight_value(weight[group * kernel_size + tap]);
     }
     const std::size_t current_tap = cross_correlation ? cache_size : 0;
     total +=
-        current * __bfloat162float(weight[group * kernel_size + current_tap]);
+        current * fir_weight_value(weight[group * kernel_size + current_tap]);
     if (bias != nullptr) {
       const float bias_value = __bfloat162float(bias[channel]);
       total += multiply_bias ? bias_value * current : bias_value;
@@ -374,7 +393,8 @@ __global__ void pack_input_kernel(const __nv_bfloat16 *const input,
   }
 }
 
-__global__ void pack_filter_kernel(const __nv_bfloat16 *const weight,
+template <typename Weight>
+__global__ void pack_filter_kernel(const Weight *const weight,
                                    float *const packed,
                                    const std::size_t filter_groups,
                                    const std::size_t kernel_size,
@@ -389,7 +409,7 @@ __global__ void pack_filter_kernel(const __nv_bfloat16 *const weight,
     const std::size_t time = index % fft_size;
     if (time < kernel_size) {
       const std::size_t tap = cross_correlation ? kernel_size - 1 - time : time;
-      packed[index] = __bfloat162float(weight[group * kernel_size + tap]);
+      packed[index] = fir_weight_value(weight[group * kernel_size + tap]);
     } else {
       packed[index] = 0.0F;
     }
@@ -1012,7 +1032,8 @@ Status bf16_fir_prefill_direct(
     const std::size_t channels, const std::size_t filter_groups,
     const std::size_t kernel_size, const FirOrientation orientation,
     const FirBiasMode bias_mode, DeviceBuffer *const output,
-    FirCache *const cache, const Stream &stream) {
+    FirCache *const cache, const Stream &stream,
+    const FirWeightType weight_type) {
   if ((orientation != FirOrientation::kCrossCorrelation &&
        orientation != FirOrientation::kCausalConvolution) ||
       (bias_mode != FirBiasMode::kAdd &&
@@ -1021,7 +1042,7 @@ Status bf16_fir_prefill_direct(
   }
   auto status =
       validate_fir_buffers(input, weight, bias, length, channels, filter_groups,
-                           kernel_size, output, stream);
+                           kernel_size, output, stream, weight_type);
   if (!status.ok())
     return status;
   status = validate_cache(cache, input.device(), channels, kernel_size);
@@ -1034,15 +1055,29 @@ Status bf16_fir_prefill_direct(
   if (!multiply(length, channels, &elements)) {
     return {ErrorCode::kInvalidArgument, "FIR dimensions overflow"};
   }
-  fir_prefill_kernel<<<grid_for(elements), kThreads, 0, stream.get()>>>(
-      static_cast<const __nv_bfloat16 *>(input.data()),
-      static_cast<const __nv_bfloat16 *>(weight.data()),
-      bias == nullptr ? nullptr
-                      : static_cast<const __nv_bfloat16 *>(bias->data()),
-      static_cast<__nv_bfloat16 *>(output->data()), length, channels,
-      channels / filter_groups, kernel_size,
-      orientation == FirOrientation::kCrossCorrelation,
-      bias_mode == FirBiasMode::kMultiplyInput);
+  if (weight_type == FirWeightType::kF32) {
+    fir_prefill_kernel<float><<<grid_for(elements), kThreads, 0,
+                                  stream.get()>>>(
+        static_cast<const __nv_bfloat16 *>(input.data()),
+        static_cast<const float *>(weight.data()),
+        bias == nullptr ? nullptr
+                        : static_cast<const __nv_bfloat16 *>(bias->data()),
+        static_cast<__nv_bfloat16 *>(output->data()), length, channels,
+        channels / filter_groups, kernel_size,
+        orientation == FirOrientation::kCrossCorrelation,
+        bias_mode == FirBiasMode::kMultiplyInput);
+  } else {
+    fir_prefill_kernel<__nv_bfloat16><<<grid_for(elements), kThreads, 0,
+                                          stream.get()>>>(
+        static_cast<const __nv_bfloat16 *>(input.data()),
+        static_cast<const __nv_bfloat16 *>(weight.data()),
+        bias == nullptr ? nullptr
+                        : static_cast<const __nv_bfloat16 *>(bias->data()),
+        static_cast<__nv_bfloat16 *>(output->data()), length, channels,
+        channels / filter_groups, kernel_size,
+        orientation == FirOrientation::kCrossCorrelation,
+        bias_mode == FirBiasMode::kMultiplyInput);
+  }
   status = launch_status("direct FIR prefill kernel");
   if (!status.ok())
     return status;
@@ -1055,7 +1090,8 @@ Status bf16_fir_continue_direct(
     const std::size_t channels, const std::size_t filter_groups,
     const std::size_t kernel_size, const FirOrientation orientation,
     const FirBiasMode bias_mode, DeviceBuffer *const output,
-    FirCache *const cache, const Stream &stream) {
+    FirCache *const cache, const Stream &stream,
+    const FirWeightType weight_type) {
   if (cache == nullptr ||
       (orientation != FirOrientation::kCrossCorrelation &&
        orientation != FirOrientation::kCausalConvolution) ||
@@ -1066,7 +1102,7 @@ Status bf16_fir_continue_direct(
   }
   auto status =
       validate_fir_buffers(input, weight, bias, length, channels, filter_groups,
-                           kernel_size, output, stream);
+                           kernel_size, output, stream, weight_type);
   if (!status.ok())
     return status;
   status = validate_cache(cache, input.device(), channels, kernel_size);
@@ -1080,16 +1116,31 @@ Status bf16_fir_continue_direct(
     return {ErrorCode::kInvalidArgument,
             "continued FIR dimensions overflow"};
   }
-  fir_continue_kernel<<<grid_for(elements), kThreads, 0, stream.get()>>>(
-      static_cast<const __nv_bfloat16 *>(input.data()),
-      static_cast<const __nv_bfloat16 *>(weight.data()),
-      bias == nullptr ? nullptr
-                      : static_cast<const __nv_bfloat16 *>(bias->data()),
-      static_cast<const float *>(cache->state.data()),
-      static_cast<__nv_bfloat16 *>(output->data()), length, channels,
-      channels / filter_groups, kernel_size,
-      orientation == FirOrientation::kCrossCorrelation,
-      bias_mode == FirBiasMode::kMultiplyInput);
+  if (weight_type == FirWeightType::kF32) {
+    fir_continue_kernel<float><<<grid_for(elements), kThreads, 0,
+                                   stream.get()>>>(
+        static_cast<const __nv_bfloat16 *>(input.data()),
+        static_cast<const float *>(weight.data()),
+        bias == nullptr ? nullptr
+                        : static_cast<const __nv_bfloat16 *>(bias->data()),
+        static_cast<const float *>(cache->state.data()),
+        static_cast<__nv_bfloat16 *>(output->data()), length, channels,
+        channels / filter_groups, kernel_size,
+        orientation == FirOrientation::kCrossCorrelation,
+        bias_mode == FirBiasMode::kMultiplyInput);
+  } else {
+    fir_continue_kernel<__nv_bfloat16><<<grid_for(elements), kThreads, 0,
+                                           stream.get()>>>(
+        static_cast<const __nv_bfloat16 *>(input.data()),
+        static_cast<const __nv_bfloat16 *>(weight.data()),
+        bias == nullptr ? nullptr
+                        : static_cast<const __nv_bfloat16 *>(bias->data()),
+        static_cast<const float *>(cache->state.data()),
+        static_cast<__nv_bfloat16 *>(output->data()), length, channels,
+        channels / filter_groups, kernel_size,
+        orientation == FirOrientation::kCrossCorrelation,
+        bias_mode == FirBiasMode::kMultiplyInput);
+  }
   status = launch_status("continued direct FIR kernel");
   if (!status.ok())
     return status;
@@ -1107,7 +1158,7 @@ Status bf16_fir_prefill_fft(
     const std::size_t kernel_size, const FirOrientation orientation,
     const FirBiasMode bias_mode, DeviceBuffer *const output,
     FirCache *const cache, FftWorkspace *const workspace,
-    const Stream &stream) {
+    const Stream &stream, const FirWeightType weight_type) {
   if (workspace == nullptr ||
       (orientation != FirOrientation::kCrossCorrelation &&
        orientation != FirOrientation::kCausalConvolution) ||
@@ -1118,7 +1169,7 @@ Status bf16_fir_prefill_fft(
   }
   auto status =
       validate_fir_buffers(input, weight, bias, length, channels, filter_groups,
-                           kernel_size, output, stream);
+                           kernel_size, output, stream, weight_type);
   if (!status.ok())
     return status;
   status = validate_cache(cache, input.device(), channels, kernel_size);
@@ -1149,11 +1200,21 @@ Status bf16_fir_prefill_fft(
   status = launch_status("FFT FIR input pack kernel");
   if (!status.ok())
     return status;
-  pack_filter_kernel<<<grid_for(filter_time_elements), kThreads, 0,
-                       stream.get()>>>(
-      static_cast<const __nv_bfloat16 *>(weight.data()),
-      static_cast<float *>(workspace->filter_time_.data()), filter_groups,
-      kernel_size, fft_size, orientation == FirOrientation::kCrossCorrelation);
+  if (weight_type == FirWeightType::kF32) {
+    pack_filter_kernel<float><<<grid_for(filter_time_elements), kThreads, 0,
+                                  stream.get()>>>(
+        static_cast<const float *>(weight.data()),
+        static_cast<float *>(workspace->filter_time_.data()), filter_groups,
+        kernel_size, fft_size,
+        orientation == FirOrientation::kCrossCorrelation);
+  } else {
+    pack_filter_kernel<__nv_bfloat16>
+        <<<grid_for(filter_time_elements), kThreads, 0, stream.get()>>>(
+            static_cast<const __nv_bfloat16 *>(weight.data()),
+            static_cast<float *>(workspace->filter_time_.data()),
+            filter_groups, kernel_size, fft_size,
+            orientation == FirOrientation::kCrossCorrelation);
+  }
   status = launch_status("FFT FIR filter pack kernel");
   if (!status.ok())
     return status;
@@ -1180,10 +1241,11 @@ Status bf16_fir_decode(const DeviceBuffer &input, const DeviceBuffer &weight,
                        const std::size_t kernel_size,
                        const FirOrientation orientation,
                        const FirBiasMode bias_mode, FirCache *const cache,
-                       DeviceBuffer *const output, const Stream &stream) {
+                       DeviceBuffer *const output, const Stream &stream,
+                       const FirWeightType weight_type) {
   auto status =
       validate_fir_buffers(input, weight, bias, 1, channels, filter_groups,
-                           kernel_size, output, stream);
+                           kernel_size, output, stream, weight_type);
   if (!status.ok())
     return status;
   if (cache == nullptr ||
@@ -1199,16 +1261,31 @@ Status bf16_fir_decode(const DeviceBuffer &input, const DeviceBuffer &weight,
   status = select_device(input.device());
   if (!status.ok())
     return status;
-  fir_decode_kernel<<<grid_for(channels), kThreads, 0, stream.get()>>>(
-      static_cast<const __nv_bfloat16 *>(input.data()),
-      static_cast<const __nv_bfloat16 *>(weight.data()),
-      bias == nullptr ? nullptr
-                      : static_cast<const __nv_bfloat16 *>(bias->data()),
-      static_cast<float *>(cache->state.data()),
-      static_cast<__nv_bfloat16 *>(output->data()), channels,
-      channels / filter_groups, kernel_size,
-      orientation == FirOrientation::kCrossCorrelation,
-      bias_mode == FirBiasMode::kMultiplyInput);
+  if (weight_type == FirWeightType::kF32) {
+    fir_decode_kernel<float><<<grid_for(channels), kThreads, 0,
+                                 stream.get()>>>(
+        static_cast<const __nv_bfloat16 *>(input.data()),
+        static_cast<const float *>(weight.data()),
+        bias == nullptr ? nullptr
+                        : static_cast<const __nv_bfloat16 *>(bias->data()),
+        static_cast<float *>(cache->state.data()),
+        static_cast<__nv_bfloat16 *>(output->data()), channels,
+        channels / filter_groups, kernel_size,
+        orientation == FirOrientation::kCrossCorrelation,
+        bias_mode == FirBiasMode::kMultiplyInput);
+  } else {
+    fir_decode_kernel<__nv_bfloat16><<<grid_for(channels), kThreads, 0,
+                                         stream.get()>>>(
+        static_cast<const __nv_bfloat16 *>(input.data()),
+        static_cast<const __nv_bfloat16 *>(weight.data()),
+        bias == nullptr ? nullptr
+                        : static_cast<const __nv_bfloat16 *>(bias->data()),
+        static_cast<float *>(cache->state.data()),
+        static_cast<__nv_bfloat16 *>(output->data()), channels,
+        channels / filter_groups, kernel_size,
+        orientation == FirOrientation::kCrossCorrelation,
+        bias_mode == FirBiasMode::kMultiplyInput);
+  }
   return launch_status("FIR decode kernel");
 }
 
@@ -1301,7 +1378,8 @@ Status bf16_hcm_prefill(const DeviceBuffer &x2, const DeviceBuffer &x1,
                         const std::size_t filter_groups,
                         const std::size_t kernel_size, FirCache *const cache,
                         DeviceBuffer *const scratch, DeviceBuffer *const output,
-                        FftWorkspace *const workspace, const Stream &stream) {
+                        FftWorkspace *const workspace, const Stream &stream,
+                        const FirWeightType weight_type) {
   if (scratch == nullptr || output == nullptr) {
     return {ErrorCode::kInvalidArgument,
             "HCM prefill requires scratch and output buffers"};
@@ -1317,7 +1395,7 @@ Status bf16_hcm_prefill(const DeviceBuffer &x2, const DeviceBuffer &x1,
   status = bf16_fir_prefill_fft(
       *scratch, weight, &direct, length, width, filter_groups, kernel_size,
       FirOrientation::kCausalConvolution, FirBiasMode::kMultiplyInput, output,
-      cache, workspace, stream);
+      cache, workspace, stream, weight_type);
   if (!status.ok())
     return status;
   return bf16_gated_elementwise(*output, x2, elements,
@@ -1330,7 +1408,8 @@ Status bf16_hcm_decode(const DeviceBuffer &x2, const DeviceBuffer &x1,
                        const std::size_t filter_groups,
                        const std::size_t kernel_size, FirCache *const cache,
                        DeviceBuffer *const scratch, DeviceBuffer *const output,
-                       const Stream &stream) {
+                       const Stream &stream,
+                       const FirWeightType weight_type) {
   if (scratch == nullptr || output == nullptr) {
     return {ErrorCode::kInvalidArgument,
             "HCM decode requires scratch and output buffers"};
@@ -1341,7 +1420,8 @@ Status bf16_hcm_decode(const DeviceBuffer &x2, const DeviceBuffer &x1,
     return status;
   status = bf16_fir_decode(*scratch, weight, &direct, width, filter_groups,
                            kernel_size, FirOrientation::kCausalConvolution,
-                           FirBiasMode::kMultiplyInput, cache, output, stream);
+                           FirBiasMode::kMultiplyInput, cache, output, stream,
+                           weight_type);
   if (!status.ok())
     return status;
   return bf16_gated_elementwise(*output, x2, width, GatedActivation::kIdentity,
@@ -1354,7 +1434,8 @@ Status bf16_hcm_continue(
     const std::size_t length, const std::size_t width,
     const std::size_t filter_groups, const std::size_t kernel_size,
     FirCache *const cache, DeviceBuffer *const scratch,
-    DeviceBuffer *const output, const Stream &stream) {
+    DeviceBuffer *const output, const Stream &stream,
+    const FirWeightType weight_type) {
   if (scratch == nullptr || output == nullptr) {
     return {ErrorCode::kInvalidArgument,
             "HCM continuation requires scratch and output buffers"};
@@ -1371,7 +1452,7 @@ Status bf16_hcm_continue(
   status = bf16_fir_continue_direct(
       *scratch, weight, &direct, length, width, filter_groups, kernel_size,
       FirOrientation::kCausalConvolution, FirBiasMode::kMultiplyInput, output,
-      cache, stream);
+      cache, stream, weight_type);
   if (!status.ok())
     return status;
   return bf16_gated_elementwise(*output, x2, elements,

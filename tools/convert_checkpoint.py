@@ -93,6 +93,8 @@ def main() -> int:
                 "fp8.max_forward": 448.0,
                 "fp8.inference_scale_update": False,
                 "fp8.reference": "TransformerEngine-2.3-HYBRID",
+                "hyena_projection_dtype": "E4M3_SW",
+                "hcm_filter_dtype": "BF16",
             }
         )
         write_model(

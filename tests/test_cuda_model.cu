@@ -118,10 +118,11 @@ int requested_device() {
 
 int main(const int argc, char **argv) {
   try {
-    if (argc != 7) {
+    if (argc != 10) {
       std::cerr << "usage: test_cuda_model MODEL EXPECTED_LOGITS "
                    "EXPECTED_DECODE EXPECTED_LAYER DUMP_PATH "
-                   "EXPECTED_CHUNKED\n";
+                   "EXPECTED_CHUNKED INVALID_PROJECTION_MISMATCH "
+                   "INVALID_PROJECTION_DTYPE INVALID_FP8_RESIDUE\n";
       return 2;
     }
     const int device = requested_device();
@@ -147,6 +148,26 @@ int main(const int argc, char **argv) {
     check(std::count(config.mixer_types.begin(), config.mixer_types.end(),
                      evo2c::cuda::MixerType::kAttention) == 8,
           "synthetic topology contains eight attention blocks");
+    check(config.hyena_projection_dtype ==
+              evo2c::cuda::HyenaProjectionDType::kBF16,
+          "synthetic model selects native BF16 Hyena projections");
+    check(config.hcm_filter_dtype == evo2c::cuda::HcmFilterDType::kF32,
+          "synthetic model selects BioNeMo F32 medium-Hyena filters");
+
+    const auto check_rejected_config =
+        [](const char *const path, const std::string_view expected) {
+          evo2c::ModelFile invalid;
+          require(invalid.open(path), "open invalid synthetic model");
+          evo2c::cuda::RuntimeModelConfig ignored;
+          const auto rejected =
+              evo2c::cuda::read_runtime_model_config(invalid, true, &ignored);
+          check(!rejected.ok() &&
+                    rejected.message().find(expected) != std::string::npos,
+                "invalid precision metadata is rejected before CUDA load");
+        };
+    check_rejected_config(argv[7], "disagrees");
+    check_rejected_config(argv[8], "unsupported Hyena projection dtype");
+    check_rejected_config(argv[9], "contains software-FP8 tensors");
 
     evo2c::cuda::SingleGpuModel model;
     require(model.load(file, device, 12, true), "load single-GPU model");

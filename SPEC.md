@@ -75,7 +75,7 @@ T17|x|实现 paged Q8 KV、量化 attention 数值门；真实 40B 验证 ctx=13
 T18|x|评估 1M context：显存/attention 计算量/host-offload；可行则 smoke，否→瓶颈与硬件下限报告|V13,V14,V16
 T19|x|README：构建、转换、gpu02 运行、限制、复现命令；全套 CPU+GPU regression|V12,V16,I.build,I.convert,I.cli,I.remote
 T20|x|实现 NeMo2/MBridge BF16→EVO2C streaming converter、manifest mapping、corruption/roundtrip tests|V1,V3,V32,I.model,I.convert_bionemo
-T21|.|实现 metadata 驱动 BF16 Hyena projection runtime；保留 E4M3_SW；CPU/CUDA compatibility tests|V2,V9,V12,V17,V33,I.model
+T21|x|实现 metadata 驱动 BF16 Hyena projection runtime；保留 E4M3_SW；CPU/CUDA compatibility tests|V2,V9,V12,V17,V33,I.model
 T22|.|gpu02 下载/转换 BioNeMo 40B BF16；oracle 对齐、8K score+generation、显存/吞吐；README/remote regression|V10,V11,V16,V18,V34,I.cli,I.score,I.remote
 
 ## §B BUGS
