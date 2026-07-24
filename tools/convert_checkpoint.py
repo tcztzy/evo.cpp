@@ -50,6 +50,11 @@ def main() -> int:
             raise CheckpointError("--source-sha256 must contain exactly 64 hexadecimal characters")
 
         config = load_config(args.config)
+        if not config.use_fp8_input_projections:
+            raise CheckpointError(
+                "official ARC conversion requires use_fp8_input_projections=true; "
+                "use convert_bionemo_checkpoint.py for BF16 projections"
+            )
         manifest = checkpoint_manifest(config)
         projection_layers = tuple(
             sorted(

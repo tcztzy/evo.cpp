@@ -334,6 +334,27 @@ if(BUILD_TESTING)
       SKIP_RETURN_CODE 77)
 
   add_test(
+    NAME bionemo_mapping_contract
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bionemo_mapping.py
+      --bf16-config ${CMAKE_CURRENT_SOURCE_DIR}/configs/evo2-40b-1m-bionemo-bf16.yml
+      --arc-config ${CMAKE_CURRENT_SOURCE_DIR}/configs/evo2-40b-1m.yml)
+  set_tests_properties(
+    bionemo_mapping_contract
+    PROPERTIES ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools")
+
+  add_test(
+    NAME bionemo_dcp_integration
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bionemo_dcp.py
+      --config ${CMAKE_CURRENT_SOURCE_DIR}/configs/evo2-40b-1m-bionemo-bf16.yml)
+  set_tests_properties(
+    bionemo_dcp_integration
+    PROPERTIES
+      ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools"
+      SKIP_RETURN_CODE 77)
+
+  add_test(
     NAME triton_fp8_oracle
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_triton_fp8.py)

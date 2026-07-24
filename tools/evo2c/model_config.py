@@ -20,6 +20,9 @@ EXPECTED_BF16_TENSOR_COUNT = 400
 EXPECTED_F32_TENSOR_COUNT = 137
 EXPECTED_TENSOR_BYTES = 82_252_533_760
 EXPECTED_EXTRA_STATE_COUNT = 258
+EXPECTED_BIONEMO_BF16_TENSOR_COUNT = 386
+EXPECTED_BIONEMO_F32_TENSOR_COUNT = 151
+EXPECTED_BIONEMO_TENSOR_BYTES = 82_254_368_768
 
 
 class ConfigError(ValueError):
@@ -213,7 +216,6 @@ class ModelConfig:
 
         required_true = {
             "tie_embeddings": self.tie_embeddings,
-            "use_fp8_input_projections": self.use_fp8_input_projections,
             "use_interpolated_rotary_pos_emb": self.use_interpolated_rotary_pos_emb,
             "evo2_style_activations": self.evo2_style_activations,
             "interleave": self.interleave,
@@ -393,6 +395,44 @@ def checkpoint_manifest(config: ModelConfig) -> list[TensorSpec]:
     ):
         raise AssertionError(f"40B manifest drift: {expected}")
     return specs
+
+
+def bionemo_checkpoint_manifest(config: ModelConfig) -> list[TensorSpec]:
+    """Return the Vortex-compatible manifest produced from BioNeMo DCP.
+
+    BioNeMo stores medium-Hyena explicit filter parameters in F32 and folds
+    ``h * decay`` during export. Keeping the folded filter in F32 matches the
+    BioNeMo inference path; all large projection and MLP tensors remain BF16.
+    """
+    specs = checkpoint_manifest(config)
+    medium_filter_names = {
+        f"blocks.{layer}.filter.h" for layer in config.hcm_layer_idxs
+    }
+    converted = [
+        dataclasses.replace(spec, dtype="F32")
+        if spec.name in medium_filter_names
+        else spec
+        for spec in specs
+    ]
+    dtype_counts = {
+        dtype: sum(spec.dtype == dtype for spec in converted)
+        for dtype in ("BF16", "F32")
+    }
+    actual = (
+        len(converted),
+        dtype_counts["BF16"],
+        dtype_counts["F32"],
+        sum(spec.nbytes for spec in converted),
+    )
+    expected = (
+        EXPECTED_TENSOR_COUNT,
+        EXPECTED_BIONEMO_BF16_TENSOR_COUNT,
+        EXPECTED_BIONEMO_F32_TENSOR_COUNT,
+        EXPECTED_BIONEMO_TENSOR_BYTES,
+    )
+    if actual != expected:
+        raise AssertionError(f"BioNeMo 40B manifest drift: {actual}")
+    return converted
 
 
 def config_metadata(config: ModelConfig, checkpoint_name: str, checkpoint_size: int) -> dict[str, Any]:
