@@ -99,8 +99,8 @@ def main() -> int:
     parser.add_argument("--work-dir", required=True, type=Path)
     args = parser.parse_args()
     gpu_count = min(visible_gpu_count(), 4)
-    if gpu_count < 2:
-        print("SKIP: two visible CUDA devices are required")
+    if gpu_count < 1:
+        print("SKIP: one visible CUDA device is required")
         return 77
     gpu_list = ",".join(str(index) for index in range(gpu_count))
 

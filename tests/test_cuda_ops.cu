@@ -311,6 +311,20 @@ void test_software_e4m3(const int device,
               evo2c::fp8::decode_e4m3fn(expected_codes[index]),
           "sm80 software E4M3 dequantization is bit exact");
   }
+  auto input_f32 =
+      upload(device, values.data(), values.size() * sizeof(float), stream);
+  evo2c::cuda::DeviceBuffer f32_codes;
+  require(f32_codes.allocate(device, values.size()), "F32 E4M3 code output");
+  require(evo2c::cuda::software_e4m3_quantize_f32_codes(
+              input_f32, values.size(), 1.0F, &f32_codes, stream),
+          "software F32-to-E4M3 quantize");
+  std::vector<std::uint8_t> actual_f32_codes(values.size());
+  require(f32_codes.copy_to_host(actual_f32_codes.data(),
+                                 actual_f32_codes.size(), stream),
+          "download F32 E4M3 codes");
+  require(stream.synchronize(), "synchronize F32 E4M3 codes");
+  check(actual_f32_codes == expected_codes,
+        "20B F32 projection quantizer matches E4M3 bit vectors exactly");
   check(!evo2c::cuda::software_e4m3_quantize_bf16(
              input, values.size(), 0.0F, nullptr, &dequantized, stream)
              .ok(),

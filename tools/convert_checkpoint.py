@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert the official Evo 2 40B PyTorch checkpoint to EVO2C v1."""
+"""Convert an official Arc Evo 2 PyTorch checkpoint to EVO2C v1."""
 
 from __future__ import annotations
 
@@ -8,17 +8,24 @@ import re
 import sys
 from pathlib import Path
 
-from evo2c.checkpoint import CheckpointError, load_checkpoint
+from evo2c.checkpoint import CheckpointError, load_checkpoint, prepare_runtime_sources
 from evo2c.format import FormatError, TensorSource, write_model
-from evo2c.model_config import checkpoint_manifest, config_metadata, load_config
+from evo2c.model_config import (
+    checkpoint_manifest,
+    container_manifest,
+    config_metadata,
+    ignored_checkpoint_manifest,
+    load_config,
+    runtime_manifest,
+)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Stream an official Evo 2 40B .pt checkpoint into an mmap-friendly EVO2C file."
+        description="Stream an official Arc Evo 2 .pt checkpoint into an mmap-friendly EVO2C file."
     )
-    parser.add_argument("--input", required=True, type=Path, help="merged evo2_40b.pt")
-    parser.add_argument("--config", required=True, type=Path, help="official Evo 2 40B YAML config")
+    parser.add_argument("--input", required=True, type=Path, help="official (merged, if split) .pt")
+    parser.add_argument("--config", required=True, type=Path, help="normalized strict Evo 2 config")
     parser.add_argument("--output", required=True, type=Path, help="output .evo2 file")
     parser.add_argument("--dtype", choices=("bf16",), default="bf16")
     parser.add_argument("--source-sha256", help="precomputed 64-hex checkpoint SHA256")
@@ -50,31 +57,44 @@ def main() -> int:
             raise CheckpointError("--source-sha256 must contain exactly 64 hexadecimal characters")
 
         config = load_config(args.config)
-        if not config.use_fp8_input_projections:
-            raise CheckpointError(
-                "official ARC conversion requires use_fp8_input_projections=true; "
-                "use convert_bionemo_checkpoint.py for BF16 projections"
-            )
         manifest = checkpoint_manifest(config)
-        projection_layers = tuple(
+        ignored_manifest = ignored_checkpoint_manifest(config)
+        all_hyena_layers = tuple(
             sorted(
                 config.hcs_layer_idxs
                 + config.hcm_layer_idxs
                 + config.hcl_layer_idxs
             )
         )
+        projection_layers = all_hyena_layers if config.use_fp8_input_projections else ()
         print(f"mmap loading {args.input} ...", file=sys.stderr, flush=True)
         sources, skipped, fp8_sources = load_checkpoint(
             args.input,
             manifest,
+            expected_extra_states=config.registry["extra_state_count"],
             fp8_projection_layers=projection_layers,
+            ignored_manifest=ignored_manifest,
         )
+        sources = prepare_runtime_sources(sources, runtime_manifest(config))
+        expected_container = container_manifest(config)
+        actual_container = [
+            (source.name, source.dtype, source.shape, source.nbytes)
+            for source in sources + fp8_sources
+        ]
+        expected_container_signature = [
+            (spec.name, spec.dtype, spec.shape, spec.nbytes)
+            for spec in expected_container
+        ]
+        if actual_container != expected_container_signature:
+            raise CheckpointError(
+                f"{config.model_id} output tensor table does not match its container manifest"
+            )
         print(
             f"validated {len(sources)} checkpoint tensors and extracted "
             f"{len(fp8_sources)} software-FP8 tensors from "
             f"{len(projection_layers)} Hyena projections; "
-            f"skipping {len(skipped) - len(projection_layers)} other documented "
-            "TE extra-state entries",
+            f"validated/recomputed {len(ignored_manifest)} time grids and skipped "
+            f"{len(skipped) - len(projection_layers)} other documented TE extra-state entries",
             file=sys.stderr,
         )
         if args.dry_run:
@@ -84,19 +104,19 @@ def main() -> int:
         metadata = config_metadata(config, args.input.name, args.input.stat().st_size)
         if args.source_sha256 is not None:
             metadata["checkpoint.sha256"] = args.source_sha256.lower()
-        metadata.update(
-            {
-                "fp8.software_projection_count": len(projection_layers),
-                "fp8.forward_format": "E4M3FN",
-                "fp8.backward_format": "E5M2",
-                "fp8.amax_history_length": 16,
-                "fp8.max_forward": 448.0,
-                "fp8.inference_scale_update": False,
-                "fp8.reference": "TransformerEngine-2.3-HYBRID",
-                "hyena_projection_dtype": "E4M3_SW",
-                "hcm_filter_dtype": "BF16",
-            }
-        )
+        metadata["hcm_filter_dtype"] = "BF16"
+        if projection_layers:
+            metadata.update(
+                {
+                    "fp8.software_projection_count": len(projection_layers),
+                    "fp8.forward_format": "E4M3FN",
+                    "fp8.backward_format": "E5M2",
+                    "fp8.amax_history_length": 16,
+                    "fp8.max_forward": 448.0,
+                    "fp8.inference_scale_update": False,
+                    "fp8.reference": "TransformerEngine-2.3-HYBRID",
+                }
+            )
         write_model(
             args.output,
             metadata,

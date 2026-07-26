@@ -21,6 +21,7 @@
 #include "evo2c/cuda/hyena.hpp"
 #include "evo2c/cuda/ops.hpp"
 #include "evo2c/cuda/runtime.hpp"
+#include "evo2c/model_registry.hpp"
 
 namespace evo2c::cuda {
 namespace {
@@ -30,14 +31,6 @@ constexpr std::size_t kMaximumArenaTokens = 8192;
 constexpr std::size_t kTestFixtureArenaTokens = 8;
 constexpr std::size_t kQ8KvContextThreshold = 131072;
 constexpr std::size_t kQ8KvPageTokens = 16384;
-constexpr std::array<std::size_t, 14> kHcsLayers{0,  4,  7,  11, 14, 18, 21,
-                                                 25, 28, 32, 36, 39, 43, 46};
-constexpr std::array<std::size_t, 14> kHcmLayers{1,  5,  8,  12, 15, 19, 22,
-                                                 26, 29, 33, 37, 40, 44, 47};
-constexpr std::array<std::size_t, 14> kHclLayers{2,  6,  9,  13, 16, 20, 23,
-                                                 27, 30, 34, 38, 41, 45, 48};
-constexpr std::array<std::size_t, 8> kAttentionLayers{3,  10, 17, 24,
-                                                      31, 35, 42, 49};
 enum class ForwardMode { kPrefill, kContinue, kDecode };
 
 bool multiply(const std::size_t left, const std::size_t right,
@@ -138,13 +131,6 @@ Status metadata_list(const ModelFile &model, const std::string_view key,
     output->push_back(static_cast<std::size_t>(value));
   }
   return Status::Ok();
-}
-
-template <std::size_t Size>
-bool same_indices(const std::vector<std::size_t> &actual,
-                  const std::array<std::size_t, Size> &expected) {
-  return actual.size() == expected.size() &&
-         std::equal(actual.begin(), actual.end(), expected.begin());
 }
 
 bool valid_dump_point(const LayerDumpPoint point) noexcept {
@@ -420,6 +406,7 @@ Status read_runtime_model_config(const ModelFile &model,
       return {ErrorCode::kUnsupported,
               "synthetic model fixtures require explicit test permission"};
   }
+  const bool has_model_id = model.find_metadata("model.id") != nullptr;
   for (const auto item :
        {std::pair{"config.vocab_size", &candidate.vocab_size},
         std::pair{"config.hidden_size", &candidate.width},
@@ -443,6 +430,48 @@ Status read_runtime_model_config(const ModelFile &model,
                         &candidate.rope_scale);
   if (!status.ok())
     return status;
+  if (!candidate.test_fixture) {
+    std::size_t num_filters = 0;
+    std::size_t max_batch_size = 0;
+    std::size_t inner_size_multiple = 0;
+    std::size_t projection_groups = 0;
+    for (const auto item :
+         {std::pair{"config.num_filters", &num_filters},
+          std::pair{"config.max_batch_size", &max_batch_size},
+          std::pair{"config.inner_size_multiple_of", &inner_size_multiple},
+          std::pair{"config.proj_groups", &projection_groups}}) {
+      status = metadata_u64(model, item.first, item.second);
+      if (!status.ok())
+        return status;
+    }
+    if (num_filters != candidate.width || max_batch_size != 1 ||
+        inner_size_multiple != 128 || projection_groups != 1) {
+      return {ErrorCode::kUnsupported,
+              "model filter/batch/projection metadata is not an official "
+              "Evo 2 profile"};
+    }
+    status =
+        metadata_u64(model, "config.hcl_filter_groups",
+                     &candidate.hcl_filter_groups);
+    if (!status.ok())
+      return status;
+    status = metadata_u64(model, "config.max_seqlen", &candidate.max_seqlen);
+    if (!status.ok())
+      return status;
+    status =
+        metadata_f32(model, "config.rotary_emb_base", &candidate.rope_base);
+    if (!status.ok())
+      return status;
+    status = metadata_bool(model, "config.use_interpolated_rotary_pos_emb",
+                           &candidate.interpolated_rope);
+    if (!status.ok())
+      return status;
+  } else {
+    candidate.hcl_filter_groups = candidate.width;
+    candidate.max_seqlen = std::numeric_limits<std::size_t>::max();
+    candidate.rope_base = 10000.0F;
+    candidate.interpolated_rope = true;
+  }
 
   bool tie_embeddings = false;
   bool column_split = false;
@@ -485,6 +514,42 @@ Status read_runtime_model_config(const ModelFile &model,
     return {ErrorCode::kUnsupported,
             "model semantic flags do not match supported Evo 2"};
   candidate.qkv_head_major = column_split;
+  if (!candidate.test_fixture) {
+    bool short_filter_bias = true;
+    bool evo2_activations = false;
+    bool final_norm = false;
+    bool qkv_bias = true;
+    bool mha_bias = false;
+    bool hyena_bias = false;
+    for (const auto item :
+         {std::pair{"config.short_filter_bias", &short_filter_bias},
+          std::pair{"config.evo2_style_activations", &evo2_activations},
+          std::pair{"config.final_norm", &final_norm},
+          std::pair{"config.qkv_proj_bias", &qkv_bias},
+          std::pair{"config.mha_out_proj_bias", &mha_bias},
+          std::pair{"config.hyena_out_proj_bias", &hyena_bias}}) {
+      status = metadata_bool(model, item.first, item.second);
+      if (!status.ok())
+        return status;
+    }
+    std::string tokenizer;
+    std::string prefill;
+    std::string activation;
+    for (const auto item :
+         {std::pair{"config.tokenizer_type", &tokenizer},
+          std::pair{"config.prefill_style", &prefill},
+          std::pair{"config.mlp_activation", &activation}}) {
+      status = metadata_string(model, item.first, item.second);
+      if (!status.ok())
+        return status;
+    }
+    if (short_filter_bias || !evo2_activations || !final_norm || qkv_bias ||
+        !mha_bias || !hyena_bias || tokenizer != "CharLevelTokenizer" ||
+        prefill != "fft" || activation != "gelu") {
+      return {ErrorCode::kUnsupported,
+              "model semantic metadata is not an official Evo 2 profile"};
+    }
+  }
 
   std::string projection_dtype;
   if (model.find_metadata("hyena_projection_dtype") != nullptr) {
@@ -520,7 +585,9 @@ Status read_runtime_model_config(const ModelFile &model,
     status = metadata_string(model, "hcm_filter_dtype", &hcm_filter_dtype);
     if (!status.ok())
       return status;
-  }
+  } else if (has_model_id)
+    return {ErrorCode::kModelFormat,
+            "registered models require hcm_filter_dtype metadata"};
   if (hcm_filter_dtype == "BF16") {
     candidate.hcm_filter_dtype = HcmFilterDType::kBF16;
   } else if (hcm_filter_dtype == "F32") {
@@ -528,6 +595,26 @@ Status read_runtime_model_config(const ModelFile &model,
   } else {
     return {ErrorCode::kUnsupported,
             "unsupported medium-Hyena filter dtype: " + hcm_filter_dtype};
+  }
+
+  std::string projection_weight_dtype = "BF16";
+  if (model.find_metadata("hyena_projection_weight_dtype") != nullptr) {
+    status = metadata_string(model, "hyena_projection_weight_dtype",
+                             &projection_weight_dtype);
+    if (!status.ok())
+      return status;
+  } else if (has_model_id)
+    return {ErrorCode::kModelFormat,
+            "registered models require hyena_projection_weight_dtype metadata"};
+  if (projection_weight_dtype == "BF16") {
+    candidate.hyena_projection_weight_dtype =
+        HyenaProjectionWeightDType::kBF16;
+  } else if (projection_weight_dtype == "F32") {
+    candidate.hyena_projection_weight_dtype = HyenaProjectionWeightDType::kF32;
+  } else {
+    return {ErrorCode::kUnsupported,
+            "unsupported Hyena projection weight dtype: " +
+                projection_weight_dtype};
   }
 
   if (!candidate.test_fixture && software_fp8) {
@@ -562,13 +649,6 @@ Status read_runtime_model_config(const ModelFile &model,
   status = metadata_list(model, "config.attn_layer_idxs", &attention);
   if (!status.ok())
     return status;
-  if (candidate.layers != 50 || !same_indices(hcs, kHcsLayers) ||
-      !same_indices(hcm, kHcmLayers) || !same_indices(hcl, kHclLayers) ||
-      !same_indices(attention, kAttentionLayers)) {
-    return {ErrorCode::kUnsupported,
-            "model must use the official Evo 2 50-layer stripe topology"};
-  }
-
   if (candidate.vocab_size == 0 || candidate.width == 0 ||
       candidate.heads == 0 || candidate.width % candidate.heads != 0 ||
       candidate.head_dim() % 2 != 0 || candidate.head_dim() > 256 ||
@@ -578,19 +658,93 @@ Status read_runtime_model_config(const ModelFile &model,
       candidate.width % candidate.hcs_filter_groups != 0 ||
       candidate.hcm_filter_groups == 0 ||
       candidate.width % candidate.hcm_filter_groups != 0 ||
+      candidate.hcl_filter_groups == 0 ||
+      candidate.width % candidate.hcl_filter_groups != 0 ||
       !std::isfinite(candidate.epsilon) || candidate.epsilon <= 0.0F ||
-      !std::isfinite(candidate.rope_scale) || candidate.rope_scale <= 0.0F) {
+      !std::isfinite(candidate.rope_scale) || candidate.rope_scale <= 0.0F ||
+      !std::isfinite(candidate.rope_base) || candidate.rope_base <= 0.0F) {
     return {ErrorCode::kUnsupported, "model dimensions are unsupported"};
   }
-  if (!candidate.test_fixture &&
-      (candidate.vocab_size != 512 || candidate.width != 8192 ||
-       candidate.heads != 64 || candidate.state_size != 16 ||
-       candidate.inner_width != 22528 || candidate.short_filter_length != 3 ||
-       candidate.hcs_filter_length != 7 || candidate.hcm_filter_length != 128 ||
-       candidate.hcs_filter_groups != 512 ||
-       candidate.hcm_filter_groups != 512)) {
-    return {ErrorCode::kUnsupported,
-            "production model dimensions are not Evo 2 40B"};
+
+  if (!candidate.test_fixture) {
+    const auto matches = [&](const OfficialModelSpec &spec) {
+      const bool precision =
+          (candidate.hyena_projection_dtype == HyenaProjectionDType::kBF16) ==
+          (spec.projection_precision == OfficialProjectionPrecision::kBF16);
+      const bool weight_dtype =
+          (candidate.hyena_projection_weight_dtype ==
+           HyenaProjectionWeightDType::kBF16) ==
+          (spec.projection_weight_dtype ==
+           OfficialProjectionWeightDType::kBF16);
+      const bool hcm_dtype =
+          (candidate.hcm_filter_dtype == HcmFilterDType::kBF16) ==
+          (spec.hcm_filter_dtype == OfficialHcmFilterDType::kBF16);
+      return candidate.vocab_size == spec.vocab_size &&
+             candidate.width == spec.hidden_size &&
+             candidate.layers == spec.layers && candidate.heads == spec.heads &&
+             candidate.state_size == 16 &&
+             candidate.inner_width == spec.inner_width &&
+             candidate.short_filter_length == 3 &&
+             candidate.hcs_filter_length == 7 &&
+             candidate.hcm_filter_length == 128 &&
+             candidate.hcs_filter_groups == spec.hcs_groups &&
+             candidate.hcm_filter_groups == spec.hcm_groups &&
+             candidate.hcl_filter_groups == spec.hcl_groups &&
+             candidate.max_seqlen == spec.max_seqlen &&
+             candidate.epsilon == 1.0e-6F &&
+             candidate.rope_base == static_cast<float>(spec.rope_base) &&
+             candidate.rope_scale == static_cast<float>(spec.rope_scale) &&
+             candidate.interpolated_rope == spec.interpolated_rope &&
+             precision && weight_dtype && hcm_dtype && hcs == spec.hcs &&
+             hcm == spec.hcm && hcl == spec.hcl &&
+             attention == spec.attention;
+    };
+    const OfficialModelSpec *official = nullptr;
+    if (has_model_id) {
+      status = metadata_string(model, "model.id", &candidate.model_id);
+      if (!status.ok())
+        return status;
+      official = find_official_model(candidate.model_id);
+      if (official == nullptr) {
+        return {ErrorCode::kUnsupported,
+                "unsupported model.id: " + candidate.model_id};
+      }
+      if (!matches(*official)) {
+        return {ErrorCode::kUnsupported,
+                "model metadata does not match official registry profile '" +
+                    candidate.model_id + "'"};
+      }
+    } else {
+      for (const auto &spec : official_model_specs()) {
+        if (matches(spec)) {
+          if (official != nullptr) {
+            return {ErrorCode::kUnsupported,
+                    "legacy model metadata is ambiguous; reconvert with "
+                    "model.id"};
+          }
+          official = &spec;
+        }
+      }
+      if (official == nullptr) {
+        return {ErrorCode::kUnsupported,
+                "legacy model metadata does not match a supported official "
+                "Evo 2 profile; reconvert with the matching config"};
+      }
+      candidate.model_id = std::string{official->id};
+    }
+  }
+
+  std::vector<std::size_t> classified = hcs;
+  classified.insert(classified.end(), hcm.begin(), hcm.end());
+  classified.insert(classified.end(), hcl.begin(), hcl.end());
+  classified.insert(classified.end(), attention.begin(), attention.end());
+  std::sort(classified.begin(), classified.end());
+  std::vector<std::size_t> expected_layers(candidate.layers);
+  for (std::size_t index = 0; index < expected_layers.size(); ++index)
+    expected_layers[index] = index;
+  if (classified != expected_layers) {
+    return {ErrorCode::kModelFormat,
+            "mixer layer lists must be disjoint and cover every block"};
   }
 
   candidate.mixer_types.assign(candidate.layers, MixerType::kHcs);
@@ -601,51 +755,149 @@ Status read_runtime_model_config(const ModelFile &model,
   for (const auto index : attention)
     candidate.mixer_types[index] = MixerType::kAttention;
 
+  std::set<std::string> expected_tensors;
+  const auto require_tensor =
+      [&](const std::string &name, const TensorDType dtype,
+          const std::vector<std::size_t> &shape) -> Status {
+    if (!expected_tensors.insert(name).second)
+      return {ErrorCode::kInternal, "duplicate runtime tensor rule: " + name};
+    const TensorInfo *tensor = nullptr;
+    return checked_tensor(model, name, dtype, shape, &tensor);
+  };
+  status = require_tensor("embedding_layer.weight", TensorDType::kBF16,
+                          {candidate.vocab_size, candidate.width});
+  if (!status.ok())
+    return status;
+  status = require_tensor("unembed.weight", TensorDType::kBF16,
+                          {candidate.vocab_size, candidate.width});
+  if (!status.ok())
+    return status;
+  status =
+      require_tensor("norm.scale", TensorDType::kF32, {candidate.width});
+  if (!status.ok())
+    return status;
+
   for (std::size_t index = 0; index < candidate.layers; ++index) {
     const auto type = candidate.mixer_types[index];
-    const std::string prefix =
-        "blocks." + std::to_string(index) + ".projections";
-    if (type != MixerType::kAttention) {
-      const std::array<std::string, 3> fp8_names{
-          prefix + ".fp8_scale_fwd",
-          prefix + ".fp8_scale_inv_fwd",
-          prefix + ".fp8_amax_history_fwd"};
-      if (software_fp8) {
-        const TensorInfo *tensor = nullptr;
-        status = checked_tensor(model, fp8_names[0], TensorDType::kF32, {2},
-                                &tensor);
-        if (!status.ok())
-          return status;
-        status = checked_tensor(model, fp8_names[1], TensorDType::kF32, {2},
-                                &tensor);
-        if (!status.ok())
-          return status;
-        status = checked_tensor(model, fp8_names[2], TensorDType::kF32,
-                                {16, 2}, &tensor);
-        if (!status.ok())
-          return status;
-      } else if (std::any_of(
-                     fp8_names.begin(), fp8_names.end(),
-                     [&model](const std::string &name) {
-                       return model.find_tensor(name) != nullptr;
-                     })) {
-        return {ErrorCode::kModelFormat,
-                "BF16 Hyena projection contains software-FP8 tensors: " +
-                    prefix};
-      }
-    }
-    if (type == MixerType::kHcm) {
-      const TensorInfo *tensor = nullptr;
-      status = checked_tensor(
-          model, "blocks." + std::to_string(index) + ".filter.h",
-          candidate.hcm_filter_dtype == HcmFilterDType::kF32
-              ? TensorDType::kF32
-              : TensorDType::kBF16,
-          {candidate.hcm_filter_groups, 1, candidate.hcm_filter_length},
-          &tensor);
+    const std::string block = "blocks." + std::to_string(index);
+    for (const auto &name : {block + ".pre_norm.scale",
+                             block + ".post_norm.scale"}) {
+      status = require_tensor(name, TensorDType::kF32, {candidate.width});
       if (!status.ok())
         return status;
     }
+    status = require_tensor(block + ".mlp.l1.weight", TensorDType::kBF16,
+                            {candidate.inner_width, candidate.width});
+    if (!status.ok())
+      return status;
+    status = require_tensor(block + ".mlp.l2.weight", TensorDType::kBF16,
+                            {candidate.inner_width, candidate.width});
+    if (!status.ok())
+      return status;
+    status = require_tensor(block + ".mlp.l3.weight", TensorDType::kBF16,
+                            {candidate.width, candidate.inner_width});
+    if (!status.ok())
+      return status;
+    if (type == MixerType::kAttention) {
+      status = require_tensor(block + ".inner_mha_cls.Wqkv.weight",
+                              TensorDType::kBF16,
+                              {candidate.width * 3, candidate.width});
+      if (!status.ok())
+        return status;
+      status = require_tensor(block + ".inner_mha_cls.out_proj.weight",
+                              TensorDType::kBF16,
+                              {candidate.width, candidate.width});
+      if (!status.ok())
+        return status;
+      status = require_tensor(block + ".inner_mha_cls.out_proj.bias",
+                              TensorDType::kBF16, {candidate.width});
+      if (!status.ok())
+        return status;
+      status = require_tensor(
+          block + ".inner_mha_cls.rotary_emb.inv_freq", TensorDType::kF32,
+          {candidate.head_dim() / 2});
+      if (!status.ok())
+        return status;
+      continue;
+    }
+
+    const std::string projection = block + ".projections";
+    status = require_tensor(
+        projection + ".weight",
+        candidate.hyena_projection_weight_dtype ==
+                HyenaProjectionWeightDType::kF32
+            ? TensorDType::kF32
+            : TensorDType::kBF16,
+        {candidate.width * 3, candidate.width});
+    if (!status.ok())
+      return status;
+    status = require_tensor(block + ".out_filter_dense.weight",
+                            TensorDType::kBF16,
+                            {candidate.width, candidate.width});
+    if (!status.ok())
+      return status;
+    status = require_tensor(block + ".out_filter_dense.bias",
+                            TensorDType::kBF16, {candidate.width});
+    if (!status.ok())
+      return status;
+    status = require_tensor(block + ".filter.short_filter_weight",
+                            TensorDType::kBF16,
+                            {candidate.width * 3, 1,
+                             candidate.short_filter_length});
+    if (!status.ok())
+      return status;
+    if (type == MixerType::kHcs) {
+      status = require_tensor(
+          block + ".filter.h", TensorDType::kBF16,
+          {candidate.hcs_filter_groups, 1, candidate.hcs_filter_length});
+    } else {
+      status = require_tensor(block + ".filter.D", TensorDType::kBF16,
+                              {candidate.width});
+      if (status.ok() && type == MixerType::kHcm) {
+        status = require_tensor(
+            block + ".filter.h",
+            candidate.hcm_filter_dtype == HcmFilterDType::kF32
+                ? TensorDType::kF32
+                : TensorDType::kBF16,
+            {candidate.hcm_filter_groups, 1, candidate.hcm_filter_length});
+      } else if (status.ok()) {
+        status = require_tensor(
+            block + ".filter.log_poles", TensorDType::kF32,
+            {candidate.width, candidate.state_size, 1});
+        if (status.ok()) {
+          status = require_tensor(block + ".filter.residues",
+                                  TensorDType::kF32,
+                                  {candidate.width, candidate.state_size});
+        }
+      }
+    }
+    if (!status.ok())
+      return status;
+    if (software_fp8) {
+      status = require_tensor(projection + ".fp8_scale_fwd",
+                              TensorDType::kF32, {2});
+      if (status.ok()) {
+        status = require_tensor(projection + ".fp8_scale_inv_fwd",
+                                TensorDType::kF32, {2});
+      }
+      if (status.ok()) {
+        status = require_tensor(projection + ".fp8_amax_history_fwd",
+                                TensorDType::kF32, {16, 2});
+      }
+      if (!status.ok())
+        return status;
+    }
+  }
+  if (expected_tensors.size() != model.tensors().size()) {
+    for (const auto &tensor : model.tensors()) {
+      if (expected_tensors.count(tensor.name) == 0) {
+        return {ErrorCode::kModelFormat,
+                "unknown tensor for model profile '" + candidate.model_id +
+                    "': " + tensor.name};
+      }
+    }
+    return {ErrorCode::kModelFormat,
+            "model tensor table contains duplicate runtime rules"};
   }
   *config = std::move(candidate);
   return Status::Ok();
@@ -787,7 +1039,11 @@ struct SingleGpuModel::Impl final {
         return status;
       DeviceBuffer original_projection;
       status = upload_tensor(
-          model, prefix + ".projections.weight", TensorDType::kBF16,
+          model, prefix + ".projections.weight",
+          config.hyena_projection_weight_dtype ==
+                  HyenaProjectionWeightDType::kF32
+              ? TensorDType::kF32
+              : TensorDType::kBF16,
           {config.width * 3, config.width}, device, stream,
           &original_projection);
       if (!status.ok())
@@ -801,9 +1057,14 @@ struct SingleGpuModel::Impl final {
       status = layer->projection.allocate(device, projection_elements);
       if (!status.ok())
         return status;
-      status = software_e4m3_quantize_bf16_codes(
-          original_projection, projection_elements, weight_scale,
-          &layer->projection, stream);
+      status = config.hyena_projection_weight_dtype ==
+                       HyenaProjectionWeightDType::kF32
+                   ? software_e4m3_quantize_f32_codes(
+                         original_projection, projection_elements,
+                         weight_scale, &layer->projection, stream)
+                   : software_e4m3_quantize_bf16_codes(
+                         original_projection, projection_elements,
+                         weight_scale, &layer->projection, stream);
       if (!status.ok())
         return status;
       status = stream.synchronize();
@@ -1251,6 +1512,12 @@ Status SingleGpuModel::load(const ModelFile &model, const int device,
       read_runtime_model_config(model, allow_test_fixture, &impl_->config);
   if (!status.ok())
     return status;
+  if (!impl_->config.test_fixture &&
+      context_capacity > impl_->config.max_seqlen) {
+    return {ErrorCode::kInvalidArgument,
+            "requested context exceeds model maximum of " +
+                std::to_string(impl_->config.max_seqlen)};
+  }
   impl_->device = device;
   impl_->context_capacity = context_capacity;
   impl_->arena_capacity = std::min(
@@ -1352,6 +1619,8 @@ struct PipelineModel::Impl final {
   std::vector<std::unique_ptr<SingleGpuModel::Impl>> stages;
 
   [[nodiscard]] Status enable_stage_peers() const {
+    if (assignments.size() == 1)
+      return Status::Ok();
     std::set<std::pair<int, int>> enabled;
     for (std::size_t index = 0; index < assignments.size(); ++index) {
       const int source = assignments[index].device;
@@ -1501,10 +1770,10 @@ Status PipelineModel::load(const ModelFile &model,
                            const std::vector<int> &devices,
                            const std::size_t context_capacity,
                            const bool allow_test_fixture) {
-  if (impl_->loaded || context_capacity == 0 || devices.size() < 2 ||
+  if (impl_->loaded || context_capacity == 0 || devices.empty() ||
       devices.size() > 4) {
     return {ErrorCode::kInvalidArgument,
-            "pipeline load requires two to four devices, nonzero context, "
+            "pipeline load requires one to four devices, nonzero context, "
             "and an unloaded model"};
   }
   const std::set<int> unique_devices(devices.begin(), devices.end());
@@ -1518,6 +1787,12 @@ Status PipelineModel::load(const ModelFile &model,
       read_runtime_model_config(model, allow_test_fixture, &candidate->config);
   if (!status.ok())
     return status;
+  if (!candidate->config.test_fixture &&
+      context_capacity > candidate->config.max_seqlen) {
+    return {ErrorCode::kInvalidArgument,
+            "requested context exceeds model maximum of " +
+                std::to_string(candidate->config.max_seqlen)};
+  }
   candidate->context_capacity = context_capacity;
   candidate->arena_capacity = std::min(
       context_capacity, candidate->config.test_fixture
@@ -1525,15 +1800,62 @@ Status PipelineModel::load(const ModelFile &model,
                             : kMaximumArenaTokens);
   candidate->q8_kv_cache = context_capacity >= kQ8KvContextThreshold;
   const std::size_t stage_count = devices.size();
-  const std::size_t base_layers = candidate->config.layers / stage_count;
-  const std::size_t extra_layers = candidate->config.layers % stage_count;
+  std::vector<std::size_t> layer_ends;
+  layer_ends.reserve(stage_count);
+  if (candidate->config.test_fixture) {
+    const std::size_t base_layers = candidate->config.layers / stage_count;
+    const std::size_t extra_layers = candidate->config.layers % stage_count;
+    std::size_t end = 0;
+    for (std::size_t index = 0; index < stage_count; ++index) {
+      end += base_layers + (index < extra_layers ? 1 : 0);
+      layer_ends.push_back(end);
+    }
+  } else {
+    std::vector<std::size_t> layer_bytes(candidate->config.layers, 0);
+    for (std::size_t layer = 0; layer < candidate->config.layers; ++layer) {
+      const std::string prefix = "blocks." + std::to_string(layer) + ".";
+      for (const auto &tensor : model.tensors()) {
+        if (tensor.name.compare(0, prefix.size(), prefix) == 0) {
+          if (tensor.data_size >
+              std::numeric_limits<std::size_t>::max() - layer_bytes[layer]) {
+            return {ErrorCode::kModelFormat,
+                    "layer tensor bytes overflow size_t"};
+          }
+          layer_bytes[layer] += static_cast<std::size_t>(tensor.data_size);
+        }
+      }
+    }
+    std::size_t remaining_bytes = 0;
+    for (const auto bytes : layer_bytes)
+      remaining_bytes += bytes;
+    std::size_t begin = 0;
+    for (std::size_t stage = 0; stage < stage_count; ++stage) {
+      const std::size_t remaining_stages = stage_count - stage;
+      if (remaining_stages == 1) {
+        layer_ends.push_back(candidate->config.layers);
+        break;
+      }
+      const std::size_t target =
+          (remaining_bytes + remaining_stages - 1) / remaining_stages;
+      const std::size_t latest_end =
+          candidate->config.layers - (remaining_stages - 1);
+      std::size_t end = begin;
+      std::size_t assigned = 0;
+      while (end < latest_end && (end == begin || assigned < target)) {
+        assigned += layer_bytes[end];
+        ++end;
+      }
+      layer_ends.push_back(end);
+      remaining_bytes -= assigned;
+      begin = end;
+    }
+  }
   std::size_t layer_begin = 0;
   candidate->assignments.reserve(stage_count);
   candidate->stages.reserve(stage_count);
   for (std::size_t index = 0; index < stage_count; ++index) {
-    const std::size_t layer_count =
-        base_layers + (index < extra_layers ? 1 : 0);
-    const std::size_t layer_end = layer_begin + layer_count;
+    const std::size_t layer_end = layer_ends[index];
+    const std::size_t layer_count = layer_end - layer_begin;
     candidate->assignments.push_back(
         {devices[index], layer_begin, layer_end, 0, 0, 0});
     auto stage = std::make_unique<SingleGpuModel::Impl>();

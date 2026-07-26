@@ -54,7 +54,8 @@ as both its causal prefix and RoPE position offset. No path materializes a
 sequence-by-sequence score matrix. Single-token decode calls the same
 format-aware online-softmax operation against the populated cache.
 
-The 42 Hyena input projections use fixed Transformer Engine 2.3 E4M3FN
+The Arc 1B, 20B, and 40B Hyena input projections use fixed Transformer Engine
+2.3 E4M3FN (21, 21, and 42 projections respectively)
 inference scales and H100 QGMMA K=32 global-alignment semantics. Their Ampere
 software path is specified separately in `software-fp8.md`; replacing it with
 an ordinary BF16 GEMM is not numerically equivalent.

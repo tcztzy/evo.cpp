@@ -44,6 +44,11 @@ struct MlpWorkspace final {
     const DeviceBuffer &input, std::size_t elements, float scale,
     DeviceBuffer *codes, const Stream &stream);
 
+// Convert checkpoint-native F32 weights directly to scaled E4M3 codes.
+[[nodiscard]] Status software_e4m3_quantize_f32_codes(
+    const DeviceBuffer &input, std::size_t elements, float scale,
+    DeviceBuffer *codes, const Stream &stream);
+
 // Emulate H100 QGMMA on sm80: each K=32 block globally aligns the raw E4M3
 // products and incoming accumulator to (2 integer, 13 fractional) bits,
 // truncates aligned operands, sums once, and truncates the normalized result.

@@ -169,6 +169,18 @@ __global__ void software_lowp_codes_kernel(
   }
 }
 
+__global__ void software_lowp_f32_codes_kernel(
+    const float *const input, std::uint8_t *const codes,
+    const std::size_t elements, const float scale) {
+  for (std::size_t index =
+           static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+       index < elements;
+       index += static_cast<std::size_t>(blockDim.x) * gridDim.x) {
+    const __nv_fp8_e4m3 quantized(input[index] * scale);
+    codes[index] = quantized.__x;
+  }
+}
+
 __device__ int normal_exponent(const float value) {
   return static_cast<int>((__float_as_uint(fabsf(value)) >> 23U) & 0xffU) -
          127;
@@ -635,6 +647,42 @@ Status software_e4m3_quantize_bf16_codes(
       static_cast<const __nv_bfloat16 *>(input.data()),
       static_cast<std::uint8_t *>(codes->data()), elements, scale);
   return launch_status("software_lowp_codes_kernel");
+}
+
+Status software_e4m3_quantize_f32_codes(
+    const DeviceBuffer &input, const std::size_t elements, const float scale,
+    DeviceBuffer *const codes, const Stream &stream) {
+  if (codes == nullptr || !stream.valid() || !std::isfinite(scale) ||
+      scale <= 0.0F) {
+    return {ErrorCode::kInvalidArgument,
+            "software_e4m3_quantize_f32_codes received invalid arguments"};
+  }
+  std::size_t input_bytes = 0;
+  auto status = required_bytes(elements, sizeof(float), &input_bytes,
+                               "software E4M3 F32 code input");
+  if (!status.ok())
+    return status;
+  const int device = input.device();
+  if (stream.device() != device) {
+    return {ErrorCode::kInvalidArgument,
+            "software E4M3 F32 stream is on a different CUDA device"};
+  }
+  status = buffer_size(input, input_bytes, device,
+                       "software E4M3 F32 code input");
+  if (!status.ok())
+    return status;
+  status = buffer_size(*codes, elements, device,
+                       "software E4M3 F32 code output");
+  if (!status.ok())
+    return status;
+  status = select_device(device);
+  if (!status.ok())
+    return status;
+  software_lowp_f32_codes_kernel<<<grid_for(elements), kThreads, 0,
+                                   stream.get()>>>(
+      static_cast<const float *>(input.data()),
+      static_cast<std::uint8_t *>(codes->data()), elements, scale);
+  return launch_status("software_lowp_f32_codes_kernel");
 }
 
 Status software_e4m3_h100_linear(

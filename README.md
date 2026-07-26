@@ -2,18 +2,40 @@
 
 **English** | [简体中文](README.zh_CN.md)
 
-`evo2c` is an independent C++17/CUDA inference runtime for Evo 2
-40B/40B-base. It makes the 40B model, which originally depends on Hopper FP8,
-available on two to four Ampere `sm_80` GPUs. On gpu02, the original Arc
-checkpoint has been validated on 4×A800 80GB, and NVIDIA's BioNeMo BF16
-checkpoint has been validated on 2×A800 80GB. The inference process does not
-depend on PyTorch, Vortex, Transformer Engine, or hardware FP8 instructions.
+`evo2c` is an independent C++17/CUDA inference runtime for every official
+Evo 2 size: 1B, 7B, 20B, and 40B, including the supported base and
+long-context variants. It runs batch-1 inference on one to four CUDA GPUs.
+The inference process does not depend on PyTorch, Vortex, Transformer Engine,
+or hardware FP8 instructions.
 
 The project follows the narrow-runtime philosophy of `llama.cpp` and `ds4.c`:
 one checked model container, one model architecture, purpose-built native
 kernels, offline weight conversion, and reproducible numerical tests. It is
 not a new biological model, and it does not retrain or modify a checkpoint. It
-solves the deployment problem of running Evo 2 40B on hardware without FP8.
+solves the deployment problem of running Evo 2 on hardware without FP8.
+
+## Support and validation matrix
+
+The topology, source tensor manifest, converter, native registry, and
+corruption checks are locally tested for every row. “GPU validated” means a
+real converted checkpoint was actually compared or smoke-tested on CUDA; a
+Python/Vortex reference vector alone is not counted as native validation.
+
+| Model ID | Config | Projection semantics | Suggested starting hardware at ctx 8K | Real-checkpoint native status |
+|---|---|---|---|---|
+| `evo2_1b_base` | `evo2-1b-8k.yml` | fixed TE 2.3 software E4M3; BF16 source weight | 1×16 GB | Not yet run (checkpoint/GPU unavailable locally) |
+| `evo2_7b` | `evo2-7b-1m.yml` | BF16 | 1×24 GB | Not yet run; existing 7B vectors are reference evidence only |
+| `evo2_7b_base` | `evo2-7b-8k.yml` | BF16 | 1×24 GB | Not yet run |
+| `evo2_7b_262k` | `evo2-7b-262k.yml` | BF16 | 1×24 GB | Not yet run |
+| `evo2_20b` | `evo2-20b-1m.yml` | fixed TE 2.3 software E4M3; F32 source weight | 2×40–48 GB | Not yet run |
+| `evo2_40b` | `evo2-40b-1m.yml` | fixed TE 2.3 software E4M3 | 2×80 GB | Validated on 4×A800 80 GB |
+| `evo2_40b_base` | `evo2-40b-8k.yml` | fixed TE 2.3 software E4M3 | 2×80 GB | Not yet run |
+| `evo2_40b_bionemo_bf16` | `evo2-40b-1m-bionemo-bf16.yml` | BF16 | 2×80 GB | Validated/aligned on 2×A800 80 GB |
+
+These are conservative starting points, not hard-coded requirements. Pipeline
+boundaries are chosen from layer payload bytes; context length, KV format,
+driver overhead, and other GPU processes change the actual requirement.
+Allocation failures remain explicit errors.
 
 ## Conclusions for researchers
 
@@ -54,7 +76,7 @@ metric before scaling up.
 | [Arc Institute Evo 2](https://github.com/arcinstitute/evo2) | Original model, checkpoints, paper, and research interfaces | Original Arc 40B/40B-base | Python + Vortex | The official documentation states that numerical accuracy for 40B depends on Hopper FP8 |
 | [Vortex](https://github.com/Zymrael/vortex) | Arc's StripedHyena 2 inference and numerical implementation | Loads the original Arc weights | PyTorch + Transformer Engine, optionally FlashAttention | 7B can run in pure BF16; 40B requires Transformer Engine/FP8 |
 | [NVIDIA BioNeMo](https://docs.nvidia.com/bionemo-framework/latest/models/evo2/index.html) | Evo 2 training, fine-tuning, prediction, and inference framework | Original weights and NVIDIA fine-tuned variants | PyTorch + NeMo/Megatron + Transformer Engine | NVIDIA's fine-tuned 40B checkpoint natively supports BF16 on Ampere+ |
-| **evo2c** | Lightweight native inference runtime specialized for 40B | Supports both original Arc and BioNeMo BF16 weights | C++17 + CUDA + cuBLASLt/cuFFT | Validated on A800; software E4M3 for original weights and BF16 for BioNeMo weights |
+| **evo2c** | Lightweight native inference runtime for official 1B/7B/20B/40B profiles | Supports Arc variants and the supported BioNeMo BF16 40B weights | C++17 + CUDA + cuBLASLt/cuFFT | Software E4M3 for 1B/20B/40B Arc; BF16 for 7B and BioNeMo |
 
 The [Arc documentation](https://github.com/arcinstitute/evo2#requirements)
 states that the original 1B, 20B, and 40B checkpoints are sensitive to the
@@ -378,6 +400,9 @@ python3 -m venv .venv-convert
 . .venv-convert/bin/activate
 python3 -m pip install -r requirements-convert.txt
 
+scripts/convert_arc_checkpoint.sh \
+  evo2_7b evo2_7b.pt evo2-7b.evo2
+
 python3 tools/convert_checkpoint.py \
   --input evo2_40b.pt \
   --config configs/evo2-40b-1m.yml \
@@ -390,6 +415,10 @@ python3 tools/convert_bionemo_checkpoint.py \
   --output evo2-40b-bionemo-bf16.evo2 \
   --source-sha256 544b47e033d1fb0261b686a53f7c4fe240cd290253187d31e8c99dea9e35a680
 ```
+
+The wrapper accepts every Arc model ID in the support table. Exact source
+revisions, hashes, manifests, precision rules, and per-size smoke commands are
+in [`docs/checkpoint-conversion.md`](docs/checkpoint-conversion.md).
 
 ### Run generation
 
@@ -466,11 +495,12 @@ apptainer exec --nv -B "$nix_root:/nix:ro" "$image" \
 
 ## Implementation scope
 
-- 50-layer StripedHyena 2 with HCS, HCM, HCL, MHA/RoPE, and MLP.
+- Registry-selected 24-, 25-, 32-, or 50-layer StripedHyena 2 with HCS,
+  HCM, HCL, MHA/RoPE, and MLP.
 - KV, FIR, and IIR caches with cached autoregressive decode.
 - Byte tokenizer, text/FASTA scoring, greedy sampling, and top-k/top-p
   sampling.
-- Two-to-four-GPU layer pipeline at batch 1.
+- One-to-four-GPU, payload-balanced contiguous layer pipeline at batch 1.
 - Native BioNeMo BF16 Hyena projection path.
 - E4M3FN one-byte weight cache and software-H100-QGMMA accumulation for the
   original Arc checkpoint.
@@ -545,11 +575,11 @@ EVO2C_SANITIZE=ON scripts/local_test.sh build-sanitize
 
 Current status:
 
-- Local Release: 20/20 passed.
-- ASan/UBSan: 20/20 passed.
-- gpu02: 28/28 passed, including nine CUDA tests and two multi-GPU tests. Five
-  optional external-framework oracles are skipped as declared in the pinned
-  runtime.
+- Local Release: 21/21 passed.
+- ASan/UBSan: 21/21 passed.
+- Last pre-multi-size gpu02 baseline: 28/28 passed, including nine CUDA tests
+  and two multi-GPU tests. This multi-size change has not been rebuilt or run
+  on gpu02 because the current host has no CUDA compiler/GPU.
 - Real PyTorch DCP converter integration: 5/5 passed.
 
 PyTorch is used only for offline checkpoint conversion and optional oracle
@@ -565,8 +595,9 @@ Engine.
   and BioNeMo checkpoint conversion rules.
 - [`docs/math-semantics.md`](docs/math-semantics.md): Vortex-compatible layer
   semantics.
-- [`docs/software-fp8.md`](docs/software-fp8.md): why the original 40B cannot
-  simply switch to BF16, and how Ampere emulates the required FP8 semantics.
+- [`docs/software-fp8.md`](docs/software-fp8.md): why the original
+  1B/20B/40B checkpoints cannot simply switch to BF16, and how Ampere
+  emulates the required FP8 semantics.
 - [`docs/gpu02-environment.md`](docs/gpu02-environment.md): gpu02 environment,
   benchmarks, artifact paths, and SHA256 values.
 

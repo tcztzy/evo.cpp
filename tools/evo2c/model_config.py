@@ -1,20 +1,21 @@
-"""Strict Evo 2 40B config parsing and checkpoint tensor manifest."""
+"""Strict official Evo 2 model registry and checkpoint tensor manifests."""
 
 from __future__ import annotations
 
 import ast
 import dataclasses
+import json
 import math
 import re
 from pathlib import Path
 from typing import Any
 
 
+# Backward-compatible names for existing 40B converter clients.
 HCS_LAYERS = (0, 4, 7, 11, 14, 18, 21, 25, 28, 32, 36, 39, 43, 46)
 HCM_LAYERS = (1, 5, 8, 12, 15, 19, 22, 26, 29, 33, 37, 40, 44, 47)
 HCL_LAYERS = (2, 6, 9, 13, 16, 20, 23, 27, 30, 34, 38, 41, 45, 48)
 ATTN_LAYERS = (3, 10, 17, 24, 31, 35, 42, 49)
-
 EXPECTED_TENSOR_COUNT = 537
 EXPECTED_BF16_TENSOR_COUNT = 400
 EXPECTED_F32_TENSOR_COUNT = 137
@@ -24,9 +25,11 @@ EXPECTED_BIONEMO_BF16_TENSOR_COUNT = 386
 EXPECTED_BIONEMO_F32_TENSOR_COUNT = 151
 EXPECTED_BIONEMO_TENSOR_BYTES = 82_254_368_768
 
+_REGISTRY_PATH = Path(__file__).resolve().parents[2] / "configs" / "model-registry.json"
+
 
 class ConfigError(ValueError):
-    """Raised when config does not describe the supported 40B topology."""
+    """Raised when a config does not exactly match an official supported model."""
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -41,11 +44,29 @@ class TensorSpec:
 
     @property
     def nbytes(self) -> int:
+        if self.dtype not in {"BF16", "F32"}:
+            raise AssertionError(f"unsupported manifest dtype {self.dtype}")
         return self.elements * (2 if self.dtype == "BF16" else 4)
+
+
+def load_model_registry(path: Path = _REGISTRY_PATH) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ConfigError(f"cannot read model registry {path}: {error}") from error
+    if (
+        not isinstance(value, dict)
+        or value.get("schema_version") != 1
+        or not isinstance(value.get("profiles"), dict)
+        or not isinstance(value.get("models"), dict)
+    ):
+        raise ConfigError(f"{path}: unsupported or incomplete registry schema")
+    return value
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class ModelConfig:
+    model_id: str
     model_name: str
     vocab_size: int
     hidden_size: int
@@ -90,6 +111,14 @@ class ModelConfig:
 
     @classmethod
     def from_mapping(cls, values: dict[str, Any]) -> "ModelConfig":
+        allowed = {field.name for field in dataclasses.fields(cls)} | {
+            "model_parallel_size",
+            "pipe_parallel_size",
+        }
+        unknown = sorted(set(values) - allowed)
+        if unknown:
+            raise ConfigError("unknown config keys: " + ", ".join(unknown))
+
         def integer(key: str) -> int:
             value = values.get(key)
             if isinstance(value, bool) or not isinstance(value, int):
@@ -116,16 +145,19 @@ class ModelConfig:
 
         def indices(key: str) -> tuple[int, ...]:
             value = values.get(key)
-            if not isinstance(value, list) or any(isinstance(item, bool) or not isinstance(item, int) for item in value):
+            if not isinstance(value, list) or any(
+                isinstance(item, bool) or not isinstance(item, int) for item in value
+            ):
                 raise ConfigError(f"{key} must be an integer list")
             return tuple(value)
 
-        model_name = values.get("model_name")
-        if not isinstance(model_name, str) or not model_name:
-            raise ConfigError("model_name must be a nonempty string")
+        for parallel_key in ("model_parallel_size", "pipe_parallel_size"):
+            if integer(parallel_key) != 1:
+                raise ConfigError(f"{parallel_key} must be 1 for native conversion")
 
         config = cls(
-            model_name=model_name,
+            model_id=string("model_id"),
+            model_name=string("model_name"),
             vocab_size=integer("vocab_size"),
             hidden_size=integer("hidden_size"),
             num_filters=integer("num_filters"),
@@ -167,56 +199,82 @@ class ModelConfig:
             prefill_style=string("prefill_style"),
             mlp_activation=string("mlp_activation"),
         )
-        config.validate_supported_40b()
+        config.validate_supported()
         return config
 
     @property
     def head_size(self) -> int:
         return self.hidden_size // self.num_attention_heads
 
-    def validate_supported_40b(self) -> None:
+    @property
+    def registry(self) -> dict[str, Any]:
+        registry = load_model_registry()
+        entry = registry["models"].get(self.model_id)
+        if not isinstance(entry, dict):
+            raise ConfigError(
+                f"unsupported model_id={self.model_id!r}; expected one of "
+                + ", ".join(sorted(registry["models"]))
+            )
+        return entry
+
+    @property
+    def profile(self) -> dict[str, Any]:
+        registry = load_model_registry()
+        entry = self.registry
+        profile = registry["profiles"].get(entry.get("profile"))
+        if not isinstance(profile, dict):
+            raise ConfigError(f"registry profile missing for {self.model_id}")
+        return profile
+
+    def validate_supported(self) -> None:
+        expected_model_name = self.registry["expected_model_name"]
+        if self.model_name != expected_model_name:
+            raise ConfigError(
+                f"{self.model_id}: model_name must be {expected_model_name!r}, "
+                f"got {self.model_name!r}"
+            )
+        profile = self.profile
+        for key, expected in profile.items():
+            if (
+                key == "use_fp8_input_projections"
+                and self.model_id == "evo2_40b_bionemo_bf16"
+            ):
+                expected = False
+            actual = getattr(self, key)
+            if isinstance(actual, tuple):
+                expected = tuple(expected)
+            if actual != expected:
+                raise ConfigError(
+                    f"{self.model_id}: unsupported {key}={actual!r}; expected {expected!r}"
+                )
         exact_values = {
             "vocab_size": (self.vocab_size, 512),
-            "hidden_size": (self.hidden_size, 8192),
-            "num_filters": (self.num_filters, 8192),
-            "num_layers": (self.num_layers, 50),
-            "num_attention_heads": (self.num_attention_heads, 64),
-            "inner_mlp_size": (self.inner_mlp_size, 22528),
+            "num_filters": (self.num_filters, self.hidden_size),
             "state_size": (self.state_size, 16),
             "short_filter_length": (self.short_filter_length, 3),
             "hcs_filter_length": (self.hcs_filter_length, 7),
             "hcm_filter_length": (self.hcm_filter_length, 128),
-            "hcs_filter_groups": (self.hcs_filter_groups, 512),
-            "hcm_filter_groups": (self.hcm_filter_groups, 512),
-            "hcl_filter_groups": (self.hcl_filter_groups, 8192),
-            "max_seqlen": (self.max_seqlen, 1_048_576),
             "max_batch_size": (self.max_batch_size, 1),
             "inner_size_multiple_of": (self.inner_size_multiple_of, 128),
             "proj_groups": (self.proj_groups, 1),
         }
         for key, (actual, expected) in exact_values.items():
             if actual != expected:
-                raise ConfigError(f"unsupported {key}={actual}; Evo 2 40B requires {expected}")
-
-        exact_layers = {
-            "hcs_layer_idxs": (self.hcs_layer_idxs, HCS_LAYERS),
-            "hcm_layer_idxs": (self.hcm_layer_idxs, HCM_LAYERS),
-            "hcl_layer_idxs": (self.hcl_layer_idxs, HCL_LAYERS),
-            "attn_layer_idxs": (self.attn_layer_idxs, ATTN_LAYERS),
-        }
-        for key, (actual, expected) in exact_layers.items():
-            if actual != expected:
-                raise ConfigError(f"unsupported {key}={list(actual)}; expected {list(expected)}")
-
-        all_layers = self.hcs_layer_idxs + self.hcm_layer_idxs + self.hcl_layer_idxs + self.attn_layer_idxs
-        if sorted(all_layers) != list(range(self.num_layers)) or len(set(all_layers)) != self.num_layers:
-            raise ConfigError("layer sets must be disjoint and cover layers 0..49")
-        if self.hidden_size % self.num_attention_heads != 0 or self.head_size != 128:
-            raise ConfigError("Evo 2 40B attention requires 64 heads of size 128")
-
-        required_true = {
+                raise ConfigError(f"{self.model_id}: {key} must be {expected}, got {actual}")
+        layers = (
+            self.hcs_layer_idxs
+            + self.hcm_layer_idxs
+            + self.hcl_layer_idxs
+            + self.attn_layer_idxs
+        )
+        if sorted(layers) != list(range(self.num_layers)) or len(set(layers)) != self.num_layers:
+            raise ConfigError(
+                f"{self.model_id}: layer sets must be disjoint and cover 0..{self.num_layers - 1}"
+            )
+        if self.hidden_size % self.num_attention_heads or self.head_size != 128:
+            raise ConfigError(f"{self.model_id}: attention head size must be 128")
+        required = {
             "tie_embeddings": self.tie_embeddings,
-            "use_interpolated_rotary_pos_emb": self.use_interpolated_rotary_pos_emb,
             "evo2_style_activations": self.evo2_style_activations,
             "interleave": self.interleave,
             "column_split": self.column_split,
@@ -224,20 +282,20 @@ class ModelConfig:
             "mha_out_proj_bias": self.mha_out_proj_bias,
             "hyena_out_proj_bias": self.hyena_out_proj_bias,
         }
-        for key, value in required_true.items():
-            if not value:
-                raise ConfigError(f"{key} must be true for Evo 2 40B checkpoint semantics")
-        required_false = {
+        forbidden = {
             "short_filter_bias": self.short_filter_bias,
             "column_split_hyena": self.column_split_hyena,
             "hyena_flip_x1x2": self.hyena_flip_x1x2,
             "qkv_proj_bias": self.qkv_proj_bias,
         }
-        for key, value in required_false.items():
+        for key, value in required.items():
+            if not value:
+                raise ConfigError(f"{self.model_id}: {key} must be true")
+        for key, value in forbidden.items():
             if value:
-                raise ConfigError(f"{key} must be false for Evo 2 40B checkpoint semantics")
-        if self.eps != 1e-6 or self.rotary_emb_base != 1e6 or self.rotary_emb_scaling_factor != 128:
-            raise ConfigError("RMSNorm/RoPE constants do not match Evo 2 40B")
+                raise ConfigError(f"{self.model_id}: {key} must be false")
+        if self.eps != 1e-6:
+            raise ConfigError(f"{self.model_id}: eps must be 1e-6")
         exact_strings = {
             "tokenizer_type": (self.tokenizer_type, "CharLevelTokenizer"),
             "prefill_style": (self.prefill_style, "fft"),
@@ -245,7 +303,13 @@ class ModelConfig:
         }
         for key, (actual, expected) in exact_strings.items():
             if actual != expected:
-                raise ConfigError(f"{key} must be {expected!r}, got {actual!r}")
+                raise ConfigError(f"{self.model_id}: {key} must be {expected!r}")
+
+    def validate_supported_40b(self) -> None:
+        """Compatibility shim for callers which previously selected only 40B."""
+        self.validate_supported()
+        if self.hidden_size != 8192 or self.num_layers != 50:
+            raise ConfigError(f"{self.model_id} is supported, but is not a 40B topology")
 
 
 def _parse_scalar(text: str) -> Any:
@@ -263,7 +327,7 @@ def _parse_scalar(text: str) -> Any:
         return int(text)
     if re.fullmatch(r"[-+]?(?:\d+\.\d*|\d*\.\d+)(?:[eE][-+]?\d+)?", text):
         return float(text)
-    if (text.startswith("\"") and text.endswith("\"")) or (
+    if (text.startswith('"') and text.endswith('"')) or (
         text.startswith("'") and text.endswith("'")
     ):
         return ast.literal_eval(text)
@@ -273,7 +337,9 @@ def _parse_scalar(text: str) -> Any:
 def load_config(path: Path) -> ModelConfig:
     """Parse the flat scalar/list subset used by official Evo 2 YAML configs."""
     values: dict[str, Any] = {}
-    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for line_number, raw_line in enumerate(
+        path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
         line = raw_line.split("#", 1)[0].strip()
         if not line:
             continue
@@ -288,20 +354,21 @@ def load_config(path: Path) -> ModelConfig:
     return ModelConfig.from_mapping(values)
 
 
-def checkpoint_manifest(config: ModelConfig) -> list[TensorSpec]:
-    """Return exact tensor data entries present in official evo2_40b.pt."""
-    config.validate_supported_40b()
+def _base_manifest(config: ModelConfig, *, runtime: bool) -> list[TensorSpec]:
+    config.validate_supported()
+    entry = config.registry
+    norm_dtype = "F32" if runtime else entry["source_norm_dtype"]
+    rope_dtype = "F32" if runtime else entry["source_rope_dtype"]
+    projection_dtype = entry["source_projection_dtype"]
     width = config.hidden_size
     inner = config.inner_mlp_size
     specs = [
         TensorSpec("embedding_layer.weight", "BF16", (config.vocab_size, width)),
-        # Present in checkpoint even though current Vortex ties final projection to embedding.
         TensorSpec("unembed.weight", "BF16", (config.vocab_size, width)),
     ]
-
     for layer in range(config.num_layers):
         prefix = f"blocks.{layer}"
-        specs.append(TensorSpec(f"{prefix}.pre_norm.scale", "F32", (width,)))
+        specs.append(TensorSpec(f"{prefix}.pre_norm.scale", norm_dtype, (width,)))
         if layer in config.attn_layer_idxs:
             specs.extend(
                 [
@@ -310,7 +377,7 @@ def checkpoint_manifest(config: ModelConfig) -> list[TensorSpec]:
                     TensorSpec(f"{prefix}.inner_mha_cls.Wqkv.weight", "BF16", (3 * width, width)),
                     TensorSpec(
                         f"{prefix}.inner_mha_cls.rotary_emb.inv_freq",
-                        "F32",
+                        rope_dtype,
                         (config.head_size // 2,),
                     ),
                 ]
@@ -320,7 +387,7 @@ def checkpoint_manifest(config: ModelConfig) -> list[TensorSpec]:
                 [
                     TensorSpec(f"{prefix}.out_filter_dense.bias", "BF16", (width,)),
                     TensorSpec(f"{prefix}.out_filter_dense.weight", "BF16", (width, width)),
-                    TensorSpec(f"{prefix}.projections.weight", "BF16", (3 * width, width)),
+                    TensorSpec(f"{prefix}.projections.weight", projection_dtype, (3 * width, width)),
                     TensorSpec(
                         f"{prefix}.filter.short_filter_weight",
                         "BF16",
@@ -365,123 +432,143 @@ def checkpoint_manifest(config: ModelConfig) -> list[TensorSpec]:
                 )
             else:
                 raise AssertionError(f"unclassified Hyena layer {layer}")
-
         specs.extend(
             [
                 TensorSpec(f"{prefix}.mlp.l1.weight", "BF16", (inner, width)),
                 TensorSpec(f"{prefix}.mlp.l2.weight", "BF16", (inner, width)),
                 TensorSpec(f"{prefix}.mlp.l3.weight", "BF16", (width, inner)),
-                TensorSpec(f"{prefix}.post_norm.scale", "F32", (width,)),
+                TensorSpec(f"{prefix}.post_norm.scale", norm_dtype, (width,)),
             ]
         )
-    specs.append(TensorSpec("norm.scale", "F32", (width,)))
-
-    names = [spec.name for spec in specs]
-    if len(names) != len(set(names)):
-        raise AssertionError("manifest generated duplicate tensor names")
-    dtype_counts = {dtype: sum(spec.dtype == dtype for spec in specs) for dtype in ("BF16", "F32")}
-    total_bytes = sum(spec.nbytes for spec in specs)
-    expected = (
-        len(specs),
-        dtype_counts["BF16"],
-        dtype_counts["F32"],
-        total_bytes,
-    )
-    if expected != (
-        EXPECTED_TENSOR_COUNT,
-        EXPECTED_BF16_TENSOR_COUNT,
-        EXPECTED_F32_TENSOR_COUNT,
-        EXPECTED_TENSOR_BYTES,
-    ):
-        raise AssertionError(f"40B manifest drift: {expected}")
+    specs.append(TensorSpec("norm.scale", norm_dtype, (width,)))
     return specs
 
 
-def bionemo_checkpoint_manifest(config: ModelConfig) -> list[TensorSpec]:
-    """Return the Vortex-compatible manifest produced from BioNeMo DCP.
-
-    BioNeMo stores medium-Hyena explicit filter parameters in F32 and folds
-    ``h * decay`` during export. Keeping the folded filter in F32 matches the
-    BioNeMo inference path; all large projection and MLP tensors remain BF16.
-    """
-    specs = checkpoint_manifest(config)
-    medium_filter_names = {
-        f"blocks.{layer}.filter.h" for layer in config.hcm_layer_idxs
+def _validate_manifest(
+    config: ModelConfig, specs: list[TensorSpec], registry_key: str
+) -> list[TensorSpec]:
+    names = [spec.name for spec in specs]
+    if len(names) != len(set(names)):
+        raise AssertionError("manifest generated duplicate tensor names")
+    actual = {
+        "tensors": len(specs),
+        "bf16": sum(spec.dtype == "BF16" for spec in specs),
+        "f32": sum(spec.dtype == "F32" for spec in specs),
+        "bytes": sum(spec.nbytes for spec in specs),
     }
-    converted = [
-        dataclasses.replace(spec, dtype="F32")
-        if spec.name in medium_filter_names
-        else spec
+    expected = config.registry[registry_key]
+    if actual != expected:
+        raise AssertionError(
+            f"{config.model_id} {registry_key} drift: {actual}; expected {expected}"
+        )
+    return specs
+
+
+def checkpoint_manifest(config: ModelConfig) -> list[TensorSpec]:
+    """Required tensor entries in the official Arc checkpoint."""
+    if config.model_id == "evo2_40b_bionemo_bf16":
+        raise ConfigError("BioNeMo DCP uses bionemo_checkpoint_manifest()")
+    return _validate_manifest(config, _base_manifest(config, runtime=False), "source_manifest")
+
+
+def ignored_checkpoint_manifest(config: ModelConfig) -> list[TensorSpec]:
+    """Official deterministic time grids validated but recomputed by the runtime."""
+    length = config.registry["ignored_time_grid_length"]
+    if not length:
+        return []
+    return [
+        TensorSpec(f"blocks.{layer}.mixer.mixer.filter.t", "F32", (1, 1, length))
+        for layer in config.hcl_layer_idxs
+    ]
+
+
+def runtime_manifest(config: ModelConfig) -> list[TensorSpec]:
+    """Tensor entries written to EVO2C after exact small-vector widening."""
+    if config.model_id == "evo2_40b_bionemo_bf16":
+        return bionemo_checkpoint_manifest(config)
+    return _validate_manifest(config, _base_manifest(config, runtime=True), "runtime_manifest")
+
+
+def container_manifest(config: ModelConfig) -> list[TensorSpec]:
+    """Exact tensor table written to a production EVO2C container."""
+    specs = runtime_manifest(config)
+    if config.use_fp8_input_projections:
+        for layer in sorted(
+            config.hcs_layer_idxs + config.hcm_layer_idxs + config.hcl_layer_idxs
+        ):
+            prefix = f"blocks.{layer}.projections"
+            specs.extend(
+                [
+                    TensorSpec(f"{prefix}.fp8_scale_fwd", "F32", (2,)),
+                    TensorSpec(f"{prefix}.fp8_scale_inv_fwd", "F32", (2,)),
+                    TensorSpec(f"{prefix}.fp8_amax_history_fwd", "F32", (16, 2)),
+                ]
+            )
+    return _validate_manifest(config, specs, "container_manifest")
+
+
+def bionemo_checkpoint_manifest(config: ModelConfig) -> list[TensorSpec]:
+    """Vortex-compatible manifest produced from the official BioNeMo 40B DCP."""
+    if config.model_id != "evo2_40b_bionemo_bf16":
+        raise ConfigError("BioNeMo mapping is supported only for evo2_40b_bionemo_bf16")
+    specs = _base_manifest(config, runtime=True)
+    medium = {f"blocks.{layer}.filter.h" for layer in config.hcm_layer_idxs}
+    specs = [
+        dataclasses.replace(spec, dtype="F32") if spec.name in medium else spec
         for spec in specs
     ]
-    dtype_counts = {
-        dtype: sum(spec.dtype == dtype for spec in converted)
-        for dtype in ("BF16", "F32")
-    }
-    actual = (
-        len(converted),
-        dtype_counts["BF16"],
-        dtype_counts["F32"],
-        sum(spec.nbytes for spec in converted),
-    )
-    expected = (
-        EXPECTED_TENSOR_COUNT,
-        EXPECTED_BIONEMO_BF16_TENSOR_COUNT,
-        EXPECTED_BIONEMO_F32_TENSOR_COUNT,
-        EXPECTED_BIONEMO_TENSOR_BYTES,
-    )
-    if actual != expected:
-        raise AssertionError(f"BioNeMo 40B manifest drift: {actual}")
-    return converted
+    return _validate_manifest(config, specs, "runtime_manifest")
 
 
-def config_metadata(config: ModelConfig, checkpoint_name: str, checkpoint_size: int) -> dict[str, Any]:
-    return {
+def config_metadata(
+    config: ModelConfig, checkpoint_name: str, checkpoint_size: int
+) -> dict[str, Any]:
+    registry = load_model_registry()
+    entry = config.registry
+    metadata = {
         "format.producer": "evo2c",
+        "model.id": config.model_id,
         "model.name": config.model_name,
         "model.architecture": "StripedHyena2",
-        "model.source_repo": "arcinstitute/evo2_40b",
+        "model.source_repo": entry["source_repo"],
+        "model.source_revision": entry["source_revision"],
+        "model.registry_schema": registry["schema_version"],
+        "model.architecture_revision": registry["architecture_revision"],
+        "model.runtime_layout_revision": registry["runtime_layout_revision"],
         "checkpoint.filename": checkpoint_name,
         "checkpoint.size": checkpoint_size,
-        "checkpoint.extra_state_count": EXPECTED_EXTRA_STATE_COUNT,
-        "config.vocab_size": config.vocab_size,
-        "config.hidden_size": config.hidden_size,
-        "config.num_filters": config.num_filters,
-        "config.num_layers": config.num_layers,
-        "config.num_attention_heads": config.num_attention_heads,
-        "config.inner_mlp_size": config.inner_mlp_size,
-        "config.state_size": config.state_size,
-        "config.short_filter_length": config.short_filter_length,
-        "config.hcs_filter_length": config.hcs_filter_length,
-        "config.hcm_filter_length": config.hcm_filter_length,
-        "config.hcs_filter_groups": config.hcs_filter_groups,
-        "config.hcm_filter_groups": config.hcm_filter_groups,
-        "config.hcl_filter_groups": config.hcl_filter_groups,
-        "config.hcs_layer_idxs": list(config.hcs_layer_idxs),
-        "config.hcm_layer_idxs": list(config.hcm_layer_idxs),
-        "config.hcl_layer_idxs": list(config.hcl_layer_idxs),
-        "config.attn_layer_idxs": list(config.attn_layer_idxs),
-        "config.eps": config.eps,
-        "config.rotary_emb_base": config.rotary_emb_base,
-        "config.rotary_emb_scaling_factor": config.rotary_emb_scaling_factor,
-        "config.max_seqlen": config.max_seqlen,
-        "config.max_batch_size": config.max_batch_size,
-        "config.inner_size_multiple_of": config.inner_size_multiple_of,
-        "config.proj_groups": config.proj_groups,
-        "config.tie_embeddings": config.tie_embeddings,
-        "config.short_filter_bias": config.short_filter_bias,
-        "config.use_fp8_input_projections": config.use_fp8_input_projections,
-        "config.use_interpolated_rotary_pos_emb": config.use_interpolated_rotary_pos_emb,
-        "config.evo2_style_activations": config.evo2_style_activations,
-        "config.interleave": config.interleave,
-        "config.column_split": config.column_split,
-        "config.column_split_hyena": config.column_split_hyena,
-        "config.hyena_flip_x1x2": config.hyena_flip_x1x2,
-        "config.final_norm": config.final_norm,
-        "config.qkv_proj_bias": config.qkv_proj_bias,
-        "config.mha_out_proj_bias": config.mha_out_proj_bias,
-        "config.hyena_out_proj_bias": config.hyena_out_proj_bias,
-        "config.tokenizer_type": config.tokenizer_type,
-        "config.prefill_style": config.prefill_style,
-        "config.mlp_activation": config.mlp_activation,
+        "checkpoint.extra_state_count": entry["extra_state_count"],
+        "checkpoint.source_projection_dtype": entry["source_projection_dtype"],
+        "checkpoint.source_norm_dtype": entry["source_norm_dtype"],
+        "checkpoint.source_rope_dtype": entry["source_rope_dtype"],
+        "conversion.exact_widen_norm_to_f32": entry["source_norm_dtype"] == "BF16",
+        "conversion.exact_widen_rope_to_f32": entry["source_rope_dtype"] == "BF16",
+        "hyena_projection_dtype": entry["projection_runtime_dtype"],
+        "hyena_projection_weight_dtype": entry["source_projection_dtype"],
+        **{
+            f"config.{field.name}": (
+                list(value) if isinstance(value := getattr(config, field.name), tuple) else value
+            )
+            for field in dataclasses.fields(config)
+            if field.name not in {"model_id", "model_name"}
+        },
     }
+    if config.model_id in {"evo2_40b", "evo2_40b_bionemo_bf16"}:
+        # Preserve the published v1 40B artifact bytes and SHA256. The native
+        # loader recognizes these two legacy profiles by their complete,
+        # unambiguous metadata signature.
+        for key in (
+            "model.id",
+            "model.source_revision",
+            "model.registry_schema",
+            "model.architecture_revision",
+            "model.runtime_layout_revision",
+            "checkpoint.source_projection_dtype",
+            "checkpoint.source_norm_dtype",
+            "checkpoint.source_rope_dtype",
+            "conversion.exact_widen_norm_to_f32",
+            "conversion.exact_widen_rope_to_f32",
+            "hyena_projection_weight_dtype",
+        ):
+            del metadata[key]
+    return metadata

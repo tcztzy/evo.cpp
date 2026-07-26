@@ -89,7 +89,7 @@ Status parse_gpu_list(const std::string_view text, std::vector<int>* const ids) 
 }  // namespace
 
 std::string_view cli_usage() noexcept {
-  return "evo2c - native Evo 2 40B inference engine\n\n"
+  return "evo2c - native Evo 2 inference engine (1B, 7B, 20B, 40B)\n\n"
          "Usage:\n"
          "  evo2c --help\n"
          "  evo2c --version\n"
@@ -240,8 +240,9 @@ Status parse_cli(const int argc, char* const argv[], CliOptions* const options) 
       const auto colon = value.find(':');
       std::size_t layer = 0;
       if (colon == std::string_view::npos || colon + 1 == value.size() ||
-          !parse_unsigned(value.substr(0, colon), &layer) || layer >= 50) {
-        return {ErrorCode::kInvalidArgument, "--dump-layer must be INDEX:PATH with INDEX in [0,49]"};
+          !parse_unsigned(value.substr(0, colon), &layer)) {
+        return {ErrorCode::kInvalidArgument,
+                "--dump-layer must be a nonnegative INDEX:PATH; the model validates INDEX"};
       }
       options->dump_layer = DumpLayerSpec{layer, std::string{value.substr(colon + 1)}};
     } else {

@@ -1,18 +1,20 @@
 # Software E4M3 inference on Ampere
 
-Evo 2 40B is not a plain BF16 checkpoint. Its 42 Hyena input projections were
-trained and evaluated through Transformer Engine 2.3 `HYBRID` FP8. Running
-those projections as BF16 changes the continuation distribution enough to
-collapse greedy generation. The eight attention input projections remain
-BF16.
+The original Evo 2 1B, 20B, and 40B checkpoints are not plain BF16 models.
+Their 21, 21, and 42 Hyena input projections respectively were trained and
+evaluated through Transformer Engine 2.3 `HYBRID` FP8. Running those
+projections as BF16 can change biological accuracy. Attention projections
+remain BF16. All official 7B variants deliberately use BF16 and bypass this
+path.
 
 The native `sm_80` runtime reproduces the required forward path without an FP8
 instruction:
 
 1. Read the fixed inference input and weight scales from each projection's
    checkpoint `._extra_state`.
-2. Quantize the static BF16 weight once to one-byte E4M3FN codes while loading
-   the model.
+2. Quantize the static checkpoint weight once to one-byte E4M3FN codes while
+   loading the model. It is BF16 for 1B/40B and F32 for 20B; no intermediate
+   BF16 downcast is allowed.
 3. Quantize each normalized projection input to E4M3FN codes.
 4. For every K=32 group, include the incoming accumulator when selecting the
    shared product exponent, truncate all aligned terms to the H100 QGMMA
@@ -31,7 +33,7 @@ per tile load; a padded K-major weight tile avoids shared-memory bank
 conflicts. The implementation contains no native E4M3/E5M2 SASS instruction,
 which is enforced by `tests/fp8_sass_contract.cmake`.
 
-Numerical validation has four layers:
+The established 40B numerical validation has four layers:
 
 - CPU E4M3FN encoding vectors are bit-exact against PyTorch
   `float8_e4m3fn`, including subnormals, ties, and saturation.

@@ -70,6 +70,21 @@ def main() -> int:
     assert '-DEVO2C_SANITIZE="$sanitize"' in local_build
     assert "EVO2C_SANITIZERS" not in local_build
 
+    arc_wrapper = (
+        args.source_dir / "scripts" / "convert_arc_checkpoint.sh"
+    ).read_text(encoding="utf-8")
+    assert "configs/model-registry.json" in arc_wrapper
+    assert "convert_checkpoint.py" in arc_wrapper
+    assert "EVO2C_SOURCE_SHA256" in arc_wrapper
+    assert "EVO2C_DRY_RUN" in arc_wrapper
+
+    model_validation = (
+        args.source_dir / "scripts" / "validate_model.sh"
+    ).read_text(encoding="utf-8")
+    assert '--gpu "$gpu_list"' in model_validation
+    assert "EVO2C_EXPECTED_LOGITS" in model_validation
+    assert "compare_logits.py" in model_validation
+
     prepare = (
         args.source_dir / "scripts" / "gpu02_prepare_40b.sh"
     ).read_text(encoding="utf-8")

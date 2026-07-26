@@ -19,13 +19,20 @@ from evo2c.model_config import (
     EXPECTED_TENSOR_BYTES,
     EXPECTED_TENSOR_COUNT,
     ConfigError,
+    bionemo_checkpoint_manifest,
     checkpoint_manifest,
+    container_manifest,
+    config_metadata,
+    ignored_checkpoint_manifest,
     load_config,
+    load_model_registry,
+    runtime_manifest,
 )
 
 
 INSPECTOR: Path
 CONFIG: Path
+CONFIG_DIR: Path
 WORK_DIR: Path
 
 
@@ -44,6 +51,64 @@ class BrokenTensorSource:
 
 
 class ConverterTests(unittest.TestCase):
+    def test_every_registered_model_has_an_exact_manifest(self) -> None:
+        registry = load_model_registry()
+        self.assertEqual(len(registry["models"]), 8)
+        for model_id, entry in registry["models"].items():
+            with self.subTest(model_id=model_id):
+                config = load_config(CONFIG_DIR / entry["config"])
+                self.assertEqual(config.model_id, model_id)
+                if model_id == "evo2_40b_bionemo_bf16":
+                    source = bionemo_checkpoint_manifest(config)
+                else:
+                    source = checkpoint_manifest(config)
+                runtime = runtime_manifest(config)
+                container = container_manifest(config)
+                self.assertEqual(len(source), entry["source_manifest"]["tensors"])
+                self.assertEqual(sum(item.nbytes for item in source), entry["source_manifest"]["bytes"])
+                self.assertEqual(len(runtime), entry["runtime_manifest"]["tensors"])
+                self.assertEqual(sum(item.nbytes for item in runtime), entry["runtime_manifest"]["bytes"])
+                self.assertEqual(len(container), entry["container_manifest"]["tensors"])
+                self.assertEqual(
+                    sum(item.nbytes for item in container),
+                    entry["container_manifest"]["bytes"],
+                )
+                ignored = ignored_checkpoint_manifest(config)
+                expected_ignored = len(config.hcl_layer_idxs) if entry["ignored_time_grid_length"] else 0
+                self.assertEqual(len(ignored), expected_ignored)
+                for item in ignored:
+                    self.assertEqual(item.shape, (1, 1, entry["ignored_time_grid_length"]))
+
+    def test_registry_metadata_is_additive_without_changing_published_40b(self) -> None:
+        one_b = load_config(CONFIG_DIR / "evo2-1b-8k.yml")
+        metadata = config_metadata(one_b, "checkpoint.pt", 123)
+        self.assertEqual(metadata["model.id"], "evo2_1b_base")
+        self.assertEqual(metadata["checkpoint.source_norm_dtype"], "BF16")
+        self.assertTrue(metadata["conversion.exact_widen_norm_to_f32"])
+
+        forty_b = config_metadata(load_config(CONFIG), "evo2_40b.pt", 82_253_491_694)
+        self.assertNotIn("model.id", forty_b)
+        self.assertNotIn("hyena_projection_weight_dtype", forty_b)
+        self.assertEqual(forty_b["hyena_projection_dtype"], "E4M3_SW")
+
+    def test_every_registry_profile_rejects_dimension_corruption(self) -> None:
+        registry = load_model_registry()
+        with tempfile.TemporaryDirectory(dir=WORK_DIR) as directory:
+            temporary = Path(directory)
+            for model_id, entry in registry["models"].items():
+                with self.subTest(model_id=model_id):
+                    source = CONFIG_DIR / entry["config"]
+                    config = load_config(source)
+                    changed = source.read_text(encoding="utf-8").replace(
+                        f"hidden_size: {config.hidden_size}",
+                        f"hidden_size: {config.hidden_size + 128}",
+                        1,
+                    )
+                    path = temporary / f"{model_id}.yml"
+                    path.write_text(changed, encoding="utf-8")
+                    with self.assertRaisesRegex(ConfigError, "unsupported hidden_size"):
+                        load_config(path)
+
     def test_official_40b_manifest_is_exact(self) -> None:
         config = load_config(CONFIG)
         manifest = checkpoint_manifest(config)
@@ -67,7 +132,7 @@ class ConverterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=WORK_DIR) as directory:
             path = Path(directory) / "bad.yml"
             path.write_text(changed, encoding="utf-8")
-            with self.assertRaisesRegex(ConfigError, "Evo 2 40B requires 8192"):
+            with self.assertRaisesRegex(ConfigError, "unsupported hidden_size"):
                 load_config(path)
 
         changed = CONFIG.read_text(encoding="utf-8").replace(
@@ -85,7 +150,16 @@ class ConverterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=WORK_DIR) as directory:
             path = Path(directory) / "bad-rope.yml"
             path.write_text(changed, encoding="utf-8")
-            with self.assertRaisesRegex(ConfigError, "RMSNorm/RoPE constants"):
+            with self.assertRaisesRegex(ConfigError, "unsupported rotary_emb_base"):
+                load_config(path)
+
+        changed = CONFIG.read_text(encoding="utf-8").replace(
+            "model_id: evo2_40b", "model_id: made_up"
+        )
+        with tempfile.TemporaryDirectory(dir=WORK_DIR) as directory:
+            path = Path(directory) / "unknown-id.yml"
+            path.write_text(changed, encoding="utf-8")
+            with self.assertRaisesRegex(ConfigError, "unsupported model_id"):
                 load_config(path)
 
     def test_streaming_writer_roundtrips_through_native_inspector(self) -> None:
@@ -153,6 +227,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--inspector", required=True, type=Path)
     parser.add_argument("--config", required=True, type=Path)
+    parser.add_argument("--config-dir", required=True, type=Path)
     parser.add_argument("--work-dir", required=True, type=Path)
     return parser.parse_args()
 
@@ -161,6 +236,7 @@ if __name__ == "__main__":
     arguments, unittest_args = parse_args(), [__file__]
     INSPECTOR = arguments.inspector.resolve()
     CONFIG = arguments.config.resolve()
+    CONFIG_DIR = arguments.config_dir.resolve()
     WORK_DIR = arguments.work_dir.resolve()
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     unittest.main(argv=unittest_args)

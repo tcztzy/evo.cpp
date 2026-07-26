@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.25)
 project(
   evo2c
   VERSION 0.1.0
-  DESCRIPTION "Native Evo 2 40B inference engine"
+  DESCRIPTION "Native Evo 2 inference engine"
   LANGUAGES CXX)
 
 include(CTest)
@@ -49,6 +49,7 @@ add_library(
   src/fp8.cpp
   src/mapped_file.cpp
   src/model_format.cpp
+  src/model_registry.cpp
   src/sampler.cpp
   src/sequence_io.cpp
   src/status.cpp
@@ -229,6 +230,16 @@ if(BUILD_TESTING)
   evo2c_configure_target(evo2c-core-tests)
   add_test(NAME core COMMAND evo2c-core-tests)
 
+  add_executable(evo2c-registry-dump tests/dump_model_registry.cpp)
+  target_link_libraries(evo2c-registry-dump PRIVATE evo2c_core)
+  evo2c_configure_target(evo2c-registry-dump)
+  add_test(
+    NAME native_registry
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_native_registry.py
+      --binary $<TARGET_FILE:evo2c-registry-dump>
+      --registry ${CMAKE_CURRENT_SOURCE_DIR}/configs/model-registry.json)
+
   add_executable(evo2c-model-format-tests tests/test_model_format.cpp)
   target_link_libraries(evo2c-model-format-tests PRIVATE evo2c_core)
   evo2c_configure_target(evo2c-model-format-tests)
@@ -318,6 +329,7 @@ if(BUILD_TESTING)
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_converter.py
       --inspector $<TARGET_FILE:evo2c-inspect>
       --config ${CMAKE_CURRENT_SOURCE_DIR}/configs/evo2-40b-1m.yml
+      --config-dir ${CMAKE_CURRENT_SOURCE_DIR}/configs
       --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/converter)
   set_tests_properties(
     converter_roundtrip

@@ -2,15 +2,34 @@
 
 [English](README.md) | **简体中文**
 
-`evo2c` 是面向 Evo 2 40B/40B-base 的独立 C++17/CUDA 推理实现。它让原本依赖
-Hopper FP8 的 40B 模型可以在 2–4 张 Ampere `sm_80` GPU 上运行；在 gpu02 上，
-原始 Arc checkpoint 已在 4×A800 80GB 验证，NVIDIA BioNeMo 的 BF16 checkpoint
-已在 2×A800 80GB 验证。推理进程不依赖 PyTorch、Vortex、Transformer Engine，
-也不需要硬件 FP8 指令。
+`evo2c` 是覆盖全部官方 Evo 2 尺寸（1B、7B、20B、40B，以及受支持的 base/
+长上下文变体）的独立 C++17/CUDA 推理实现。batch-1 推理可使用 1–4 张 CUDA
+GPU；推理进程不依赖 PyTorch、Vortex、Transformer Engine，也不需要硬件 FP8
+指令。
 
 项目思路接近 `llama.cpp` 和 `ds4.c`：只实现一个经过检查的模型容器、一种模型
 架构、必要的原生 kernel、离线权重转换和可复现的数值测试。它不是新的生物学模型，
-也没有重新训练或修改 checkpoint；它解决的是 Evo 2 40B 在非 FP8 硬件上的推理问题。
+也没有重新训练或修改 checkpoint；它解决的是 Evo 2 在非 FP8 硬件上的推理问题。
+
+## 支持与验证矩阵
+
+每一行都已通过本地 topology、source manifest、converter、native registry 与
+corruption 测试。“GPU 已验证”只表示真实转换 checkpoint 已在 CUDA 上实际运行
+或对齐；单独的 Python/Vortex reference vector 不算 native runtime 验证。
+
+| Model ID | Config | Projection 语义 | ctx 8K 建议起点 | 真实 checkpoint native 状态 |
+|---|---|---|---|---|
+| `evo2_1b_base` | `evo2-1b-8k.yml` | 固定 TE 2.3 software E4M3；source weight BF16 | 1×16 GB | 尚未运行（本地无 checkpoint/GPU） |
+| `evo2_7b` | `evo2-7b-1m.yml` | BF16 | 1×24 GB | 尚未运行；现有 7B vector 仅是 reference evidence |
+| `evo2_7b_base` | `evo2-7b-8k.yml` | BF16 | 1×24 GB | 尚未运行 |
+| `evo2_7b_262k` | `evo2-7b-262k.yml` | BF16 | 1×24 GB | 尚未运行 |
+| `evo2_20b` | `evo2-20b-1m.yml` | 固定 TE 2.3 software E4M3；source weight F32 | 2×40–48 GB | 尚未运行 |
+| `evo2_40b` | `evo2-40b-1m.yml` | 固定 TE 2.3 software E4M3 | 2×80 GB | 已在 4×A800 80 GB 验证 |
+| `evo2_40b_base` | `evo2-40b-8k.yml` | 固定 TE 2.3 software E4M3 | 2×80 GB | 尚未运行 |
+| `evo2_40b_bionemo_bf16` | `evo2-40b-1m-bionemo-bf16.yml` | BF16 | 2×80 GB | 已在 2×A800 80 GB 验证并对齐 |
+
+以上是保守起点，不是 runtime 硬编码下限。pipeline 按 layer payload bytes 选择
+连续边界；实际显存还受 context、KV 格式、driver overhead 和其他进程影响。
 
 ## 给科研使用者的结论
 
@@ -43,7 +62,7 @@ Hopper FP8 的 40B 模型可以在 2–4 张 Ampere `sm_80` GPU 上运行；在 
 | [Arc Institute Evo 2](https://github.com/arcinstitute/evo2) | 原始模型、checkpoint、论文与研究接口 | 原始 Arc 40B/40B-base | Python + Vortex | 官方说明 40B 的数值准确性依赖 Hopper FP8 |
 | [Vortex](https://github.com/Zymrael/vortex) | Arc 使用的 StripedHyena 2 推理与数值实现 | 读取原始 Arc 权重 | PyTorch + Transformer Engine，可选 FlashAttention | 7B 可纯 BF16；40B 需要 Transformer Engine/FP8 |
 | [NVIDIA BioNeMo](https://docs.nvidia.com/bionemo-framework/latest/models/evo2/index.html) | Evo 2 训练、微调、预测和推理框架 | 原始权重及 NVIDIA 微调变体 | PyTorch + NeMo/Megatron + Transformer Engine | NVIDIA 微调的 40B checkpoint 原生支持 Ampere+ BF16 |
-| **evo2c** | 面向 40B 的轻量原生推理 runtime | 同时支持 Arc 原始权重和 BioNeMo BF16 权重 | C++17 + CUDA + cuBLASLt/cuFFT | 已在 A800 上验证；原始权重用 software E4M3，BioNeMo 权重用 BF16 |
+| **evo2c** | 面向官方 1B/7B/20B/40B profile 的轻量原生 runtime | 支持 Arc 变体和 BioNeMo BF16 40B | C++17 + CUDA + cuBLASLt/cuFFT | Arc 1B/20B/40B 用 software E4M3；7B 与 BioNeMo 用 BF16 |
 
 [Arc 官方说明](https://github.com/arcinstitute/evo2#requirements)指出原始 1B、
 20B、40B 对训练时的 Vortex-style FP8 数值语义敏感，直接改成 BF16 可能损害
@@ -332,6 +351,9 @@ python3 -m venv .venv-convert
 . .venv-convert/bin/activate
 python3 -m pip install -r requirements-convert.txt
 
+scripts/convert_arc_checkpoint.sh \
+  evo2_7b evo2_7b.pt evo2-7b.evo2
+
 python3 tools/convert_checkpoint.py \
   --input evo2_40b.pt \
   --config configs/evo2-40b-1m.yml \
@@ -344,6 +366,10 @@ python3 tools/convert_bionemo_checkpoint.py \
   --output evo2-40b-bionemo-bf16.evo2 \
   --source-sha256 544b47e033d1fb0261b686a53f7c4fe240cd290253187d31e8c99dea9e35a680
 ```
+
+wrapper 接受支持矩阵中的任意 Arc model ID。精确 upstream revision、hash、
+manifest、precision 规则和每个尺寸的 smoke 命令见
+[`docs/checkpoint-conversion.md`](docs/checkpoint-conversion.md)。
 
 ### 运行 generation
 
@@ -414,10 +440,11 @@ apptainer exec --nv -B "$nix_root:/nix:ro" "$image" \
 
 ## 实现范围
 
-- 50-layer StripedHyena 2，支持 HCS、HCM、HCL、MHA/RoPE、MLP。
+- registry 选择 24/25/32/50-layer StripedHyena 2，支持 HCS、HCM、HCL、
+  MHA/RoPE、MLP。
 - KV、FIR、IIR cache 与 cached autoregressive decode。
 - byte tokenizer，文本/FASTA scoring，greedy、top-k/top-p sampling。
-- 2–4 GPU layer pipeline，batch 1。
+- 1–4 GPU、按 payload 平衡的连续 layer pipeline，batch 1。
 - BioNeMo BF16 Hyena projection 原生路径。
 - Arc 原始 checkpoint 的 E4M3FN one-byte weight cache 和
   software-H100-QGMMA accumulation。
@@ -486,10 +513,11 @@ EVO2C_SANITIZE=ON scripts/local_test.sh build-sanitize
 
 当前状态：
 
-- Local Release：20/20 passed。
-- ASan/UBSan：20/20 passed。
-- gpu02：28/28 passed，包括 9 个 CUDA tests 和 2 个 multi-GPU tests；
-  5 个需要额外外部框架的 oracle 在 pinned runtime 中按声明 skip。
+- Local Release：21/21 passed。
+- ASan/UBSan：21/21 passed。
+- 最近一次 multi-size 修改前的 gpu02 baseline：28/28 passed，包括 9 个 CUDA
+  tests 和 2 个 multi-GPU tests。本次修改尚未在 gpu02 重建/运行，因为当前
+  host 没有 CUDA compiler/GPU。
 - 真实 PyTorch DCP converter integration：5/5 passed。
 
 PyTorch 只在离线 checkpoint conversion 和可选 oracle test 中使用，
@@ -503,8 +531,8 @@ production binary 不链接 PyTorch、Vortex 或 Transformer Engine。
   BioNeMo checkpoint 的严格转换规则。
 - [`docs/math-semantics.md`](docs/math-semantics.md)：Vortex-compatible
   layer 数学语义。
-- [`docs/software-fp8.md`](docs/software-fp8.md)：为什么原始 40B 不能简单
-  换成 BF16，以及 Ampere 如何模拟所需 FP8 语义。
+- [`docs/software-fp8.md`](docs/software-fp8.md)：为什么原始 1B/20B/40B
+  不能简单换成 BF16，以及 Ampere 如何模拟所需 FP8 语义。
 - [`docs/gpu02-environment.md`](docs/gpu02-environment.md)：gpu02 环境、
   benchmark、artifact 路径和 SHA256。
 

@@ -15,7 +15,7 @@ except ModuleNotFoundError:
     print("SKIP: PyTorch is not installed; install requirements-convert.txt", file=sys.stderr)
     raise SystemExit(77)
 
-from evo2c.checkpoint import CheckpointError, load_checkpoint
+from evo2c.checkpoint import CheckpointError, load_checkpoint, prepare_runtime_sources
 from evo2c.model_config import TensorSpec
 
 
@@ -175,6 +175,53 @@ class CheckpointTests(unittest.TestCase):
         state["training.step"] = 10
         with self.assertRaisesRegex(CheckpointError, "unknown non-tensor checkpoint entries"):
             load_checkpoint(self.save(state), self.manifest, expected_extra_states=2)
+
+    def test_documented_time_grid_is_validated_then_omitted(self) -> None:
+        state = self.valid_state()
+        state["blocks.2.mixer.mixer.filter.t"] = torch.arange(
+            4, dtype=torch.float32
+        ).reshape(1, 1, 4)
+        ignored = [
+            TensorSpec("blocks.2.mixer.mixer.filter.t", "F32", (1, 1, 4))
+        ]
+        sources, _, _ = load_checkpoint(
+            self.save(state),
+            self.manifest,
+            expected_extra_states=1,
+            ignored_manifest=ignored,
+        )
+        self.assertEqual([source.name for source in sources], ["bf16.weight", "f32.scale"])
+        state["blocks.2.mixer.mixer.filter.t"] = state[
+            "blocks.2.mixer.mixer.filter.t"
+        ][:, :, :3]
+        with self.assertRaisesRegex(CheckpointError, "shape="):
+            load_checkpoint(
+                self.save(state, "bad-time-grid.pt"),
+                self.manifest,
+                expected_extra_states=1,
+                ignored_manifest=ignored,
+            )
+
+    def test_runtime_preparation_only_exactly_widens_bf16(self) -> None:
+        sources, _, _ = load_checkpoint(
+            self.save(self.valid_state()), self.manifest, expected_extra_states=1
+        )
+        runtime = [
+            TensorSpec("bf16.weight", "F32", (2, 3)),
+            TensorSpec("f32.scale", "F32", (2,)),
+        ]
+        prepared = prepare_runtime_sources(sources, runtime)
+        actual = b"".join(bytes(chunk) for chunk in prepared[0].iter_chunks(5))
+        expected = bytes(
+            self.valid_state()["bf16.weight"].float().view(torch.uint8).reshape(-1).numpy()
+        )
+        self.assertEqual(actual, expected)
+        unsafe = [
+            TensorSpec("bf16.weight", "BF16", (2, 3)),
+            TensorSpec("f32.scale", "BF16", (2,)),
+        ]
+        with self.assertRaisesRegex(CheckpointError, "unsafe runtime conversion"):
+            prepare_runtime_sources(sources, unsafe)
 
     def test_part_file_is_rejected_with_merge_instruction(self) -> None:
         with self.assertRaisesRegex(CheckpointError, "merge all .partN files"):

@@ -16,6 +16,7 @@ namespace evo2c::cuda {
 
 enum class MixerType { kHcs, kHcm, kHcl, kAttention };
 enum class HyenaProjectionDType { kBF16, kE4M3Sw };
+enum class HyenaProjectionWeightDType { kBF16, kF32 };
 enum class HcmFilterDType { kBF16, kF32 };
 
 enum class LayerDumpPoint {
@@ -28,6 +29,7 @@ enum class LayerDumpPoint {
 };
 
 struct RuntimeModelConfig final {
+  std::string model_id;
   std::size_t vocab_size{0};
   std::size_t width{0};
   std::size_t layers{0};
@@ -39,11 +41,17 @@ struct RuntimeModelConfig final {
   std::size_t hcm_filter_length{0};
   std::size_t hcs_filter_groups{0};
   std::size_t hcm_filter_groups{0};
+  std::size_t hcl_filter_groups{0};
+  std::size_t max_seqlen{0};
   float epsilon{0.0F};
   float rope_scale{0.0F};
+  float rope_base{0.0F};
+  bool interpolated_rope{false};
   bool qkv_head_major{false};
   HyenaProjectionDType hyena_projection_dtype{
       HyenaProjectionDType::kBF16};
+  HyenaProjectionWeightDType hyena_projection_weight_dtype{
+      HyenaProjectionWeightDType::kBF16};
   HcmFilterDType hcm_filter_dtype{HcmFilterDType::kBF16};
   bool test_fixture{false};
   std::vector<MixerType> mixer_types;

@@ -61,6 +61,14 @@ boundary relative to section start. Keys are unique ASCII identifiers using
 Metadata section ends immediately after the final entry's padding. Maximum
 section size is 16 MiB and maximum entry count is 4096.
 
+New multi-size files remain format version 1 and add registry metadata:
+`model.id`, pinned architecture/source revisions, source precision, and
+`hyena_projection_weight_dtype`. These entries are additive. Legacy 40B v1
+files without `model.id` remain loadable when their complete topology,
+precision, RoPE, and filter signature unambiguously matches `evo2_40b` or
+`evo2_40b_bionemo_bf16`; inconsistent or ambiguous legacy metadata is
+rejected with a reconversion diagnostic.
+
 ## Tensor descriptor: 256 bytes
 
 | Offset | Type | Meaning |
@@ -97,4 +105,3 @@ identifier alphabet as metadata keys.
    alignment, uniqueness, and cross-tensor non-overlap.
 5. Stream every payload and verify its CRC.
 6. Only after success may runtime allocate device memory or transfer weights.
-

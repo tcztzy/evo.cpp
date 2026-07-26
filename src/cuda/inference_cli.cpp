@@ -107,10 +107,10 @@ struct Metrics final {
 };
 
 Status validate_devices(const std::vector<int> &devices) {
-  if (devices.size() < 2 || devices.size() > 4) {
+  if (devices.empty() || devices.size() > 4) {
     return {ErrorCode::kInvalidArgument,
-            "Evo 2 40B inference requires two to four CUDA devices; "
-            "for example pass --gpu 0,1 or --gpu 0,1,2,3"};
+            "Evo 2 inference requires one to four CUDA devices; "
+            "for example pass --gpu 0 or --gpu 0,1,2,3"};
   }
   int count = 0;
   auto status = cuda_status(cudaGetDeviceCount(&count), "cudaGetDeviceCount");

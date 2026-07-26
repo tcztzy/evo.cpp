@@ -180,6 +180,13 @@ void test_cli() {
   check(options.force_prompt_threshold == 3,
         "teacher-forced prompt threshold CLI parses");
 
+  status = parse({"evo2c", "-m", "model.evo2", "-p", "A", "-n", "1",
+                  "--gpu", "0", "--dump-layer", "50:layer.npy"},
+                 &options);
+  check(status.ok() && options.dump_layer.has_value() &&
+            options.dump_layer->layer == 50,
+        "CLI defers model-specific layer bounds to the runtime");
+
   status = parse({"evo2c", "-m", "model.evo2", "--score", "input.fa", "--gpu", "2"},
                  &options);
   check(status.ok() && options.mode == evo2c::RunMode::kScore,

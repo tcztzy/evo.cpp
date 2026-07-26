@@ -36,6 +36,29 @@ class TorchTensorSource:
             yield view[offset : offset + chunk_size]
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class TorchWidenF32Source:
+    """Losslessly widen a small BF16 tensor while streaming the output."""
+
+    name: str
+    dtype: str
+    shape: tuple[int, ...]
+    nbytes: int
+    tensor: Any
+
+    def iter_chunks(self, chunk_size: int) -> Iterator[memoryview]:
+        torch = importlib.import_module("torch")
+        widened = self.tensor.detach().float().contiguous()
+        raw = widened.view(torch.uint8).reshape(-1).numpy()
+        view = memoryview(raw).cast("B")
+        if len(view) != self.nbytes:
+            raise CheckpointError(
+                f"tensor {self.name!r} widened to {len(view)} bytes, expected {self.nbytes}"
+            )
+        for offset in range(0, len(view), chunk_size):
+            yield view[offset : offset + chunk_size]
+
+
 def _torch_dtype_name(torch: Any, tensor: Any) -> str | None:
     if tensor.dtype == torch.bfloat16:
         return "BF16"
@@ -148,6 +171,7 @@ def load_checkpoint(
     *,
     expected_extra_states: int = EXPECTED_EXTRA_STATE_COUNT,
     fp8_projection_layers: Sequence[int] = (),
+    ignored_manifest: Sequence[TensorSpec] = (),
 ) -> tuple[list[TorchTensorSource], list[str], list[TorchTensorSource]]:
     """mmap a checkpoint, validate all entries, and return zero-copy tensor sources."""
     if path.name.rpartition(".part")[2].isdigit():
@@ -185,7 +209,10 @@ def load_checkpoint(
         torch, non_tensors, fp8_projection_layers
     )
 
-    expected = {spec.name: spec for spec in manifest}
+    all_manifest = tuple(manifest) + tuple(ignored_manifest)
+    expected = {spec.name: spec for spec in all_manifest}
+    if len(expected) != len(all_manifest):
+        raise CheckpointError("checkpoint and ignored manifests contain duplicate names")
     missing = sorted(expected.keys() - tensors.keys())
     extra = sorted(tensors.keys() - expected.keys())
     if missing or extra:
@@ -196,8 +223,8 @@ def load_checkpoint(
             details.append("unknown tensors: " + ", ".join(extra[:10]))
         raise CheckpointError("; ".join(details))
 
-    sources: list[TorchTensorSource] = []
-    for spec in manifest:
+    validated: dict[str, TorchTensorSource] = {}
+    for spec in all_manifest:
         tensor = tensors[spec.name]
         actual_dtype = _torch_dtype_name(torch, tensor)
         actual_shape = tuple(tensor.shape)
@@ -218,13 +245,47 @@ def load_checkpoint(
             raise CheckpointError(
                 f"tensor {spec.name!r} has {nbytes} bytes; manifest requires {spec.nbytes}"
             )
-        sources.append(
-            TorchTensorSource(
+        validated[spec.name] = TorchTensorSource(
                 name=spec.name,
                 dtype=spec.dtype,
                 shape=spec.shape,
                 nbytes=nbytes,
                 tensor=tensor,
             )
-        )
+    sources = [validated[spec.name] for spec in manifest]
     return sources, sorted(non_tensors), fp8_sources
+
+
+def prepare_runtime_sources(
+    sources: Sequence[TorchTensorSource],
+    runtime_manifest: Sequence[TensorSpec],
+) -> list[TorchTensorSource | TorchWidenF32Source]:
+    """Match the runtime manifest, allowing only exact BF16-to-F32 widening."""
+    source_by_name = {source.name: source for source in sources}
+    if len(source_by_name) != len(sources):
+        raise CheckpointError("source list contains duplicate tensor names")
+    expected_names = {spec.name for spec in runtime_manifest}
+    if set(source_by_name) != expected_names:
+        raise CheckpointError("source and runtime manifests contain different tensor names")
+    converted: list[TorchTensorSource | TorchWidenF32Source] = []
+    for spec in runtime_manifest:
+        source = source_by_name[spec.name]
+        if source.shape != spec.shape:
+            raise CheckpointError(f"runtime shape mismatch for {spec.name}")
+        if source.dtype == spec.dtype and source.nbytes == spec.nbytes:
+            converted.append(source)
+        elif source.dtype == "BF16" and spec.dtype == "F32":
+            converted.append(
+                TorchWidenF32Source(
+                    name=source.name,
+                    dtype="F32",
+                    shape=source.shape,
+                    nbytes=spec.nbytes,
+                    tensor=source.tensor,
+                )
+            )
+        else:
+            raise CheckpointError(
+                f"unsafe runtime conversion for {spec.name}: {source.dtype} to {spec.dtype}"
+            )
+    return converted
