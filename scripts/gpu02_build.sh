@@ -18,11 +18,17 @@ if [[ ! "$rsync_retry_delay" =~ ^[0-9]+$ ]]; then
 fi
 
 rsync_attempt=1
-until rsync -az --delete --delay-updates \
+until rsync -az --delay-updates \
     -e "ssh -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3" \
     --exclude .git \
     --exclude '/build*/' \
+    --exclude '/.cache/' \
+    --exclude '/.venv/' \
     --exclude __pycache__ \
+    --exclude '*.pt' \
+    --exclude '*.pt.part*' \
+    --exclude '*.safetensors' \
+    --exclude '*.safetensors.index.json' \
     "${repo_root}/" "${remote_host}:evo2c/"; do
   rsync_exit=$?
   if (( rsync_attempt >= rsync_retries )); then

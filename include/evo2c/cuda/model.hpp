@@ -16,15 +16,28 @@ namespace evo2c::cuda {
 
 enum class MixerType { kHcs, kHcm, kHcl, kAttention };
 enum class HyenaProjectionDType { kBF16, kE4M3Sw };
-enum class HyenaProjectionWeightDType { kBF16, kF32 };
 enum class HcmFilterDType { kBF16, kF32 };
 
 enum class LayerDumpPoint {
   kBlockOutput,
   kPreNorm,
+  kMixerInputProjection,
+  kMixerShortFilter,
+  kMixerX2,
+  kMixerX1,
+  kMixerValue,
+  kMixerPregate,
+  kMixerState,
+  kMixerFilter,
+  kMixerConvolution,
   kMixerOutput,
+  kMixerProjection,
   kMixerResidual,
   kPostNorm,
+  kMlpL1,
+  kMlpL2,
+  kMlpActivation,
+  kMlpGated,
   kMlpOutput,
 };
 
@@ -48,10 +61,8 @@ struct RuntimeModelConfig final {
   float rope_base{0.0F};
   bool interpolated_rope{false};
   bool qkv_head_major{false};
-  HyenaProjectionDType hyena_projection_dtype{
-      HyenaProjectionDType::kBF16};
-  HyenaProjectionWeightDType hyena_projection_weight_dtype{
-      HyenaProjectionWeightDType::kBF16};
+  bool qkv_source_head_major{false};
+  HyenaProjectionDType hyena_projection_dtype{HyenaProjectionDType::kBF16};
   HcmFilterDType hcm_filter_dtype{HcmFilterDType::kBF16};
   bool test_fixture{false};
   std::vector<MixerType> mixer_types;
@@ -60,6 +71,10 @@ struct RuntimeModelConfig final {
     return heads == 0 ? 0 : width / heads;
   }
 };
+
+[[nodiscard]] std::size_t
+backend_warmup_tokens(const RuntimeModelConfig &config,
+                      std::size_t arena_capacity) noexcept;
 
 struct LayerDump final {
   std::size_t layer{0};
@@ -100,9 +115,18 @@ public:
   [[nodiscard]] Status prefill_with_dumps(const std::vector<TokenId> &tokens,
                                           std::vector<float> *logits,
                                           const std::vector<LayerDump> &dumps);
+  [[nodiscard]] Status prefill_cached(const std::vector<TokenId> &tokens,
+                                      std::vector<float> *logits);
+  [[nodiscard]] Status
+  prefill_cached_with_dumps(const std::vector<TokenId> &tokens,
+                            std::vector<float> *logits,
+                            const std::vector<LayerDump> &dumps);
   [[nodiscard]] Status prefill_chunk(const std::vector<TokenId> &tokens,
                                      std::vector<float> *logits);
   [[nodiscard]] Status decode(TokenId token, std::vector<float> *logits);
+  [[nodiscard]] Status decode_with_dumps(TokenId token,
+                                         std::vector<float> *logits,
+                                         const std::vector<LayerDump> &dumps);
 
   [[nodiscard]] const RuntimeModelConfig &config() const noexcept;
   [[nodiscard]] std::size_t position() const noexcept;
@@ -137,9 +161,18 @@ public:
   [[nodiscard]] Status prefill_with_dumps(const std::vector<TokenId> &tokens,
                                           std::vector<float> *logits,
                                           const std::vector<LayerDump> &dumps);
+  [[nodiscard]] Status prefill_cached(const std::vector<TokenId> &tokens,
+                                      std::vector<float> *logits);
+  [[nodiscard]] Status
+  prefill_cached_with_dumps(const std::vector<TokenId> &tokens,
+                            std::vector<float> *logits,
+                            const std::vector<LayerDump> &dumps);
   [[nodiscard]] Status prefill_chunk(const std::vector<TokenId> &tokens,
                                      std::vector<float> *logits);
   [[nodiscard]] Status decode(TokenId token, std::vector<float> *logits);
+  [[nodiscard]] Status decode_with_dumps(TokenId token,
+                                         std::vector<float> *logits,
+                                         const std::vector<LayerDump> &dumps);
 
   [[nodiscard]] const RuntimeModelConfig &config() const noexcept;
   [[nodiscard]] const std::vector<StageAssignment> &stages() const noexcept;

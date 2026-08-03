@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert an official Arc Evo 2 PyTorch checkpoint to EVO2C v1."""
+"""Convert an official Arc Evo 2 checkpoint to runtime-ready Safetensors."""
 
 from __future__ import annotations
 
@@ -8,7 +8,12 @@ import re
 import sys
 from pathlib import Path
 
-from evo2c.checkpoint import CheckpointError, load_checkpoint, prepare_runtime_sources
+from evo2c.checkpoint import (
+    CheckpointError,
+    load_checkpoint,
+    prepare_runtime_image_sources,
+    prepare_runtime_sources,
+)
 from evo2c.format import FormatError, TensorSource, write_model
 from evo2c.model_config import (
     checkpoint_manifest,
@@ -22,15 +27,31 @@ from evo2c.model_config import (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Stream an official Arc Evo 2 .pt checkpoint into an mmap-friendly EVO2C file."
+        description=(
+            "Stream an official Arc Evo 2 .pt checkpoint into the "
+            "runtime-ready Evo2 Safetensors profile."
+        )
     )
     parser.add_argument("--input", required=True, type=Path, help="official (merged, if split) .pt")
     parser.add_argument("--config", required=True, type=Path, help="normalized strict Evo 2 config")
-    parser.add_argument("--output", required=True, type=Path, help="output .evo2 file")
-    parser.add_argument("--dtype", choices=("bf16",), default="bf16")
+    parser.add_argument(
+        "--output",
+        required=True,
+        type=Path,
+        help=(
+            "output model.safetensors base name; large outputs use standard "
+            "model-00001-of-000NN.safetensors shards and an index"
+        ),
+    )
     parser.add_argument("--source-sha256", help="precomputed 64-hex checkpoint SHA256")
     parser.add_argument("--chunk-mib", type=int, default=16, help="streaming chunk size (default: 16)")
-    parser.add_argument("--force", action="store_true", help="atomically replace existing output")
+    parser.add_argument(
+        "--max-shard-mib",
+        type=int,
+        default=4096,
+        help="maximum tensor payload per shard (default: 4096)",
+    )
+    parser.add_argument("--force", action="store_true", help="replace existing output artifacts")
     parser.add_argument("--dry-run", action="store_true", help="validate checkpoint without writing output")
     return parser.parse_args()
 
@@ -53,6 +74,8 @@ def main() -> int:
             raise CheckpointError(f"config not found: {args.config}")
         if args.chunk_mib <= 0:
             raise CheckpointError("--chunk-mib must be positive")
+        if args.max_shard_mib <= 0:
+            raise CheckpointError("--max-shard-mib must be positive")
         if args.source_sha256 is not None and not re.fullmatch(r"[0-9a-fA-F]{64}", args.source_sha256):
             raise CheckpointError("--source-sha256 must contain exactly 64 hexadecimal characters")
 
@@ -76,10 +99,15 @@ def main() -> int:
             ignored_manifest=ignored_manifest,
         )
         sources = prepare_runtime_sources(sources, runtime_manifest(config))
+        image_sources = prepare_runtime_image_sources(
+            sources,
+            fp8_sources,
+            projection_layers,
+        )
         expected_container = container_manifest(config)
         actual_container = [
             (source.name, source.dtype, source.shape, source.nbytes)
-            for source in sources + fp8_sources
+            for source in image_sources
         ]
         expected_container_signature = [
             (spec.name, spec.dtype, spec.shape, spec.nbytes)
@@ -117,15 +145,16 @@ def main() -> int:
                     "fp8.reference": "TransformerEngine-2.3-HYBRID",
                 }
             )
-        write_model(
+        load_path = write_model(
             args.output,
             metadata,
-            sources + fp8_sources,
+            image_sources,
             force=args.force,
             chunk_size=args.chunk_mib * 1024 * 1024,
+            max_shard_size=args.max_shard_mib * 1024 * 1024,
             progress=progress,
         )
-        print(f"wrote {args.output}", file=sys.stderr)
+        print(f"wrote {load_path}", file=sys.stderr)
         return 0
     except (CheckpointError, FormatError, OSError, ValueError) as error:
         print(f"convert_checkpoint: error: {error}", file=sys.stderr)

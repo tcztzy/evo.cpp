@@ -4,12 +4,41 @@
 
 `evo2c` 是覆盖全部官方 Evo 2 尺寸（1B、7B、20B、40B，以及受支持的 base/
 长上下文变体）的独立 C++17/CUDA 推理实现。batch-1 推理可使用 1–4 张 CUDA
-GPU；推理进程不依赖 PyTorch、Vortex、Transformer Engine，也不需要硬件 FP8
-指令。
+GPU；原生 forward 不依赖 PyTorch、Vortex、Transformer Engine，也不需要硬件
+FP8 指令或 Python runtime。生产推理读取标准 Safetensors 文件或标准
+Safetensors 分片 index，并使用严格的 `evo2-runtime-v1` profile。
 
-项目思路接近 `llama.cpp` 和 `ds4.c`：只实现一个经过检查的模型容器、一种模型
-架构、必要的原生 kernel、离线权重转换和可复现的数值测试。它不是新的生物学模型，
-也没有重新训练或修改 checkpoint；它解决的是 Evo 2 在非 FP8 硬件上的推理问题。
+项目思路接近 `llama.cpp` 和 `ds4.c`：只实现一种模型架构、必要的原生 kernel、
+有界 checkpoint 加载和可复现的数值测试。它不是新的生物学模型，也没有重新训练
+或修改 checkpoint；它解决的是 Evo 2 在非 FP8 硬件上的推理问题。
+
+## Safetensors-first 工作流
+
+官方 Arc `.pt` 和 BioNeMo DCP 都只是离线转换输入。先在独立环境安装 PyTorch：
+
+```sh
+python3 -m venv .venv-convert
+. .venv-convert/bin/activate
+python3 -m pip install -r requirements-convert.txt
+
+scripts/convert_arc_checkpoint.sh \
+  evo2_7b /models/evo2_7b.pt /models/evo2-7b.safetensors
+
+cmake -S . -B build -DEVO2C_CUDA=ON
+cmake --build build -j
+
+build/evo2c-inspect /models/evo2-7b.safetensors.index.json
+build/evo2c -m /models/evo2-7b.safetensors.index.json \
+  -p ACGT -n 32 --ctx 8192 --gpu 0
+```
+
+converter 固定使用 `weights_only=True`、`mmap=True` 和 CPU mapping，校验
+注册表中的 source manifest，以有界 chunk 把最终 BF16/F32/F8_E4M3 payload
+写入按大小分片的 Safetensors（默认每 shard 4 GiB payload），再发布标准
+`model.safetensors.index.json`。native 可执行文件不链接或嵌入 libtorch、
+libpython 或 Safetensors library。详细说明见
+[格式 profile](docs/model-format.md)和
+[转换文档](docs/checkpoint-conversion.md)。
 
 ## 支持与验证矩阵
 
@@ -20,23 +49,37 @@ corruption 测试。“GPU 已验证”只表示真实转换 checkpoint 已在 C
 | Model ID | Config | Projection 语义 | ctx 8K 建议起点 | 真实 checkpoint native 状态 |
 |---|---|---|---|---|
 | `evo2_1b_base` | `evo2-1b-8k.yml` | 固定 TE 2.3 software E4M3；source weight BF16 | 1×16 GB | 尚未运行（本地无 checkpoint/GPU） |
-| `evo2_7b` | `evo2-7b-1m.yml` | BF16 | 1×24 GB | 尚未运行；现有 7B vector 仅是 reference evidence |
+| `evo2_7b` | `evo2-7b-1m.yml` | BF16 | 1×24 GB | 真实 345-tensor checkpoint 已按大小转换为 4 个分片，并在 1×A800、ctx 8K 下完成官方 Evo 2 性能对比与 logits 对齐 |
 | `evo2_7b_base` | `evo2-7b-8k.yml` | BF16 | 1×24 GB | 尚未运行 |
 | `evo2_7b_262k` | `evo2-7b-262k.yml` | BF16 | 1×24 GB | 尚未运行 |
 | `evo2_20b` | `evo2-20b-1m.yml` | 固定 TE 2.3 software E4M3；source weight F32 | 2×40–48 GB | 尚未运行 |
-| `evo2_40b` | `evo2-40b-1m.yml` | 固定 TE 2.3 software E4M3 | 2×80 GB | 已在 4×A800 80 GB 验证 |
+| `evo2_40b` | `evo2-40b-1m.yml` | 固定 TE 2.3 software E4M3 | 2×80 GB | legacy image 已在 4×A800 验证；Safetensors 待重跑 |
 | `evo2_40b_base` | `evo2-40b-8k.yml` | 固定 TE 2.3 software E4M3 | 2×80 GB | 尚未运行 |
-| `evo2_40b_bionemo_bf16` | `evo2-40b-1m-bionemo-bf16.yml` | BF16 | 2×80 GB | 已在 2×A800 80 GB 验证并对齐 |
+| `evo2_40b_bionemo_bf16` | `evo2-40b-1m-bionemo-bf16.yml` | BF16 | 2×80 GB | legacy image 已在 2×A800 验证并对齐；Safetensors 待重跑 |
 
 以上是保守起点，不是 runtime 硬编码下限。pipeline 按 layer payload bytes 选择
 连续边界；实际显存还受 context、KV 格式、driver overhead 和其他进程影响。
 
 ## 给科研使用者的结论
 
+- **bit-exact 审计前测得的历史 7B prefill 基线：**同一张 A800、同一
+  checkpoint 上，16/128/1024-token 的 native 稳态吞吐为
+  `1406`/`7644`/`9965 tok/s`，官方已预热的 Python/Vortex runtime 为
+  `595`/`4776`/`9412 tok/s`。model load 包含一次 128-token 后端预热；
+  首次遇到新长度时仍可能支付一次 plan 创建成本。这些数字只作为回归基线，
+  不能代表当前精确 kernel 的性能；审计后的复测必须使用已提交的 binary，并在
+  得出性能结论前记录 binary hash 与 artifact 目录。
+- **BF16 7B 路径现已与固定 Vortex/PyTorch reference 逐 bit 一致：**审计的
+  多个 prefill 长度、16 步 cached generation、2048-key softmax 分界以及官方
+  3000-token prompt-forcing 转换点上，每个 logit 与全部 32 层 block output
+  都保持原始位型相等。这不是 cosine 或 top-1 意义的“接近”；精确范围、首个
+  分歧定位过程和 CUDA 12.8/13.3 交叉检查见
+  [`docs/vortex-7b-bit-exactness.md`](docs/vortex-7b-bit-exactness.md)。
 - **与 BioNeMo 对齐：**使用同一 NVIDIA
   `evo2/40b-1m-fp8-bf16:1.0` checkpoint 时，16×512 个 logits 全部有限，
   16/16 行 top-1 完全一致，8-token greedy continuation 逐字节一致。
-- **数值差异很小且可解释：**最低 row cosine 为 `0.999998748`；
+- **在另行进行的 40B BioNeMo 对比中，数值差异很小且可解释：**最低 row
+  cosine 为 `0.999998748`；
   8192 个 logits 中 2723 个完全相同，平均绝对差为 `0.112738`，而 logit
   的最大绝对值为 `23.625`。15 个实际 target 的平均绝对 log-probability
   差仅为 `0.008972 nat/token`。
@@ -89,7 +132,7 @@ Hopper FP8 上有轻微准确率回退。
 
 | 项目 | BioNeMo oracle | evo2c |
 |---|---|---|
-| Checkpoint | `evo2/40b-1m-fp8-bf16:1.0` | 同一 checkpoint 转换为只读 `.evo2` |
+| Checkpoint | `evo2/40b-1m-fp8-bf16:1.0` | 同一 checkpoint 的历史已验证 legacy `.evo2` image |
 | GPU | 2×A800 80GB | 同一台 gpu02 的 2×A800 80GB |
 | 数值路径 | BF16 | BF16 |
 | 并行方式 | Megatron tensor parallel，TP=2 | 25+25 层 pipeline，PP=2 |
@@ -125,7 +168,7 @@ BioNeMo 的显存数字是框架报告的 per-rank peak，evo2c 数字是进程�
 allocation delta。它适合说明本次部署的实际量级，不应外推成所有长度、GPU 和
 batch size 下都固定快 `6.76×`。
 
-## logits 差异列表
+## BioNeMo 40B logits 差异列表
 
 ### 总体差异
 
@@ -208,7 +251,7 @@ score 的真实影响。该短序列只是数值回归向量，不是生物学 b
 另一个独立的 generation 检查使用 prompt `ACGTACGTACGTACGT`：
 BioNeMo 与 evo2c 都 greedy 生成 `ACGTACGT`，8 bytes 完全相同。
 
-## 为什么 cosine 不是 1
+## 为什么 BioNeMo 40B 对比的 cosine 不是 1
 
 cosine 只有在两个向量方向完全一致时才等于 1。当前最低值
 `0.999998748028` 对应的 `1 - cosine` 只有约 `1.25×10⁻⁶`，说明两个
@@ -292,7 +335,12 @@ gpu02 的已验证环境是 Rocky Linux 8.10、4×A800 80GB PCIe、driver
 ```sh
 scripts/gpu02_build.sh
 scripts/gpu02_test.sh
+EVO2C_7B_GPU=3 scripts/gpu02_benchmark_7b.sh
 ```
+
+7B benchmark 会拒绝在忙碌 GPU 上运行，校验官方 logits 与生成 bytes，再应用
+确定性的 model-load 和 repeated-prefill 阈值；JSON 报告及全部输入/输出 hash
+保存在命令报告的 artifact 目录中。
 
 ### 准备 BioNeMo BF16 40B（推荐）
 
@@ -309,11 +357,11 @@ NGC archive 使用独立 cache：
 生成并校验：
 
 ```text
-$HOME/evo2c-models/evo2-40b-bionemo-bf16.evo2
+$HOME/evo2c-models/evo2-40b-bionemo-bf16.safetensors.index.json
 ```
 
-文件大小为 `82,254,509,184` bytes，SHA256 为
-`3fb2ec7ed2c89c4f88dcb9c4c6f675e46c2b37722ee82778ce0ff84794dfa5c8`。
+脚本会校验标准 Safetensors profile，计算转换结果的 SHA256，并记录到仓库外的
+`.sha256` receipt。
 
 在任选两张空闲 GPU 上复现 BioNeMo 对齐 gate：
 
@@ -334,17 +382,17 @@ scripts/gpu02_prepare_40b.sh
 它固定官方 revision，支持断点续传，校验两个分片及合并文件，再生成：
 
 ```text
-$HOME/evo2c-models/evo2-40b-e4m3sw.evo2
+$HOME/evo2c-models/evo2-40b-e4m3sw.safetensors.index.json
 ```
 
-文件大小为 `82,252,717,056` bytes，SHA256 为
-`d1619e3b2eef0fba7c5838bb61982e891cf63d55385ced865af06693222d6687`。
+脚本会校验标准 Safetensors profile，计算转换结果的 SHA256，并记录到仓库外的
+`.sha256` receipt。
 `HF_ENDPOINT` 只用于 Arc/Hugging Face 路径，不参与 NGC 下载。
 
-### 手动离线转换
+### 离线转换
 
 gpu02 preparation script 已封装下载、恢复、hash 和转换。若 checkpoint 已在
-本地，也可直接调用转换器；PyTorch 只在此离线步骤中需要：
+本地，也可直接调用转换器；PyTorch 只存在于这个隔离的离线环境：
 
 ```sh
 python3 -m venv .venv-convert
@@ -352,18 +400,17 @@ python3 -m venv .venv-convert
 python3 -m pip install -r requirements-convert.txt
 
 scripts/convert_arc_checkpoint.sh \
-  evo2_7b evo2_7b.pt evo2-7b.evo2
+  evo2_7b evo2_7b.pt evo2-7b.safetensors
 
 python3 tools/convert_checkpoint.py \
   --input evo2_40b.pt \
   --config configs/evo2-40b-1m.yml \
-  --output evo2-40b-e4m3sw.evo2 \
-  --dtype bf16
+  --output evo2-40b-e4m3sw.safetensors
 
 python3 tools/convert_bionemo_checkpoint.py \
   --input /path/to/nemo2/weights \
   --config configs/evo2-40b-1m-bionemo-bf16.yml \
-  --output evo2-40b-bionemo-bf16.evo2 \
+  --output evo2-40b-bionemo-bf16.safetensors \
   --source-sha256 544b47e033d1fb0261b686a53f7c4fe240cd290253187d31e8c99dea9e35a680
 ```
 
@@ -379,7 +426,7 @@ manifest、precision 规则和每个尺寸的 smoke 命令见
 image="$HOME/evo2c-cuda12.8-rocky8.sif"
 nix_root="$HOME/.local/share/nix-root"
 binary="$HOME/evo2c/build-gpu/evo2c"
-model="$HOME/evo2c-models/evo2-40b-bionemo-bf16.evo2"
+model="$HOME/evo2c-models/evo2-40b-bionemo-bf16.safetensors.index.json"
 
 apptainer exec --nv -B "$nix_root:/nix:ro" "$image" \
   "$binary" -m "$model" -p ACGTACGTACGTACGT -n 8 --ctx 8192 \
@@ -411,8 +458,9 @@ scripts/gpu02_quality.sh
 
 ## 长上下文支持与限制
 
-以下 32K/131K/1M 结果来自原始 Arc `.evo2` 和 4×A800 路径；尚未把同样的
-长上下文容量 gate 扩展到 2-GPU BioNeMo BF16 路径。
+以下 32K/131K/1M 结果来自历史已验证的 Arc legacy `.evo2` 与 4×A800
+路径；Safetensors image 需要重跑该 gate，同样的长上下文容量 gate 也尚未扩展到
+2-GPU BioNeMo BF16 路径。
 
 - 质量覆盖的生产目标是 batch 1、`--ctx 8192`。
 - 一个真实 8193-token prompt 已在 `--ctx 32768` 下跨过 8192-token
@@ -424,14 +472,14 @@ scripts/gpu02_quality.sh
 - 同一 binary 已通过 `--ctx 1048576` 的真实模型容量 smoke。
 - 完整填充的 1M Q8 KV 预计每卡约 33 GiB；加上权重、state 和 activation，
   4 个 stage 预计各需 52.37–53.74 GiB，可容纳于空闲 A800 80GB。
-- **没有完成完整 1M prompt 的 prefill 性能验证。**当前 attention prefill
-  仍是 quadratic 且没有跨 query 复用 K/V tile；1M capacity 适合增量增长的
-  sequence，不代表完整 1M prefix 已经实用。
+- **没有完成完整 1M prompt 的 prefill 性能验证。**长上下文 Q8 attention
+  路径仍是 quadratic，且没有跨 query 复用 K/V tile；BF16 7B 路径现在会让
+  8 个 query 共享 K/V tile，但这仍不足以让完整 1M prefix 变得实用。
 
 示例：
 
 ```sh
-arc_model="$HOME/evo2c-models/evo2-40b-e4m3sw.evo2"
+arc_model="$HOME/evo2c-models/evo2-40b-e4m3sw.safetensors.index.json"
 
 apptainer exec --nv -B "$nix_root:/nix:ro" "$image" \
   "$binary" -m "$arc_model" -p ACGTACGTACGTACGT -n 2 --ctx 131072 \
@@ -450,8 +498,8 @@ apptainer exec --nv -B "$nix_root:/nix:ro" "$image" \
   software-H100-QGMMA accumulation。
 - 8192-token 固定 activation arena 与 state-preserving chunked prefill。
 - 131K+ fixed-page Q8 KV 和 online-softmax 内 F32 dequantization。
-- `EVO2C` v1 mmap container 在任何 CUDA allocation 前完成 header、
-  tensor、shape、dtype、offset、checksum 和 model metadata 检查。
+- strict Safetensors reader 在任何 CUDA allocation 前完成 profile metadata、
+  tensor、shape、dtype 和 dense byte range 检查。
 - `--dump-tokens`、`--dump-logits`、`--dump-layer` 可用于外部数值审计。
 
 当前不支持通用模型加载、训练、LoRA、batch > 1、服务框架或非 CUDA 后端。
@@ -462,21 +510,24 @@ multi-chunk scoring 和 generation 已支持；一个 prefill 跨多个 activati
 chunk 时，`--dump-layer` 会明确拒绝，因为单个 NPY 不能表示多次独立的
 stage-local invocation。
 
-## 可复现性与 artifact
+## 历史可复现 artifact
+
+下列 output hash 属于此前通过验证的私有 `.evo2` container，只用于标识历史
+benchmark 输入，并不是新 Safetensors runtime image 的 hash。
 
 | Artifact | 大小（bytes） | SHA256 |
 |---|---:|---|
 | Arc 合并 checkpoint | 82,253,491,694 | `dd299612b1c1cdded0dfdcaf4d16f98fc97458261d80f4d662429f0ccb316bc3` |
-| Arc `.evo2` | 82,252,717,056 | `d1619e3b2eef0fba7c5838bb61982e891cf63d55385ced865af06693222d6687` |
+| Arc legacy `.evo2` | 82,252,717,056 | `d1619e3b2eef0fba7c5838bb61982e891cf63d55385ced865af06693222d6687` |
 | BioNeMo NGC archive | 63,680,606,710 | `544b47e033d1fb0261b686a53f7c4fe240cd290253187d31e8c99dea9e35a680` |
-| BioNeMo BF16 `.evo2` | 82,254,509,184 | `3fb2ec7ed2c89c4f88dcb9c4c6f675e46c2b37722ee82778ce0ff84794dfa5c8` |
+| BioNeMo BF16 legacy `.evo2` | 82,254,509,184 | `3fb2ec7ed2c89c4f88dcb9c4c6f675e46c2b37722ee82778ce0ff84794dfa5c8` |
 | BioNeMo official logits NPY | 32,896 | `9e16b0de532e57350b0b0ffdb9c48728b339c584925070ede75ea38d308d51d6` |
 | evo2c logits NPY | 32,896 | `99c2c6de5291a7b9e525921f1c4fa9a089b94b96eab39320a4d87a738cda2244` |
 | logits comparison report | 3,110 | `864f8f64ffaf18de005c770412c9ab31a1775c98556dd1da67ff49e0b984e44c` |
 
 Arc checkpoint 固定 Hugging Face revision
-`d529aa57c30771814217ad89baaeaf6e2315c7d7`。每个准备脚本都在发布最终文件
-前验证固定大小和 SHA256，已存在但不匹配的 artifact 不会被静默复用。
+`d529aa57c30771814217ad89baaeaf6e2315c7d7`。准备脚本在转换前校验 source
+size/SHA，并用独立 SHA receipt 锁定每个新 Safetensors 结果。
 
 BioNeMo DCP manifest 含 506 个 BF16 data tensors 和 210 个 metadata
 entries；转换后为 537 个 runtime tensors。普通 BF16 payload bit-exact，
@@ -513,24 +564,39 @@ EVO2C_SANITIZE=ON scripts/local_test.sh build-sanitize
 
 当前状态：
 
-- Local Release：21/21 passed。
-- ASan/UBSan：21/21 passed。
-- 最近一次 multi-size 修改前的 gpu02 baseline：28/28 passed，包括 9 个 CUDA
-  tests 和 2 个 multi-GPU tests。本次修改尚未在 gpu02 重建/运行，因为当前
-  host 没有 CUDA compiler/GPU。
+- Local CPU Release：22/22 个 CTest entry 零失败完成；4 个可选
+  PyTorch/Triton/Vortex integration 按声明 skip。
+- Local ASan/UBSan：22/22 个 CTest entry 零失败完成；同样 4 个外部集成项
+  按声明 skip。
+- 其余真实 checkpoint 的转换和 CUDA Safetensors 加载仍需对应外部 checkpoint
+  与 CUDA host。
+- 最终 gpu02 build：30/30 个 CTest entry 零失败完成，包括 9 个 CUDA tests
+  与 one-/two-GPU pipeline 路径；5 个可选外部 oracle 按声明 skip。
+- 新鲜 CUDA 12.8 strict build：全部 `sm_80` target 在项目告警视为错误时编译
+  通过；GPU1 上 smoke、ops、Hyena、attention、model、CLI 六项单卡 CUDA
+  regression 全部通过。
+- 真实 `evo2_7b` Safetensors 已在空闲 GPU1 完成固定 Vortex/PyTorch 审计：
+  已审计 prefill/decode 案例的全部 32 层 block output 和 logits 均为零个原始
+  位型不等元素，覆盖 2048-key softmax 与 3000-token forcing 分界；CUDA 12.8
+  native 输出也与 CUDA 13.3 reference 相等。旧性能 artifact
+  `$HOME/evo2c-artifacts/t19-evo2-7b-prefill-805e81208609-gpu1` 的 1024-token
+  repeated prefill 为 `9727.5 tok/s`；其中 cosine 质量数据仅保留为历史性能
+  证据，不再作为精确性门禁。
 - 真实 PyTorch DCP converter integration：5/5 passed。
 
-PyTorch 只在离线 checkpoint conversion 和可选 oracle test 中使用，
-production binary 不链接 PyTorch、Vortex 或 Transformer Engine。
+PyTorch 只用于离线 conversion 和可选 oracle test。production binary
+不链接或嵌入 PyTorch、Vortex、Transformer Engine、libtorch 或 libpython。
 
 ## 设计与审计文档
 
 - [`SPEC.md`](SPEC.md)：可执行 invariant、validation gate 和任务记录。
-- [`docs/model-format.md`](docs/model-format.md)：`.evo2` checked container。
+- [`docs/model-format.md`](docs/model-format.md)：严格的 Evo 2 Safetensors profile。
 - [`docs/checkpoint-conversion.md`](docs/checkpoint-conversion.md)：Arc 与
   BioNeMo checkpoint 的严格转换规则。
 - [`docs/math-semantics.md`](docs/math-semantics.md)：Vortex-compatible
   layer 数学语义。
+- [`docs/vortex-7b-bit-exactness.md`](docs/vortex-7b-bit-exactness.md)：
+  BF16 7B 的白盒首分歧审计与逐 bit 相等证据。
 - [`docs/software-fp8.md`](docs/software-fp8.md)：为什么原始 1B/20B/40B
   不能简单换成 BF16，以及 Ampere 如何模拟所需 FP8 语义。
 - [`docs/gpu02-environment.md`](docs/gpu02-environment.md)：gpu02 环境、

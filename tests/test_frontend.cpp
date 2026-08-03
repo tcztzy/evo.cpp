@@ -161,7 +161,7 @@ void test_sampler() {
 
 void test_cli() {
   evo2c::CliOptions options;
-  auto status = parse({"evo2c", "-m", "model.evo2", "-p", "ACGT", "-n", "8",
+  auto status = parse({"evo2c", "-m", "model.safetensors", "-p", "ACGT", "-n", "8",
                        "--ctx", "128", "--gpu", "0,1,2,3", "--temp", "0.8",
                        "--top-k", "32", "--top-p", "0.9", "--seed", "99",
                        "--force-prompt-threshold", "3",
@@ -179,15 +179,14 @@ void test_cli() {
         "debug layer CLI parses");
   check(options.force_prompt_threshold == 3,
         "teacher-forced prompt threshold CLI parses");
-
-  status = parse({"evo2c", "-m", "model.evo2", "-p", "A", "-n", "1",
+  status = parse({"evo2c", "-m", "model.safetensors", "-p", "A", "-n", "1",
                   "--gpu", "0", "--dump-layer", "50:layer.npy"},
                  &options);
   check(status.ok() && options.dump_layer.has_value() &&
             options.dump_layer->layer == 50,
         "CLI defers model-specific layer bounds to the runtime");
 
-  status = parse({"evo2c", "-m", "model.evo2", "--score", "input.fa", "--gpu", "2"},
+  status = parse({"evo2c", "-m", "model.safetensors", "--score", "input.fa", "--gpu", "2"},
                  &options);
   check(status.ok() && options.mode == evo2c::RunMode::kScore,
         "score CLI accepts one GPU and no sampling options");

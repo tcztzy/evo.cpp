@@ -44,7 +44,19 @@ def main() -> int:
         args.source_dir / "scripts" / "gpu02_build.sh"
     ).read_text(encoding="utf-8")
     assert 'rsync_retries="${EVO2C_RSYNC_RETRIES:-12}"' in build
-    assert "until rsync -az --delete --delay-updates" in build
+    assert "until rsync -az --delay-updates" in build
+    assert "--delete" not in build, (
+        "the source sync must not remove remote models, environments, or "
+        "research artifacts that are outside the local checkout"
+    )
+    for excluded in (
+        "'/.cache/'",
+        "'/.venv/'",
+        "'*.pt'",
+        "'*.safetensors'",
+        "'*.safetensors.index.json'",
+    ):
+        assert f"--exclude {excluded}" in build
     assert 'if (( rsync_attempt >= rsync_retries ))' in build
     assert 'sleep "$rsync_retry_delay"' in build
     configure_index = build.index('  -S "$source_dir"')
@@ -92,13 +104,9 @@ def main() -> int:
     assert "https://hf-mirror.com" in prepare
     assert 'export HF_HOME="$hf_home"' in prepare
     assert 'export HF_ENDPOINT="$mirror"' in prepare
-    assert 'output="$model_dir/evo2-40b-e4m3sw.evo2"' in prepare
-    assert 'output_size="82252717056"' in prepare
-    assert (
-        'output_sha256="'
-        "d1619e3b2eef0fba7c5838bb61982e891cf63d55385ced865af06693222d6687"
-        '"' in prepare
-    )
+    assert 'output_base="$model_dir/evo2-40b-e4m3sw.safetensors"' in prepare
+    assert 'output="$output_base.index.json"' in prepare
+    assert 'output_receipt="$output_base.sha256"' in prepare
 
     bionemo = (
         args.source_dir / "scripts" / "gpu02_prepare_bionemo_40b.sh"
@@ -115,12 +123,8 @@ def main() -> int:
         "544b47e033d1fb0261b686a53f7c4fe240cd290253187d31e8c99dea9e35a680"
         '"' in bionemo
     )
-    assert 'expected_output_size="82254509184"' in bionemo
-    assert (
-        'expected_output_sha256="'
-        "3fb2ec7ed2c89c4f88dcb9c4c6f675e46c2b37722ee82778ce0ff84794dfa5c8"
-        '"' in bionemo
-    )
+    assert 'output="$output_base.index.json"' in bionemo
+    assert 'output_receipt="$output_base.sha256"' in bionemo
     assert "convert_bionemo_checkpoint.py" in bionemo
     assert "evo2-40b-1m-bionemo-bf16.yml" in bionemo
     assert "--dry-run" in bionemo
@@ -140,12 +144,7 @@ def main() -> int:
     bionemo_validation = (
         args.source_dir / "scripts" / "gpu02_validate_bionemo_40b.sh"
     ).read_text(encoding="utf-8")
-    assert "evo2-40b-bionemo-bf16.evo2" in bionemo_validation
-    assert (
-        'expected_model_sha256="'
-        "3fb2ec7ed2c89c4f88dcb9c4c6f675e46c2b37722ee82778ce0ff84794dfa5c8"
-        '"' in bionemo_validation
-    )
+    assert "evo2-40b-bionemo-bf16.safetensors" in bionemo_validation
     assert (
         'expected_greedy_sha256="'
         "b28b7e7e6b70661dfee15d5290c4bca097ca145f721c4fbc4de73ad1d1660b8b"
@@ -170,6 +169,27 @@ def main() -> int:
     assert 'test "$mode" = "Exclusive_Process"' in bionemo_validation
     assert 'test "$(cat "$status_file")" != "0"' in bionemo_validation
 
+    benchmark_7b = (
+        args.source_dir / "scripts" / "gpu02_benchmark_7b.sh"
+    ).read_text(encoding="utf-8")
+    assert "EVO2C_REMOTE_7B_BENCHMARK_WORKER" in benchmark_7b
+    assert 'remote_host="${EVO2C_GPU02_HOST:-gpu02}"' in benchmark_7b
+    assert "'bash -s' -- \"$requested_gpu\"" in benchmark_7b
+    assert 'gpu="${EVO2C_7B_GPU:-3}"' in benchmark_7b
+    assert "nvidia-smi --query-compute-apps=gpu_uuid" in benchmark_7b
+    assert "CUDA device $gpu is not idle" in benchmark_7b
+    assert "-B /data:/data" in benchmark_7b
+    assert (
+        "c66645929dc1b9c631f5be656da8726f38946315dc9167000a615dd626fcecf4"
+        in benchmark_7b
+    )
+    assert benchmark_7b.count("--minimum-top1-agreement") == 2
+    assert "--minimum-cosine 0.99999" in benchmark_7b
+    assert "prefill_benchmark_gate.py" in benchmark_7b
+    assert '--minimum-rate "1024=$minimum_rate_1024"' in benchmark_7b
+    assert 'minimum_rate_1024="${EVO2C_7B_MIN_RATE_1024:-9300}"' in benchmark_7b
+    assert "artifact-sha256.txt" in benchmark_7b
+
     quality = (
         args.source_dir / "scripts" / "gpu02_quality.sh"
     ).read_text(encoding="utf-8")
@@ -180,10 +200,8 @@ def main() -> int:
     assert "--start-index" in quality
     assert "/build/grp_icg/users/tang/.cache" in quality
     assert "https://hf-mirror.com" in quality
-    assert (
-        "d1619e3b2eef0fba7c5838bb61982e891cf63d55385ced865af06693222d6687"
-        in quality
-    )
+    assert "evo2-40b-e4m3sw.safetensors" in quality
+    assert 'model_sha256="$(sha256sum "$model"' in quality
     assert 'test -x "$python_bin"' not in quality, (
         "V18: the pinned /nix Python exists only after the Apptainer mount"
     )

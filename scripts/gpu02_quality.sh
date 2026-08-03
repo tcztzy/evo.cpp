@@ -12,16 +12,21 @@ run_remote_worker() {
   local artifact_root="$HOME/evo2c-artifacts"
   local complete
   local generated
+  local model
+  local model_sha256
   local output
   local -a quality_args
 
   export HF_HOME="${EVO2C_HF_HOME:-/build/grp_icg/users/tang/.cache}"
   export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
+  model="$HOME/evo2c-models/evo2-40b-e4m3sw.safetensors.index.json"
+  test -f "$model"
+  model_sha256="$(sha256sum "$model" | cut -d' ' -f1)"
   output="$artifact_root/t13-native-quality-4x500.json"
   quality_args=(
     --binary "$source_dir/build-gpu/evo2c"
-    --model "$HOME/evo2c-models/evo2-40b-e4m3sw.evo2"
-    --model-sha256 d1619e3b2eef0fba7c5838bb61982e891cf63d55385ced865af06693222d6687
+    --model "$model"
+    --model-sha256 "$model_sha256"
     --prompts "$HOME/evo2c-vortex-reference/test/data/prompts.csv"
     --output "$output"
     --num-tokens 500
@@ -40,7 +45,6 @@ run_remote_worker() {
   mkdir -p "$artifact_root"
   test -f "$image"
   test -x "$source_dir/build-gpu/evo2c"
-  test -f "$HOME/evo2c-models/evo2-40b-e4m3sw.evo2"
   test -f "$HOME/evo2c-vortex-reference/test/data/prompts.csv"
   apptainer exec --nv -B "$nix_root:/nix:ro" "$image" \
     "$python_bin" "$source_dir/tools/evo2_quality_gate.py" \
@@ -56,8 +60,8 @@ run_remote_worker() {
     apptainer exec --nv -B "$nix_root:/nix:ro" "$image" \
       "$python_bin" "$source_dir/tools/evo2_quality_gate.py" \
       --binary "$source_dir/build-gpu/evo2c" \
-      --model "$HOME/evo2c-models/evo2-40b-e4m3sw.evo2" \
-      --model-sha256 d1619e3b2eef0fba7c5838bb61982e891cf63d55385ced865af06693222d6687 \
+      --model "$model" \
+      --model-sha256 "$model_sha256" \
       --prompts "$HOME/evo2c-vortex-reference/test/data/prompts.csv" \
       --output "$output" --num-tokens 500 --ctx 8192 --gpu 0,1,2,3 \
       --force-prompt-threshold 3000 --summarize-existing

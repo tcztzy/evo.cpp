@@ -3,7 +3,7 @@
 set -euo pipefail
 
 if (( $# != 3 )); then
-  echo "usage: $0 MODEL_ID CHECKPOINT.pt OUTPUT.evo2" >&2
+  echo "usage: $0 MODEL_ID CHECKPOINT.pt MODEL.safetensors" >&2
   exit 2
 fi
 
@@ -46,5 +46,9 @@ fi
 PYTHONPATH="${source_dir}/tools${PYTHONPATH:+:${PYTHONPATH}}" \
   "$python_bin" "${arguments[@]}"
 if [[ "${EVO2C_DRY_RUN:-0}" != 1 ]]; then
-  "$inspector" "$output" --tensor norm.scale
+  load_path="$output"
+  if [[ -f "$output.index.json" ]]; then
+    load_path="$output.index.json"
+  fi
+  "$inspector" "$load_path" --tensor norm.scale
 fi

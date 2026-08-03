@@ -105,7 +105,7 @@
       "ignored_time_grid_length": 0,
       "source_manifest": {"tensors": 270, "bf16": 256, "f32": 14, "bytes": 2218806272},
       "runtime_manifest": {"tensors": 270, "bf16": 201, "f32": 69, "bytes": 2219002624},
-      "container_manifest": {"tensors": 333, "bf16": 201, "f32": 132, "bytes": 2219005648}
+      "container_manifest": {"tensors": 291, "bf16": 180, "f32": 90, "e4m3": 21, "bytes": 1986759592}
     },
     "evo2_7b": {
       "profile": "7b_1m",
@@ -124,7 +124,7 @@
       "ignored_time_grid_length": 1048576,
       "source_manifest": {"tensors": 345, "bf16": 327, "f32": 18, "bytes": 13170000000},
       "runtime_manifest": {"tensors": 345, "bf16": 257, "f32": 88, "bytes": 13170533120},
-      "container_manifest": {"tensors": 345, "bf16": 257, "f32": 88, "bytes": 13170533120}
+      "container_manifest": {"tensors": 345, "bf16": 257, "f32": 88, "e4m3": 0, "bytes": 13170533120}
     },
     "evo2_7b_base": {
       "profile": "7b_base",
@@ -143,7 +143,7 @@
       "ignored_time_grid_length": 0,
       "source_manifest": {"tensors": 345, "bf16": 327, "f32": 18, "bytes": 12968673408},
       "runtime_manifest": {"tensors": 345, "bf16": 257, "f32": 88, "bytes": 12969206528},
-      "container_manifest": {"tensors": 345, "bf16": 257, "f32": 88, "bytes": 12969206528}
+      "container_manifest": {"tensors": 345, "bf16": 257, "f32": 88, "e4m3": 0, "bytes": 12969206528}
     },
     "evo2_7b_262k": {
       "profile": "7b_262k",
@@ -162,7 +162,7 @@
       "ignored_time_grid_length": 262144,
       "source_manifest": {"tensors": 345, "bf16": 327, "f32": 18, "bytes": 12968673408},
       "runtime_manifest": {"tensors": 345, "bf16": 257, "f32": 88, "bytes": 12969206528},
-      "container_manifest": {"tensors": 345, "bf16": 257, "f32": 88, "bytes": 12969206528}
+      "container_manifest": {"tensors": 345, "bf16": 257, "f32": 88, "e4m3": 0, "bytes": 12969206528}
     },
     "evo2_20b": {
       "profile": "20b_1m",
@@ -180,7 +180,7 @@
       "ignored_time_grid_length": 0,
       "source_manifest": {"tensors": 261, "bf16": 223, "f32": 38, "bytes": 47945336576},
       "runtime_manifest": {"tensors": 261, "bf16": 174, "f32": 87, "bytes": 47946139392},
-      "container_manifest": {"tensors": 324, "bf16": 174, "f32": 150, "bytes": 47946142416}
+      "container_manifest": {"tensors": 282, "bf16": 174, "f32": 87, "e4m3": 21, "bytes": 35262564264}
     },
     "evo2_40b": {
       "profile": "40b_1m",
@@ -202,7 +202,7 @@
       "ignored_time_grid_length": 0,
       "source_manifest": {"tensors": 537, "bf16": 400, "f32": 137, "bytes": 82252533760},
       "runtime_manifest": {"tensors": 537, "bf16": 400, "f32": 137, "bytes": 82252533760},
-      "container_manifest": {"tensors": 663, "bf16": 400, "f32": 263, "bytes": 82252539808}
+      "container_manifest": {"tensors": 579, "bf16": 358, "f32": 179, "e4m3": 42, "bytes": 73796817232}
     },
     "evo2_40b_base": {
       "profile": "40b_base",
@@ -224,7 +224,7 @@
       "ignored_time_grid_length": 0,
       "source_manifest": {"tensors": 537, "bf16": 400, "f32": 137, "bytes": 80679669760},
       "runtime_manifest": {"tensors": 537, "bf16": 400, "f32": 137, "bytes": 80679669760},
-      "container_manifest": {"tensors": 663, "bf16": 400, "f32": 263, "bytes": 80679675808}
+      "container_manifest": {"tensors": 579, "bf16": 358, "f32": 179, "e4m3": 42, "bytes": 72223953232}
     },
     "evo2_40b_bionemo_bf16": {
       "profile": "40b_1m",
@@ -241,7 +241,7 @@
       "ignored_time_grid_length": 0,
       "source_manifest": {"tensors": 537, "bf16": 386, "f32": 151, "bytes": 82254368768},
       "runtime_manifest": {"tensors": 537, "bf16": 386, "f32": 151, "bytes": 82254368768},
-      "container_manifest": {"tensors": 537, "bf16": 386, "f32": 151, "bytes": 82254368768}
+      "container_manifest": {"tensors": 537, "bf16": 386, "f32": 151, "e4m3": 0, "bytes": 82254368768}
     }
   }
 }

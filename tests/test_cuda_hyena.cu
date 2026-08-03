@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <cuda_bf16.h>
@@ -185,6 +186,27 @@ void test_projection_split(const int device,
         "Hyena value split is bit exact");
 }
 
+void test_fft_workspace_generation(const int device) {
+  evo2c::cuda::FftWorkspace workspace;
+  check(workspace.generation() == 0,
+        "fresh FFT workspace has no constructed plan generation");
+  require(workspace.allocate(device, 8, 2, 16),
+          "allocate first FFT workspace generation");
+  check(workspace.generation() == 1 && workspace.matches(device, 8, 2, 16),
+        "first FFT allocation publishes generation one");
+  workspace.reset();
+  check(workspace.generation() == 1 && !workspace.matches(device, 8, 2, 16),
+        "reset releases FFT plans without erasing lifetime generation");
+  require(workspace.allocate(device, 8, 2, 32),
+          "allocate second FFT workspace generation");
+  check(workspace.generation() == 2 && workspace.matches(device, 8, 2, 32),
+        "dimension change publishes a second FFT generation");
+  evo2c::cuda::FftWorkspace moved = std::move(workspace);
+  check(moved.generation() == 2 && workspace.generation() == 0 &&
+            moved.matches(device, 8, 2, 32),
+        "moving an FFT workspace transfers its generation and plans");
+}
+
 void test_short_fir_cache(const int device, const evo2c::cuda::Stream &stream) {
   constexpr std::size_t length = 11;
   constexpr std::size_t channels = 7;
@@ -244,9 +266,9 @@ void test_short_fir_cache(const int device, const evo2c::cuda::Stream &stream) {
       quantize_bf16(values(chunk_length * channels, 131, 29.0F));
   auto chunk = upload_bf16(device, chunk_f32, stream);
   evo2c::cuda::DeviceBuffer chunk_output;
-  require(chunk_output.allocate(device, chunk_f32.size() *
-                                            sizeof(__nv_bfloat16)),
-          "allocate continued FIR output");
+  require(
+      chunk_output.allocate(device, chunk_f32.size() * sizeof(__nv_bfloat16)),
+      "allocate continued FIR output");
   require(evo2c::cuda::bf16_fir_continue_direct(
               chunk, weight, &bias, chunk_length, channels, groups, kernel,
               evo2c::cuda::FirOrientation::kCrossCorrelation,
@@ -260,12 +282,10 @@ void test_short_fir_cache(const int device, const evo2c::cuda::Stream &stream) {
               evo2c::cpu::FirBiasMode::kAdd),
           "CPU continued short FIR reference");
   const std::vector<float> expected_chunk(
-      expected.end() -
-          static_cast<std::ptrdiff_t>(chunk_length * channels),
+      expected.end() - static_cast<std::ptrdiff_t>(chunk_length * channels),
       expected.end());
-  check(all_close(
-            download_bf16(chunk_output, chunk_length * channels, stream),
-            expected_chunk, 0.02F, 0.01F),
+  check(all_close(download_bf16(chunk_output, chunk_length * channels, stream),
+                  expected_chunk, 0.02F, 0.01F),
         "continued FIR chunk equals sequential causal reference");
 }
 
@@ -347,8 +367,7 @@ void test_hcs(const int device, const evo2c::cuda::Stream &stream) {
 }
 
 void test_hcm_fft_decode(const int device, const evo2c::cuda::Stream &stream,
-                         const bool f32_weight) {
-  constexpr std::size_t length = 19;
+                         const bool f32_weight, const std::size_t length) {
   constexpr std::size_t width = 10;
   constexpr std::size_t groups = 5;
   constexpr std::size_t kernel = 128;
@@ -364,18 +383,26 @@ void test_hcm_fft_decode(const int device, const evo2c::cuda::Stream &stream,
   auto value = upload_bf16(device, value_f32, stream);
   auto weight = f32_weight ? upload_f32(device, grouped_weight, stream)
                            : upload_bf16(device, grouped_weight, stream);
-  const auto weight_type = f32_weight
-                               ? evo2c::cuda::FirWeightType::kF32
-                               : evo2c::cuda::FirWeightType::kBF16;
+  const auto weight_type = f32_weight ? evo2c::cuda::FirWeightType::kF32
+                                      : evo2c::cuda::FirWeightType::kBF16;
   auto direct = upload_bf16(device, direct_f32, stream);
   evo2c::cuda::DeviceBuffer gated;
   evo2c::cuda::DeviceBuffer filtered;
+  evo2c::cuda::DeviceBuffer direct_gated;
+  evo2c::cuda::DeviceBuffer direct_filtered;
   const std::size_t bytes = length * width * sizeof(__nv_bfloat16);
   require(gated.allocate(device, bytes), "allocate HCM gated input");
   require(filtered.allocate(device, bytes), "allocate HCM output");
+  require(direct_gated.allocate(device, bytes),
+          "allocate direct HCM gated input");
+  require(direct_filtered.allocate(device, bytes),
+          "allocate direct HCM output");
   evo2c::cuda::FirCache cache;
+  evo2c::cuda::FirCache direct_cache;
   require(cache.allocate(device, width, kernel, stream), "allocate HCM cache");
-  const std::size_t fft_size = evo2c::cuda::fir_fft_size(length, kernel);
+  require(direct_cache.allocate(device, width, kernel, stream),
+          "allocate direct HCM cache");
+  const std::size_t fft_size = evo2c::cuda::hcm_fft_size(length);
   evo2c::cuda::FftWorkspace fft;
   require(fft.allocate(device, width, groups, fft_size),
           "allocate HCM FFT workspace");
@@ -383,6 +410,11 @@ void test_hcm_fft_decode(const int device, const evo2c::cuda::Stream &stream,
                                         width, groups, kernel, &cache, &gated,
                                         &filtered, &fft, stream, weight_type),
           "HCM FFT prefill");
+  require(evo2c::cuda::bf16_hcm_prefill_direct(
+              x2, x1, value, weight, direct, length, width, groups, kernel,
+              &direct_cache, &direct_gated, &direct_filtered, stream,
+              weight_type),
+          "direct HCM prefill");
 
   std::vector<float> gated_f32(length * width);
   for (std::size_t index = 0; index < gated_f32.size(); ++index)
@@ -402,6 +434,20 @@ void test_hcm_fft_decode(const int device, const evo2c::cuda::Stream &stream,
         "HCM cuFFT prefill matches causal grouped reference");
   check(cosine(actual, expected) >= 0.999F,
         "HCM cuFFT output cosine is at least 0.999");
+  const auto first_fft_output = actual;
+  check(fft.generation() == 1,
+        "first HCM prefill uses the preconstructed FFT generation");
+  require(evo2c::cuda::bf16_hcm_prefill(x2, x1, value, weight, direct, length,
+                                        width, groups, kernel, &cache, &gated,
+                                        &filtered, &fft, stream, weight_type),
+          "repeat HCM FFT prefill");
+  check(fft.generation() == 1,
+        "same-shape HCM prefill reuses its FFT generation");
+  check(download_bf16(filtered, length * width, stream) == first_fft_output,
+        "same-shape cached HCM FFT prefill is bit deterministic");
+  actual = download_bf16(direct_filtered, length * width, stream);
+  check(all_close(actual, expected, 0.03F, 0.02F),
+        "direct HCM prefill matches causal grouped reference");
 
   const auto next_x2 = quantize_bf16(values(width, 173, 43.0F));
   const auto next_x1 = quantize_bf16(values(width, 191, 47.0F));
@@ -419,10 +465,10 @@ void test_hcm_fft_decode(const int device, const evo2c::cuda::Stream &stream,
           "allocate HCM decode scratch");
   require(decoded.allocate(device, width * sizeof(__nv_bfloat16)),
           "allocate HCM decode output");
-  require(evo2c::cuda::bf16_hcm_decode(
-              next_x2_device, next_x1_device, next_value_device, weight, direct,
-              width, groups, kernel, &cache, &decode_scratch, &decoded, stream,
-              weight_type),
+  require(evo2c::cuda::bf16_hcm_decode(next_x2_device, next_x1_device,
+                                       next_value_device, weight, direct, width,
+                                       groups, kernel, &cache, &decode_scratch,
+                                       &decoded, stream, weight_type),
           "HCM decode");
   gated_f32.insert(gated_f32.end(), next_gated.begin(), next_gated.end());
   require(evo2c::cpu::causal_depthwise_fir(
@@ -439,10 +485,8 @@ void test_hcm_fft_decode(const int device, const evo2c::cuda::Stream &stream,
         "HCM cached decode equals full causal last token");
 
   constexpr std::size_t chunk_length = 5;
-  const auto chunk_x2 =
-      quantize_bf16(values(chunk_length * width, 251, 67.0F));
-  const auto chunk_x1 =
-      quantize_bf16(values(chunk_length * width, 277, 71.0F));
+  const auto chunk_x2 = quantize_bf16(values(chunk_length * width, 251, 67.0F));
+  const auto chunk_x1 = quantize_bf16(values(chunk_length * width, 277, 71.0F));
   const auto chunk_value =
       quantize_bf16(values(chunk_length * width, 307, 73.0F));
   auto chunk_x2_device = upload_bf16(device, chunk_x2, stream);
@@ -450,8 +494,7 @@ void test_hcm_fft_decode(const int device, const evo2c::cuda::Stream &stream,
   auto chunk_value_device = upload_bf16(device, chunk_value, stream);
   evo2c::cuda::DeviceBuffer chunk_scratch;
   evo2c::cuda::DeviceBuffer chunk_output;
-  const std::size_t chunk_bytes =
-      chunk_length * width * sizeof(__nv_bfloat16);
+  const std::size_t chunk_bytes = chunk_length * width * sizeof(__nv_bfloat16);
   require(chunk_scratch.allocate(device, chunk_bytes),
           "allocate HCM continuation scratch");
   require(chunk_output.allocate(device, chunk_bytes),
@@ -473,14 +516,12 @@ void test_hcm_fft_decode(const int device, const evo2c::cuda::Stream &stream,
               evo2c::cpu::FirBiasMode::kMultiplyInput),
           "CPU HCM continuation reference");
   std::vector<float> expected_chunk(
-      expected.end() -
-          static_cast<std::ptrdiff_t>(chunk_length * width),
+      expected.end() - static_cast<std::ptrdiff_t>(chunk_length * width),
       expected.end());
   for (std::size_t index = 0; index < expected_chunk.size(); ++index)
     expected_chunk[index] *= chunk_x2[index];
-  check(all_close(
-            download_bf16(chunk_output, chunk_length * width, stream),
-            expected_chunk, 0.04F, 0.03F),
+  check(all_close(download_bf16(chunk_output, chunk_length * width, stream),
+                  expected_chunk, 0.04F, 0.03F),
         "HCM continuation equals sequential causal reference");
 }
 
@@ -526,9 +567,10 @@ void test_hcl(const int device, const evo2c::cuda::Stream &stream) {
               evo2c::cuda::HclPrefillMode::kRecurrence, &recurrence_cache,
               &scratch_recurrence, &output_recurrence, nullptr, stream),
           "HCL recurrence prefill");
-  const std::size_t fft_size = evo2c::cuda::fir_fft_size(length, length);
+  const std::size_t fft_size = evo2c::cuda::hcl_fft_size(length);
   evo2c::cuda::FftWorkspace fft;
-  require(fft.allocate(device, width, width, fft_size),
+  require(fft.allocate(device, width, width, fft_size,
+                       evo2c::cuda::FftInputMode::kRealFullSpectrum),
           "allocate HCL FFT workspace");
   require(evo2c::cuda::bf16_hcl_prefill(
               x2, x1, value, direct, poles, residue, length, width, state_size,
@@ -578,17 +620,21 @@ void test_hcl(const int device, const evo2c::cuda::Stream &stream) {
           "allocate HCL FFT decode output");
   require(evo2c::cuda::bf16_hcl_decode(
               next_x2_device, next_x1_device, next_value_device, direct, poles,
-              residue, width, state_size, &recurrence_cache, &decode_recurrence,
-              stream),
+              residue, width, state_size, &recurrence_cache,
+              &scratch_recurrence, &decode_recurrence, stream),
           "HCL recurrent-cache decode");
-  require(evo2c::cuda::bf16_hcl_decode(
-              next_x2_device, next_x1_device, next_value_device, direct, poles,
-              residue, width, state_size, &fft_cache, &decode_fft, stream),
+  require(evo2c::cuda::bf16_hcl_decode(next_x2_device, next_x1_device,
+                                       next_value_device, direct, poles,
+                                       residue, width, state_size, &fft_cache,
+                                       &scratch_fft, &decode_fft, stream),
           "HCL FFT-cache decode");
   std::vector<float> next_gated(width);
   for (std::size_t index = 0; index < width; ++index)
     next_gated[index] = next_x1[index] * next_value[index];
   next_gated = quantize_bf16(next_gated);
+  check(download_bf16(scratch_recurrence, width, stream) == next_gated &&
+            download_bf16(scratch_fft, width, stream) == next_gated,
+        "HCL decode exposes the actual BF16 input gate");
   std::vector<float> expected_decode;
   require(evo2c::cpu::hcl_recurrence(
               next_x2, next_gated, std::vector<float>(width, 1.0F), 1, width,
@@ -603,17 +649,14 @@ void test_hcl(const int device, const evo2c::cuda::Stream &stream) {
         "HCL FFT cache decode matches continued reference");
 
   constexpr std::size_t chunk_length = 4;
-  const auto chunk_x2 =
-      quantize_bf16(values(chunk_length * width, 257, 67.0F));
-  const auto chunk_x1 =
-      quantize_bf16(values(chunk_length * width, 281, 71.0F));
+  const auto chunk_x2 = quantize_bf16(values(chunk_length * width, 257, 67.0F));
+  const auto chunk_x1 = quantize_bf16(values(chunk_length * width, 281, 71.0F));
   const auto chunk_value =
       quantize_bf16(values(chunk_length * width, 313, 73.0F));
   auto chunk_x2_device = upload_bf16(device, chunk_x2, stream);
   auto chunk_x1_device = upload_bf16(device, chunk_x1, stream);
   auto chunk_value_device = upload_bf16(device, chunk_value, stream);
-  const std::size_t chunk_bytes =
-      chunk_length * width * sizeof(__nv_bfloat16);
+  const std::size_t chunk_bytes = chunk_length * width * sizeof(__nv_bfloat16);
   evo2c::cuda::DeviceBuffer chunk_scratch;
   evo2c::cuda::DeviceBuffer chunk_output;
   require(chunk_scratch.allocate(device, chunk_bytes),
@@ -638,14 +681,66 @@ void test_hcl(const int device, const evo2c::cuda::Stream &stream) {
               width, direct_f32, log_poles, residues, state_size,
               &expected_state, &expected_chunk),
           "CPU HCL continuation reference");
-  check(all_close(
-            download_bf16(chunk_output, chunk_length * width, stream),
-            expected_chunk, 0.03F, 0.02F),
+  check(all_close(download_bf16(chunk_output, chunk_length * width, stream),
+                  expected_chunk, 0.03F, 0.02F),
         "HCL recurrent chunk continues the existing F32 state");
   check(all_close(
             download_f32(recurrence_cache.state, width * state_size, stream),
             expected_state, 1.0e-5F, 1.0e-5F),
         "HCL recurrent chunk publishes the continued F32 final state");
+}
+
+void test_hcl_decode_reduction_tree(const int device,
+                                    const evo2c::cuda::Stream &stream) {
+  constexpr std::size_t width = 1;
+  constexpr std::size_t state_size = 16;
+  const std::vector<float> x2{1.0F};
+  const std::vector<float> x1{0.0F};
+  const std::vector<float> value{1.0F};
+  const std::vector<float> direct{0.0F};
+  const std::vector<float> log_poles(state_size, 0.0F);
+  // These products straddle a BF16 rounding boundary when summed with the
+  // four-accumulator tree used by the non-contiguous filter path.  PyTorch's
+  // contiguous step_iir sum instead uses a zero-padded 32-lane shuffle-down
+  // tree and rounds the result to BF16 -0.240234375 exactly.
+  const std::vector<float> residues{
+      0.191467106F,   3.08442359e-5F, 27.5075665F,     -1.320715e-5F,
+      -0.159456432F,  90.2677231F,    5.88860703F,     3.43213558F,
+      -132.08371F,    0.391455323F,   -6.85143023e-5F, 0.891909838F,
+      -0.0767612457F, -0.0025979632F, 0.0283694491F,   3.48360705F};
+  const std::vector<float> initial_state(state_size, 1.0F);
+
+  auto x2_device = upload_bf16(device, x2, stream);
+  auto x1_device = upload_bf16(device, x1, stream);
+  auto value_device = upload_bf16(device, value, stream);
+  auto direct_device = upload_bf16(device, direct, stream);
+  auto poles_device = upload_f32(device, log_poles, stream);
+  auto residues_device = upload_f32(device, residues, stream);
+  evo2c::cuda::IirCache cache;
+  require(cache.allocate(device, width, state_size, stream),
+          "allocate exact HCL decode cache");
+  require(cache.state.copy_from_host(initial_state.data(),
+                                     initial_state.size() * sizeof(float),
+                                     stream),
+          "initialize exact HCL decode cache");
+  evo2c::cuda::DeviceBuffer output;
+  evo2c::cuda::DeviceBuffer gated;
+  require(output.allocate(device, sizeof(__nv_bfloat16)),
+          "allocate exact HCL decode output");
+  require(gated.allocate(device, sizeof(__nv_bfloat16)),
+          "allocate exact HCL decode gate");
+  require(evo2c::cuda::bf16_hcl_decode(x2_device, x1_device, value_device,
+                                       direct_device, poles_device,
+                                       residues_device, width, state_size,
+                                       &cache, &gated, &output, stream),
+          "exact HCL decode reduction");
+  check(download_bf16(output, width, stream) ==
+            std::vector<float>{-0.240234375F},
+        "HCL decode uses PyTorch's bit-exact contiguous reduction tree");
+  check(download_bf16(gated, width, stream) == std::vector<float>{0.0F},
+        "exact HCL decode gate diagnostic is not stale scratch data");
+  check(download_f32(cache.state, state_size, stream) == initial_state,
+        "HCL decode preserves exact F32 state update rounding");
 }
 
 int requested_device() {
@@ -669,11 +764,19 @@ int main() {
     evo2c::cuda::Stream stream;
     require(stream.create(), "create CUDA stream");
     test_projection_split(device, stream);
+    test_fft_workspace_generation(device);
     test_short_fir_cache(device, stream);
     test_hcs(device, stream);
-    test_hcm_fft_decode(device, stream, false);
-    test_hcm_fft_decode(device, stream, true);
+    check(evo2c::cuda::hcm_prefill_uses_fft(1) &&
+              evo2c::cuda::hcm_prefill_uses_fft(128) &&
+              !evo2c::cuda::hcm_prefill_uses_fft(0),
+          "HCM prefill always uses the Vortex FFT path");
+    test_hcm_fft_decode(device, stream, false, 19);
+    test_hcm_fft_decode(device, stream, true, 19);
+    test_hcm_fft_decode(device, stream, false, 128);
+    test_hcm_fft_decode(device, stream, false, 129);
     test_hcl(device, stream);
+    test_hcl_decode_reduction_tree(device, stream);
     require(stream.synchronize(), "final stream synchronize");
     require(evo2c::cuda::synchronize_device(), "final device synchronize");
   } catch (const std::exception &error) {

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import json
 import struct
 import subprocess
 import tempfile
@@ -12,7 +13,14 @@ import unittest
 from collections import Counter
 from pathlib import Path
 
-from evo2c.format import BytesTensorSource, FormatError, TensorSource, write_model
+from evo2c.format import (
+    DEFAULT_MAX_SHARD_SIZE,
+    BytesTensorSource,
+    FormatError,
+    TensorSource,
+    plan_shards,
+    write_model,
+)
 from evo2c.model_config import (
     EXPECTED_BF16_TENSOR_COUNT,
     EXPECTED_F32_TENSOR_COUNT,
@@ -79,7 +87,24 @@ class ConverterTests(unittest.TestCase):
                 for item in ignored:
                     self.assertEqual(item.shape, (1, 1, entry["ignored_time_grid_length"]))
 
-    def test_registry_metadata_is_additive_without_changing_published_40b(self) -> None:
+    def test_registered_7b_default_shard_plan_is_size_only(self) -> None:
+        config = load_config(CONFIG_DIR / "evo2-7b-1m.yml")
+        shards = plan_shards(container_manifest(config))
+        self.assertEqual([len(shard) for shard in shards], [116, 109, 109, 11])
+        self.assertEqual(
+            [sum(tensor.nbytes for tensor in shard) for shard in shards],
+            [4_255_968_256, 4_205_595_392, 4_205_595_392, 503_374_080],
+        )
+        self.assertTrue(
+            all(
+                sum(tensor.nbytes for tensor in shard) <= DEFAULT_MAX_SHARD_SIZE
+                for shard in shards
+            )
+        )
+        self.assertEqual(shards[0][0].name, "embedding_layer.weight")
+        self.assertEqual(shards[-1][-1].name, "blocks.31.post_norm.scale")
+
+    def test_registry_metadata_identifies_the_runtime_abi_and_model(self) -> None:
         one_b = load_config(CONFIG_DIR / "evo2-1b-8k.yml")
         metadata = config_metadata(one_b, "checkpoint.pt", 123)
         self.assertEqual(metadata["model.id"], "evo2_1b_base")
@@ -87,8 +112,8 @@ class ConverterTests(unittest.TestCase):
         self.assertTrue(metadata["conversion.exact_widen_norm_to_f32"])
 
         forty_b = config_metadata(load_config(CONFIG), "evo2_40b.pt", 82_253_491_694)
-        self.assertNotIn("model.id", forty_b)
-        self.assertNotIn("hyena_projection_weight_dtype", forty_b)
+        self.assertEqual(forty_b["model.id"], "evo2_40b")
+        self.assertEqual(forty_b["runtime.abi"], "evo2-safetensors-v1")
         self.assertEqual(forty_b["hyena_projection_dtype"], "E4M3_SW")
 
     def test_every_registry_profile_rejects_dimension_corruption(self) -> None:
@@ -177,7 +202,7 @@ class ConverterTests(unittest.TestCase):
             "config.layers": [0, 3],
             "fixture.opaque": b"\x00\xff",
         }
-        path = WORK_DIR / "roundtrip.evo2"
+        path = WORK_DIR / "roundtrip.safetensors"
         write_model(path, metadata, tensors, chunk_size=3, force=True)
 
         inspected = subprocess.run(
@@ -186,8 +211,10 @@ class ConverterTests(unittest.TestCase):
             text=True,
             capture_output=True,
         ).stdout
-        self.assertIn("format=EVO2C version=1", inspected)
-        self.assertIn("checksum=ok", inspected)
+        self.assertIn(
+            "format=SAFETENSORS profile=evo2-runtime-v1", inspected
+        )
+        self.assertIn("validation=ok", inspected)
         self.assertIn("metadata model.name type=string value=tiny-evo2", inspected)
         self.assertIn("metadata config.tie_embeddings type=bool value=true", inspected)
         self.assertIn("tensor_count=2", inspected)
@@ -195,32 +222,107 @@ class ConverterTests(unittest.TestCase):
         self.assertIn("tensor norm.scale dtype=F32 shape=[2]", inspected)
 
         raw = path.read_bytes()
-        table_offset = struct.unpack_from("<Q", raw, 48)[0]
-        first_offset, first_size = struct.unpack_from("<QQ", raw, table_offset + 168)
-        second_offset, second_size = struct.unpack_from("<QQ", raw, table_offset + 256 + 168)
-        self.assertEqual(raw[first_offset : first_offset + first_size], bf16)
-        self.assertEqual(raw[second_offset : second_offset + second_size], f32)
-        self.assertEqual(first_offset % 64, 0)
-        self.assertEqual(second_offset % 64, 0)
+        header_size = struct.unpack_from("<Q", raw)[0]
+        header = json.loads(raw[8 : 8 + header_size])
+        data_offset = 8 + header_size
+        first_begin, first_end = header["embedding_layer.weight"]["data_offsets"]
+        second_begin, second_end = header["norm.scale"]["data_offsets"]
+        self.assertEqual(header["embedding_layer.weight"]["dtype"], "BF16")
+        self.assertEqual(header["norm.scale"]["dtype"], "F32")
+        self.assertEqual(
+            header["__metadata__"]["evo2.profile"], "s:evo2-runtime-v1"
+        )
+        self.assertEqual(raw[data_offset + first_begin : data_offset + first_end], bf16)
+        self.assertEqual(raw[data_offset + second_begin : data_offset + second_end], f32)
+        self.assertEqual(first_end, second_begin)
 
     def test_writer_refuses_overwrite_and_duplicate_names(self) -> None:
         source = BytesTensorSource("x", "BF16", (1,), b"\x00\x00")
-        path = WORK_DIR / "overwrite.evo2"
+        path = WORK_DIR / "overwrite.safetensors"
         write_model(path, {"model.name": "first"}, [source], force=True)
         original = path.read_bytes()
         with self.assertRaises(FileExistsError):
             write_model(path, {"model.name": "second"}, [source])
         self.assertEqual(path.read_bytes(), original)
-        with self.assertRaisesRegex(FormatError, "duplicate tensor name"):
-            write_model(WORK_DIR / "duplicate.evo2", {}, [source, source])
+        with self.assertRaisesRegex(FormatError, "duplicate or reserved tensor name"):
+            write_model(
+                WORK_DIR / "duplicate.safetensors", {}, [source, source]
+            )
+
+    def test_writer_size_shards_use_the_standard_index_contract(self) -> None:
+        tensors: list[TensorSource] = [
+            BytesTensorSource("embedding_layer.weight", "BF16", (2,), b"\x00" * 4),
+            BytesTensorSource("blocks.0.weight", "BF16", (3,), b"\x01" * 6),
+            BytesTensorSource("blocks.1.weight", "F32", (2,), b"\x02" * 8),
+        ]
+        output = WORK_DIR / "sharded-model.safetensors"
+        load_path = write_model(
+            output,
+            {"model.name": "sharded"},
+            tensors,
+            max_shard_size=10,
+            force=True,
+        )
+
+        self.assertEqual(load_path, output.with_name("sharded-model.safetensors.index.json"))
+        index = json.loads(load_path.read_text(encoding="ascii"))
+        self.assertEqual(index["metadata"], {"total_size": 18})
+        self.assertEqual(
+            index["weight_map"],
+            {
+                "embedding_layer.weight": "sharded-model-00001-of-00002.safetensors",
+                "blocks.0.weight": "sharded-model-00001-of-00002.safetensors",
+                "blocks.1.weight": "sharded-model-00002-of-00002.safetensors",
+            },
+        )
+        self.assertFalse(output.exists())
+        for shard in set(index["weight_map"].values()):
+            self.assertTrue((output.parent / shard).is_file())
+
+        inspected = subprocess.run(
+            [str(INSPECTOR), str(load_path)],
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout
+        self.assertIn("shards=2", inspected)
+        self.assertIn("tensor_count=3", inspected)
+        self.assertIn("tensor blocks.1.weight dtype=F32 shape=[2]", inspected)
+
+        bad_index = json.loads(load_path.read_text(encoding="ascii"))
+        bad_index["metadata"]["total_size"] += 1
+        bad_total_path = output.with_name("bad-total.safetensors.index.json")
+        bad_total_path.write_text(json.dumps(bad_index), encoding="ascii")
+        rejected = subprocess.run(
+            [str(INSPECTOR), str(bad_total_path)],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("total_size does not match", rejected.stderr)
+
+        bad_index = json.loads(load_path.read_text(encoding="ascii"))
+        first_name = next(iter(bad_index["weight_map"]))
+        bad_index["weight_map"][first_name] = "../outside.safetensors"
+        bad_path_path = output.with_name("bad-path.safetensors.index.json")
+        bad_path_path.write_text(json.dumps(bad_index), encoding="ascii")
+        rejected = subprocess.run(
+            [str(INSPECTOR), str(bad_path_path)],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("invalid shard filename", rejected.stderr)
 
     def test_writer_rejects_short_and_long_streams(self) -> None:
         short = BrokenTensorSource("short", "BF16", (2,), 4, (b"\x00\x00",))
         long = BrokenTensorSource("long", "BF16", (2,), 4, (b"\x00" * 5,))
         with self.assertRaisesRegex(FormatError, "yielded 2 bytes"):
-            write_model(WORK_DIR / "short.evo2", {}, [short])
+            write_model(WORK_DIR / "short.safetensors", {}, [short])
         with self.assertRaisesRegex(FormatError, "yielded more bytes"):
-            write_model(WORK_DIR / "long.evo2", {}, [long])
+            write_model(WORK_DIR / "long.safetensors", {}, [long])
 
 
 def parse_args() -> argparse.Namespace:

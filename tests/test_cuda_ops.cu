@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <cuda_bf16.h>
@@ -108,8 +109,7 @@ float bits_float(const std::uint32_t bits) {
 }
 
 int normal_exponent_reference(const float value) {
-  return static_cast<int>((float_bits(std::abs(value)) >> 23U) & 0xffU) -
-         127;
+  return static_cast<int>((float_bits(std::abs(value)) >> 23U) & 0xffU) - 127;
 }
 
 std::int32_t align_reference(const float value, const int operand_exponent,
@@ -119,13 +119,12 @@ std::int32_t align_reference(const float value, const int operand_exponent,
     return 0;
   const auto bits = float_bits(value);
   const auto magnitude = bits & 0x7fffffffU;
-  std::uint32_t significand =
-      (magnitude & 0x7fffffU) | 0x800000U;
+  std::uint32_t significand = (magnitude & 0x7fffffU) | 0x800000U;
   if (denormalized_product) {
     const int normalized_exponent =
         static_cast<int>((magnitude >> 23U) & 0xffU) - 127;
-    significand <<= static_cast<unsigned int>(
-        normalized_exponent - operand_exponent);
+    significand <<=
+        static_cast<unsigned int>(normalized_exponent - operand_exponent);
   }
   significand >>= 10U;
   const int shift = maximum_exponent - operand_exponent;
@@ -139,21 +138,18 @@ std::int32_t align_reference(const float value, const int operand_exponent,
 
 float h100_qgmma_reference(const std::vector<float> &input,
                            const std::vector<float> &weight,
-                           const std::size_t offset,
-                           const std::size_t inner) {
+                           const std::size_t offset, const std::size_t inner) {
   float accumulator = 0.0F;
   for (std::size_t start = 0; start < inner; start += 32U) {
     int maximum_exponent =
-        accumulator == 0.0F ? -1024
-                            : normal_exponent_reference(accumulator);
+        accumulator == 0.0F ? -1024 : normal_exponent_reference(accumulator);
     for (std::size_t index = 0; index < 32U; ++index) {
       const float left = input[start + index];
       const float right = weight[offset + start + index];
       if (left != 0.0F && right != 0.0F) {
         maximum_exponent =
-            std::max(maximum_exponent,
-                     normal_exponent_reference(left) +
-                         normal_exponent_reference(right));
+            std::max(maximum_exponent, normal_exponent_reference(left) +
+                                           normal_exponent_reference(right));
       }
     }
     std::int32_t aligned_sum =
@@ -166,19 +162,18 @@ float h100_qgmma_reference(const std::vector<float> &input,
       const float left = input[start + index];
       const float right = weight[offset + start + index];
       if (left != 0.0F && right != 0.0F) {
-        const int exponent = normal_exponent_reference(left) +
-                             normal_exponent_reference(right);
-        aligned_sum += align_reference(left * right, exponent,
-                                       maximum_exponent, true);
+        const int exponent =
+            normal_exponent_reference(left) + normal_exponent_reference(right);
+        aligned_sum +=
+            align_reference(left * right, exponent, maximum_exponent, true);
       }
     }
     accumulator =
         aligned_sum == 0
             ? 0.0F
-            : bits_float(
-                  float_bits(std::ldexp(static_cast<float>(aligned_sum),
-                                       maximum_exponent - 13)) &
-                  0xfffffc00U);
+            : bits_float(float_bits(std::ldexp(static_cast<float>(aligned_sum),
+                                               maximum_exponent - 13)) &
+                         0xfffffc00U);
   }
   return accumulator;
 }
@@ -224,9 +219,11 @@ void test_linear(const int device, const evo2c::cuda::Stream &stream,
   const auto weight_bf16 =
       to_bf16(values(output_width * input_width, 17, 17.0F));
   const auto bias_bf16 = to_bf16(values(output_width, 29, 23.0F));
+  const auto second_bias_bf16 = to_bf16(values(output_width, 31, 19.0F));
   const auto input_f32 = to_float(input_bf16);
   const auto weight_f32 = to_float(weight_bf16);
   const auto bias_f32 = to_float(bias_bf16);
+  const auto second_bias_f32 = to_float(second_bias_bf16);
 
   auto input = upload(device, input_bf16.data(),
                       input_bf16.size() * sizeof(input_bf16[0]), stream);
@@ -234,8 +231,12 @@ void test_linear(const int device, const evo2c::cuda::Stream &stream,
                        weight_bf16.size() * sizeof(weight_bf16[0]), stream);
   auto bias = upload(device, bias_bf16.data(),
                      bias_bf16.size() * sizeof(bias_bf16[0]), stream);
+  auto second_bias =
+      upload(device, second_bias_bf16.data(),
+             second_bias_bf16.size() * sizeof(second_bias_bf16[0]), stream);
   evo2c::cuda::DeviceBuffer output;
   evo2c::cuda::DeviceBuffer workspace;
+  evo2c::cuda::Bf16LinearPlan plan;
   require(output.allocate(device, rows * output_width * sizeof(__nv_bfloat16)),
           "linear output");
   require(workspace.allocate(device, evo2c::cuda::kDefaultBlasWorkspaceBytes),
@@ -243,8 +244,10 @@ void test_linear(const int device, const evo2c::cuda::Stream &stream,
 
   require(evo2c::cuda::bf16_linear(blas, input, weight, nullptr, rows,
                                    input_width, output_width, &output,
-                                   &workspace, stream),
+                                   &workspace, stream, &plan),
           "BF16 linear");
+  check(plan.build_count() == 1,
+        "first BF16 linear call builds exactly one cuBLASLt plan");
   std::vector<float> expected;
   require(evo2c::cpu::linear(input_f32, rows, input_width, weight_f32,
                              output_width, nullptr, &expected),
@@ -254,30 +257,86 @@ void test_linear(const int device, const evo2c::cuda::Stream &stream,
         "cuBLASLt BF16 linear matches F32 reference");
   check(cosine(actual, expected) >= 0.999F,
         "cuBLASLt BF16 linear cosine is at least 0.999");
+  const auto first_actual = actual;
+
+  require(evo2c::cuda::bf16_linear(blas, input, weight, nullptr, rows,
+                                   input_width, output_width, &output,
+                                   &workspace, stream, &plan),
+          "repeat BF16 linear");
+  check(plan.build_count() == 1,
+        "same-shape BF16 linear reuses its cuBLASLt plan");
+  check(download_bf16(output, rows * output_width, stream) == first_actual,
+        "same-shape cached BF16 linear is bit deterministic");
+
+  require(evo2c::cuda::bf16_add_bias_inplace(&output, bias, rows, output_width,
+                                             stream),
+          "separate BF16 broadcast bias add");
+  std::vector<float> separately_rounded(rows * output_width);
+  for (std::size_t index = 0; index < separately_rounded.size(); ++index) {
+    separately_rounded[index] =
+        first_actual[index] + bias_f32[index % output_width];
+  }
+  const auto separately_rounded_bf16 = to_bf16(separately_rounded);
+  check(download_bf16(output, rows * output_width, stream) ==
+            to_float(separately_rounded_bf16),
+        "broadcast bias add rounds after the bias operation");
 
   require(evo2c::cuda::bf16_linear(blas, input, weight, &bias, rows,
                                    input_width, output_width, &output,
-                                   &workspace, stream),
+                                   &workspace, stream, &plan),
           "BF16 biased linear");
+  check(plan.build_count() == 2,
+        "changing the epilogue rebuilds the cuBLASLt plan");
   require(evo2c::cpu::linear(input_f32, rows, input_width, weight_f32,
                              output_width, &bias_f32, &expected),
           "CPU biased linear reference");
   actual = download_bf16(output, rows * output_width, stream);
   check(all_close(actual, expected, 0.03F, 0.02F),
         "cuBLASLt BF16 biased linear matches F32 reference");
+
+  require(evo2c::cuda::bf16_linear(blas, input, weight, &second_bias, rows,
+                                   input_width, output_width, &output,
+                                   &workspace, stream, &plan),
+          "BF16 biased linear reuses cached plan with another bias");
+  require(evo2c::cpu::linear(input_f32, rows, input_width, weight_f32,
+                             output_width, &second_bias_f32, &expected),
+          "CPU second biased linear reference");
+  actual = download_bf16(output, rows * output_width, stream);
+  check(all_close(actual, expected, 0.03F, 0.02F),
+        "cached cuBLASLt plan updates its bias pointer");
+  check(plan.build_count() == 2,
+        "changing only the bias pointer reuses the cuBLASLt plan");
+
+  constexpr std::size_t shorter_rows = rows - 1;
+  require(evo2c::cuda::bf16_linear(blas, input, weight, nullptr, shorter_rows,
+                                   input_width, output_width, &output,
+                                   &workspace, stream, &plan),
+          "different-row BF16 linear");
+  check(plan.build_count() == 3,
+        "changing matrix dimensions rebuilds the cuBLASLt plan");
+  const std::vector<float> shorter_input(
+      input_f32.begin(), input_f32.begin() + static_cast<std::ptrdiff_t>(
+                                                 shorter_rows * input_width));
+  require(evo2c::cpu::linear(shorter_input, shorter_rows, input_width,
+                             weight_f32, output_width, nullptr, &expected),
+          "CPU different-row linear reference");
+  actual = download_bf16(output, shorter_rows * output_width, stream);
+  check(all_close(actual, expected, 0.02F, 0.02F),
+        "dimension-rebuilt cuBLASLt plan remains correct");
+
+  evo2c::cuda::Bf16LinearPlan moved = std::move(plan);
+  check(moved.build_count() == 3 && plan.build_count() == 0,
+        "moving a BF16 linear plan transfers its build counter");
 }
 
-void test_software_e4m3(const int device,
-                        const evo2c::cuda::Stream &stream) {
+void test_software_e4m3(const int device, const evo2c::cuda::Stream &stream) {
   const std::vector<float> values{
-      -448.0F,       -432.0F,      -416.0F,       -1.25F,
-      -1.1875F,      -1.125F,      -1.0625F,      -1.0F,
-      -0.5F,         -0.015625F,   -0.00390625F,  -0.001953125F,
-      -0.0009765625F, -0.0F,        0.0F,           0.0009765625F,
-      0.001953125F,  0.0029296875F, 0.00390625F,   0.015625F,
-      0.5F,          1.0F,         1.0625F,        1.125F,
-      1.1875F,       1.25F,        416.0F,         432.0F,
-      448.0F,
+      -448.0F,       -432.0F,       -416.0F,        -1.25F,      -1.1875F,
+      -1.125F,       -1.0625F,      -1.0F,          -0.5F,       -0.015625F,
+      -0.00390625F,  -0.001953125F, -0.0009765625F, -0.0F,       0.0F,
+      0.0009765625F, 0.001953125F,  0.0029296875F,  0.00390625F, 0.015625F,
+      0.5F,          1.0F,          1.0625F,        1.125F,      1.1875F,
+      1.25F,         416.0F,        432.0F,         448.0F,
   };
   const std::vector<std::uint8_t> expected_codes{
       0xfe, 0xfe, 0xfd, 0xba, 0xba, 0xb9, 0xb8, 0xb8, 0xb0, 0x88,
@@ -301,7 +360,8 @@ void test_software_e4m3(const int device,
   require(codes.copy_to_host(actual_codes.data(), actual_codes.size(), stream),
           "download E4M3 codes");
   require(dequantized.copy_to_host(actual_values.data(),
-                                   actual_values.size() * sizeof(float), stream),
+                                   actual_values.size() * sizeof(float),
+                                   stream),
           "download E4M3 values");
   require(stream.synchronize(), "synchronize E4M3 outputs");
   check(actual_codes == expected_codes,
@@ -325,8 +385,8 @@ void test_software_e4m3(const int device,
   require(stream.synchronize(), "synchronize F32 E4M3 codes");
   check(actual_f32_codes == expected_codes,
         "20B F32 projection quantizer matches E4M3 bit vectors exactly");
-  check(!evo2c::cuda::software_e4m3_quantize_bf16(
-             input, values.size(), 0.0F, nullptr, &dequantized, stream)
+  check(!evo2c::cuda::software_e4m3_quantize_bf16(input, values.size(), 0.0F,
+                                                  nullptr, &dequantized, stream)
              .ok(),
         "software E4M3 rejects a zero scale");
 }
@@ -340,8 +400,7 @@ void test_software_h100_qgmma(const int device,
   constexpr float weight_scale = 3.25F;
   constexpr float output_scale = 0.03125F;
   const auto input_bf16 = to_bf16(values(rows * inner, 41, 13.0F));
-  const auto weight_bf16 =
-      to_bf16(values(columns * inner, 73, 17.0F));
+  const auto weight_bf16 = to_bf16(values(columns * inner, 73, 17.0F));
   auto input = upload(device, input_bf16.data(),
                       input_bf16.size() * sizeof(input_bf16[0]), stream);
   auto weight = upload(device, weight_bf16.data(),
@@ -349,19 +408,17 @@ void test_software_h100_qgmma(const int device,
   evo2c::cuda::DeviceBuffer payload;
   evo2c::cuda::DeviceBuffer input_codes;
   evo2c::cuda::DeviceBuffer output;
-  require(payload.allocate(device, weight_bf16.size()),
-          "QGMMA weight payload");
+  require(payload.allocate(device, weight_bf16.size()), "QGMMA weight payload");
   require(input_codes.allocate(device, input_bf16.size()),
           "QGMMA input-code workspace");
-  require(output.allocate(device,
-                          rows * columns * sizeof(__nv_bfloat16)),
+  require(output.allocate(device, rows * columns * sizeof(__nv_bfloat16)),
           "QGMMA output");
   require(evo2c::cuda::software_e4m3_quantize_bf16_codes(
               weight, weight_bf16.size(), weight_scale, &payload, stream),
           "QGMMA weight quantization");
   require(evo2c::cuda::software_e4m3_h100_linear(
-              input, payload, rows, inner, columns, input_scale,
-              output_scale, &input_codes, &output, stream),
+              input, payload, rows, inner, columns, input_scale, output_scale,
+              &input_codes, &output, stream),
           "software H100 QGMMA");
   const auto actual = download_bf16(output, rows * columns, stream);
 
@@ -369,8 +426,7 @@ void test_software_h100_qgmma(const int device,
   quantized_weight.reserve(weight_bf16.size());
   for (const auto value : weight_bf16) {
     quantized_weight.push_back(evo2c::fp8::decode_e4m3fn(
-        evo2c::fp8::encode_e4m3fn(
-            __bfloat162float(value) * weight_scale)));
+        evo2c::fp8::encode_e4m3fn(__bfloat162float(value) * weight_scale)));
   }
   std::vector<float> expected;
   expected.reserve(rows * columns);
@@ -378,23 +434,23 @@ void test_software_h100_qgmma(const int device,
     std::vector<float> quantized_input;
     quantized_input.reserve(inner);
     for (std::size_t index = 0; index < inner; ++index) {
-      quantized_input.push_back(evo2c::fp8::decode_e4m3fn(
-          evo2c::fp8::encode_e4m3fn(
+      quantized_input.push_back(
+          evo2c::fp8::decode_e4m3fn(evo2c::fp8::encode_e4m3fn(
               __bfloat162float(input_bf16[row * inner + index]) *
               input_scale)));
     }
     for (std::size_t column = 0; column < columns; ++column) {
-      const float raw = h100_qgmma_reference(
-          quantized_input, quantized_weight, column * inner, inner);
+      const float raw = h100_qgmma_reference(quantized_input, quantized_weight,
+                                             column * inner, inner);
       expected.push_back(
           __bfloat162float(__float2bfloat16_rn(raw * output_scale)));
     }
   }
-  check(actual == expected,
-        "sm80 software QGMMA is bit exact against the H100 global-alignment oracle");
+  check(actual == expected, "sm80 software QGMMA is bit exact against the H100 "
+                            "global-alignment oracle");
   require(evo2c::cuda::software_e4m3_h100_linear(
-              input, payload, 1, inner, columns, input_scale,
-              output_scale, &input_codes, &output, stream),
+              input, payload, 1, inner, columns, input_scale, output_scale,
+              &input_codes, &output, stream),
           "software H100 QGMMA decode tile");
   const auto decode_actual = download_bf16(output, columns, stream);
   check(decode_actual ==
@@ -484,6 +540,43 @@ void test_elementwise(const int device, const evo2c::cuda::Stream &stream) {
         "BF16 residual add handles non-multiple tail");
 }
 
+void test_pytorch_gelu_toolkit_independence(const int device,
+                                            const evo2c::cuda::Stream &stream) {
+  const std::vector<unsigned short> input_bits{0xc049, 0xc081, 0xc089, 0xc092,
+                                               0xc0a0, 0xc0a8, 0xc0ab};
+  const std::vector<unsigned short> expected_bits{
+      0xbb2d, 0xb8eb, 0xb827, 0xb742, 0xb5c8, 0xb4fc, 0xb4ab};
+  std::vector<__nv_bfloat16> input;
+  std::vector<__nv_bfloat16> expected;
+  std::vector<__nv_bfloat16> ones;
+  input.reserve(input_bits.size());
+  expected.reserve(expected_bits.size());
+  ones.reserve(input_bits.size());
+  for (const auto bits : input_bits) {
+    input.push_back(__ushort_as_bfloat16(bits));
+    ones.push_back(__float2bfloat16(1.0F));
+  }
+  for (const auto bits : expected_bits)
+    expected.push_back(__ushort_as_bfloat16(bits));
+  auto input_device =
+      upload(device, input.data(), input.size() * sizeof(input[0]), stream);
+  auto ones_device =
+      upload(device, ones.data(), ones.size() * sizeof(ones[0]), stream);
+  evo2c::cuda::DeviceBuffer output;
+  require(output.allocate(device, input.size() * sizeof(input[0])),
+          "allocate exact GELU output");
+  require(evo2c::cuda::bf16_gelu(input_device, input.size(), &output, stream),
+          "exact standalone GELU");
+  check(download_bf16(output, input.size(), stream) == to_float(expected),
+        "standalone GELU matches pinned PyTorch bits across CUDA toolkits");
+  require(evo2c::cuda::bf16_gated_elementwise(
+              input_device, ones_device, input.size(),
+              evo2c::cuda::GatedActivation::kGelu, &output, stream),
+          "exact gated GELU");
+  check(download_bf16(output, input.size(), stream) == to_float(expected),
+        "gated GELU matches pinned PyTorch bits across CUDA toolkits");
+}
+
 void test_mlp(const int device, const evo2c::cuda::Stream &stream,
               const evo2c::cuda::BlasLt &blas) {
   constexpr std::size_t rows = 3;
@@ -563,6 +656,7 @@ int main() {
     test_software_h100_qgmma(device, stream);
     test_rms_norm(device, stream);
     test_elementwise(device, stream);
+    test_pytorch_gelu_toolkit_independence(device, stream);
     test_mlp(device, stream, blas);
     require(stream.synchronize(), "final stream synchronize");
     require(evo2c::cuda::synchronize_device(), "final device synchronize");

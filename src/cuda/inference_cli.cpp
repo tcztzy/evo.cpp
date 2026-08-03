@@ -239,9 +239,8 @@ Status log_probability(const float *const logits, const std::size_t vocab_size,
   }
   double normalizer = 0.0;
   for (std::size_t token = 0; token < vocab_size; ++token) {
-    normalizer +=
-        std::exp(static_cast<double>(logits[token]) -
-                 static_cast<double>(maximum));
+    normalizer += std::exp(static_cast<double>(logits[token]) -
+                           static_cast<double>(maximum));
   }
   if (!std::isfinite(normalizer) || normalizer <= 0.0) {
     return {ErrorCode::kInternal, "score log-softmax normalization failed"};
@@ -285,7 +284,7 @@ Status prefill_in_chunks(const std::vector<TokenId> &tokens,
                          const std::size_t token_count,
                          const std::optional<LayerDump> &dump,
                          const bool collect_all_logits,
-                         PipelineModel *const model,
+                         const bool cached_initial, PipelineModel *const model,
                          std::vector<float> *const logits,
                          Metrics *const metrics) {
   if (model == nullptr || logits == nullptr || metrics == nullptr ||
@@ -295,6 +294,12 @@ Status prefill_in_chunks(const std::vector<TokenId> &tokens,
             "chunked prefill arguments are invalid"};
   }
   const std::size_t chunk_capacity = model->activation_capacity();
+  if (cached_initial && token_count > chunk_capacity) {
+    return {ErrorCode::kInvalidArgument,
+            "exact cached prefill must fit one activation chunk; lower "
+            "--force-prompt-threshold to at most " +
+                std::to_string(chunk_capacity)};
+  }
   if (dump.has_value() && token_count > chunk_capacity) {
     return {ErrorCode::kInvalidArgument,
             "--dump-layer is unavailable when prefill spans multiple "
@@ -322,9 +327,15 @@ Status prefill_in_chunks(const std::vector<TokenId> &tokens,
         tokens.begin() + static_cast<std::ptrdiff_t>(offset + chunk_size));
     std::vector<float> chunk_logits;
     const auto start = Clock::now();
-    const auto status =
-        first ? model->prefill(chunk, &chunk_logits, dump)
-              : model->prefill_chunk(chunk, &chunk_logits);
+    const auto status = [&]() {
+      if (first && cached_initial) {
+        return dump.has_value() ? model->prefill_cached_with_dumps(
+                                      chunk, &chunk_logits, {*dump})
+                                : model->prefill_cached(chunk, &chunk_logits);
+      }
+      return first ? model->prefill(chunk, &chunk_logits, dump)
+                   : model->prefill_chunk(chunk, &chunk_logits);
+    }();
     metrics->prefill_seconds += seconds_since(start);
     metrics->prefill_tokens += chunk_size;
     if (!status.ok()) {
@@ -349,14 +360,17 @@ Status prefill_in_chunks(const std::vector<TokenId> &tokens,
 
 Status run_generate(const CliOptions &options, PipelineModel *const model,
                     MemoryTracker *const memory, Metrics *const metrics) {
+  constexpr std::size_t kOfficialForcePromptThreshold = 3000;
   const auto prompt = encode_bytes(options.prompt);
+  const std::size_t default_threshold =
+      std::min(kOfficialForcePromptThreshold, model->activation_capacity());
   const std::size_t prefill_tokens =
       std::min(prompt.size(),
-               options.force_prompt_threshold.value_or(prompt.size()));
+               options.force_prompt_threshold.value_or(default_threshold));
   std::vector<float> logits;
-  auto status = prefill_in_chunks(prompt, prefill_tokens,
-                                  make_layer_dump(options), false, model,
-                                  &logits, metrics);
+  auto status =
+      prefill_in_chunks(prompt, prefill_tokens, make_layer_dump(options), false,
+                        true, model, &logits, metrics);
   if (!status.ok()) {
     return {status.code(), "prompt prefill: " + status.message()};
   }
@@ -366,8 +380,7 @@ Status run_generate(const CliOptions &options, PipelineModel *const model,
   }
 
   const std::size_t vocab_size = model->config().vocab_size;
-  if (vocab_size != kTokenizerVocabSize ||
-      logits.size() < vocab_size ||
+  if (vocab_size != kTokenizerVocabSize || logits.size() < vocab_size ||
       logits.size() % vocab_size != 0) {
     return {ErrorCode::kModelFormat,
             "generation requires a 512-token vocabulary and complete final "
@@ -381,9 +394,9 @@ Status run_generate(const CliOptions &options, PipelineModel *const model,
     metrics->teacher_force_seconds += seconds_since(force_start);
     ++metrics->teacher_force_tokens;
     if (!status.ok()) {
-      return {status.code(),
-              "teacher-forced prompt token " + std::to_string(index) + ": " +
-                  status.message()};
+      return {status.code(), "teacher-forced prompt token " +
+                                 std::to_string(index) + ": " +
+                                 status.message()};
     }
   }
   status = memory->observe();
@@ -478,7 +491,7 @@ Status run_score(const CliOptions &options, PipelineModel *const model,
     }
     std::vector<float> logits;
     status = prefill_in_chunks(tokens, tokens.size(), make_layer_dump(options),
-                               true, model, &logits, metrics);
+                               true, false, model, &logits, metrics);
     if (!status.ok()) {
       return {status.code(),
               "score prefill for '" + record.name + "': " + status.message()};
@@ -584,10 +597,10 @@ Status run_inference_cli(const CliOptions &options,
 
   Metrics metrics;
   const auto load_start = Clock::now();
-  std::cerr << "evo2c: validating and mapping model '" << options.model_path
+  std::cerr << "evo2c: validating and opening model '" << options.model_path
             << "'\n";
-  ModelFile file;
-  status = file.open(options.model_path);
+  ModelFile model_file;
+  status = model_file.open(options.model_path);
   if (!status.ok()) {
     return status;
   }
@@ -598,7 +611,7 @@ Status run_inference_cli(const CliOptions &options,
   }
   std::cerr << '\n';
   PipelineModel model;
-  status = model.load(file, options.gpu_ids, options.context_size,
+  status = model.load(model_file, options.gpu_ids, options.context_size,
                       allow_test_fixture);
   metrics.model_load_seconds = seconds_since(load_start);
   if (!status.ok()) {

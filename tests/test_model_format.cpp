@@ -9,19 +9,14 @@
 #include <iostream>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 #include <fcntl.h>
 #include <unistd.h>
 
-#include "evo2c/crc32.hpp"
 #include "evo2c/model_format.hpp"
 
 namespace {
-
-constexpr std::size_t kHeaderCrcOffset = 80;
-constexpr std::size_t kDescriptorCrcOffset = 196;
 
 int failures = 0;
 
@@ -32,167 +27,62 @@ void check(const bool condition, const std::string_view description) {
   }
 }
 
-std::size_t align_up(const std::size_t value, const std::size_t alignment) {
-  return (value + alignment - 1) / alignment * alignment;
-}
-
-void write_u16(std::vector<std::uint8_t>& bytes,
-               const std::size_t offset,
-               const std::uint16_t value) {
-  bytes.at(offset) = static_cast<std::uint8_t>(value);
-  bytes.at(offset + 1) = static_cast<std::uint8_t>(value >> 8U);
-}
-
-void write_u32(std::vector<std::uint8_t>& bytes,
-               const std::size_t offset,
-               const std::uint32_t value) {
-  for (std::size_t byte = 0; byte < 4; ++byte) {
-    bytes.at(offset + byte) = static_cast<std::uint8_t>(value >> (8U * byte));
-  }
-}
-
-void write_u64(std::vector<std::uint8_t>& bytes,
-               const std::size_t offset,
-               const std::uint64_t value) {
+void append_u64(std::vector<std::uint8_t> *const bytes,
+                const std::uint64_t value) {
   for (std::size_t byte = 0; byte < 8; ++byte) {
-    bytes.at(offset + byte) = static_cast<std::uint8_t>(value >> (8U * byte));
+    bytes->push_back(static_cast<std::uint8_t>((value >> (byte * 8U)) & 0xffU));
   }
-}
-
-std::vector<std::uint8_t> u64_value(const std::initializer_list<std::uint64_t> values) {
-  std::vector<std::uint8_t> bytes(values.size() * 8, 0);
-  std::size_t offset = 0;
-  for (const auto value : values) {
-    write_u64(bytes, offset, value);
-    offset += 8;
-  }
-  return bytes;
-}
-
-void append_metadata_entry(std::vector<std::uint8_t>& metadata,
-                           const std::string_view key,
-                           const evo2c::MetadataType type,
-                           const std::vector<std::uint8_t>& value) {
-  const auto start = metadata.size();
-  metadata.resize(start + 8 + key.size() + value.size(), 0);
-  write_u16(metadata, start, static_cast<std::uint16_t>(key.size()));
-  metadata[start + 2] = static_cast<std::uint8_t>(type);
-  write_u32(metadata, start + 4, static_cast<std::uint32_t>(value.size()));
-  std::copy(key.begin(), key.end(), metadata.begin() + static_cast<std::ptrdiff_t>(start + 8));
-  std::copy(value.begin(), value.end(),
-            metadata.begin() + static_cast<std::ptrdiff_t>(start + 8 + key.size()));
-  metadata.resize(align_up(metadata.size(), 8), 0);
-}
-
-std::vector<std::uint8_t> build_metadata() {
-  std::vector<std::uint8_t> metadata(16, 0);
-  std::copy_n("META", 4, metadata.begin());
-  write_u16(metadata, 4, 1);
-
-  const std::string model_name = "tiny-evo2";
-  append_metadata_entry(metadata, "model.name", evo2c::MetadataType::kString,
-                        {model_name.begin(), model_name.end()});
-  append_metadata_entry(metadata, "config.hidden_size", evo2c::MetadataType::kU64,
-                        u64_value({4}));
-  append_metadata_entry(metadata, "config.tie_embeddings", evo2c::MetadataType::kBool,
-                        {1});
-  append_metadata_entry(metadata, "config.layers", evo2c::MetadataType::kU64List,
-                        u64_value({0, 3}));
-  write_u32(metadata, 8, 4);
-  write_u32(metadata, 12, evo2c::crc32(metadata.data() + 16, metadata.size() - 16));
-  return metadata;
-}
-
-void set_descriptor_crc(std::vector<std::uint8_t>& bytes, const std::size_t offset) {
-  write_u32(bytes, offset + kDescriptorCrcOffset, 0);
-  write_u32(bytes, offset + kDescriptorCrcOffset,
-            evo2c::crc32(bytes.data() + offset, evo2c::kTensorDescriptorSize));
-}
-
-void set_header_crc(std::vector<std::uint8_t>& bytes) {
-  write_u32(bytes, kHeaderCrcOffset, 0);
-  write_u32(bytes, kHeaderCrcOffset, evo2c::crc32(bytes.data(), evo2c::kModelHeaderSize));
 }
 
 struct Fixture final {
   std::vector<std::uint8_t> bytes;
-  std::size_t metadata_offset{evo2c::kModelHeaderSize};
-  std::size_t table_offset{0};
-  std::size_t first_payload_offset{0};
-  std::size_t second_payload_offset{0};
+  std::size_t data_offset{0};
 };
 
-void write_descriptor(std::vector<std::uint8_t>& bytes,
-                      const std::size_t descriptor_offset,
-                      const std::string_view name,
-                      const evo2c::TensorDType dtype,
-                      const std::initializer_list<std::uint64_t> dimensions,
-                      const std::size_t payload_offset,
-                      const std::vector<std::uint8_t>& payload) {
-  std::copy(name.begin(), name.end(),
-            bytes.begin() + static_cast<std::ptrdiff_t>(descriptor_offset));
-  bytes[descriptor_offset + 96] = static_cast<std::uint8_t>(dtype);
-  bytes[descriptor_offset + 97] = static_cast<std::uint8_t>(dimensions.size());
-  std::uint64_t elements = 1;
-  std::size_t dimension_index = 0;
-  for (const auto dimension : dimensions) {
-    write_u64(bytes, descriptor_offset + 104 + dimension_index * 8, dimension);
-    elements *= dimension;
-    ++dimension_index;
-  }
-  write_u64(bytes, descriptor_offset + 168, payload_offset);
-  write_u64(bytes, descriptor_offset + 176, payload.size());
-  write_u64(bytes, descriptor_offset + 184, elements);
-  write_u32(bytes, descriptor_offset + 192, evo2c::crc32(payload.data(), payload.size()));
-  set_descriptor_crc(bytes, descriptor_offset);
-}
-
-Fixture build_fixture() {
-  const auto metadata = build_metadata();
+Fixture make_fixture(std::string header,
+                     const std::vector<std::uint8_t> &payload) {
+  while (header.size() % 8 != 0)
+    header.push_back(' ');
   Fixture fixture;
-  fixture.table_offset = align_up(fixture.metadata_offset + metadata.size(), evo2c::kModelAlignment);
-  fixture.first_payload_offset = align_up(
-      fixture.table_offset + 2 * evo2c::kTensorDescriptorSize, evo2c::kModelAlignment);
-  fixture.second_payload_offset = align_up(fixture.first_payload_offset + 8, evo2c::kModelAlignment);
-  fixture.bytes.resize(fixture.second_payload_offset + 8, 0);
-
-  std::copy(metadata.begin(), metadata.end(),
-            fixture.bytes.begin() + static_cast<std::ptrdiff_t>(fixture.metadata_offset));
-  const std::vector<std::uint8_t> first_payload{0x80, 0x3f, 0x00, 0x40, 0x40, 0x40, 0x80, 0x40};
-  const std::vector<std::uint8_t> second_payload{0x00, 0x00, 0x80, 0x3f,
-                                                 0x00, 0x00, 0x00, 0x40};
-  std::copy(first_payload.begin(), first_payload.end(),
-            fixture.bytes.begin() + static_cast<std::ptrdiff_t>(fixture.first_payload_offset));
-  std::copy(second_payload.begin(), second_payload.end(),
-            fixture.bytes.begin() + static_cast<std::ptrdiff_t>(fixture.second_payload_offset));
-
-  write_descriptor(fixture.bytes, fixture.table_offset, "embed.weight",
-                   evo2c::TensorDType::kBF16, {2, 2}, fixture.first_payload_offset,
-                   first_payload);
-  write_descriptor(fixture.bytes, fixture.table_offset + evo2c::kTensorDescriptorSize,
-                   "blocks.0.scale", evo2c::TensorDType::kF32, {2},
-                   fixture.second_payload_offset, second_payload);
-
-  std::copy_n("EVO2C", 5, fixture.bytes.begin());
-  write_u32(fixture.bytes, 8, evo2c::kModelFormatVersion);
-  write_u32(fixture.bytes, 12, 0x01020304U);
-  write_u32(fixture.bytes, 16, evo2c::kModelHeaderSize);
-  write_u64(fixture.bytes, 24, fixture.bytes.size());
-  write_u64(fixture.bytes, 32, fixture.metadata_offset);
-  write_u64(fixture.bytes, 40, metadata.size());
-  write_u64(fixture.bytes, 48, fixture.table_offset);
-  write_u64(fixture.bytes, 56, 2);
-  write_u32(fixture.bytes, 64, evo2c::kTensorDescriptorSize);
-  write_u32(fixture.bytes, 68, evo2c::kModelAlignment);
-  write_u64(fixture.bytes, 72, fixture.first_payload_offset);
-  set_header_crc(fixture.bytes);
+  fixture.bytes.reserve(8 + header.size() + payload.size());
+  append_u64(&fixture.bytes, header.size());
+  fixture.bytes.insert(fixture.bytes.end(), header.begin(), header.end());
+  fixture.data_offset = fixture.bytes.size();
+  fixture.bytes.insert(fixture.bytes.end(), payload.begin(), payload.end());
   return fixture;
 }
 
+std::string
+metadata_json(const std::string_view profile = "s:evo2-runtime-v1") {
+  return "\"__metadata__\":{"
+         "\"evo2.profile\":\"" +
+         std::string{profile} +
+         "\","
+         "\"model.name\":\"s:tiny-evo2\","
+         "\"config.hidden_size\":\"u:4\","
+         "\"config.tie_embeddings\":\"b:1\","
+         "\"config.layers\":\"l:0,3\","
+         "\"config.eps\":\"f:3eb0c6f7a0b5ed8d\","
+         "\"fixture.opaque\":\"x:00ff\"}";
+}
+
+Fixture valid_fixture() {
+  const std::string header =
+      "{" + metadata_json() +
+      ",\"embed.weight\":{\"dtype\":\"BF16\",\"shape\":[2,2],"
+      "\"data_offsets\":[0,8]},"
+      "\"blocks.0.scale\":{\"dtype\":\"F32\",\"shape\":[2],"
+      "\"data_offsets\":[8,16]}}";
+  return make_fixture(header, {0x80, 0x3f, 0x00, 0x40, 0x40, 0x40, 0x80, 0x40,
+                               0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x40});
+}
+
 class TemporaryFile final {
- public:
+public:
   TemporaryFile() {
-    auto pattern = (std::filesystem::temp_directory_path() / "evo2c-format-XXXXXX").string();
+    auto pattern =
+        (std::filesystem::temp_directory_path() / "evo2c-safetensors-XXXXXX")
+            .string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
     const int descriptor = ::mkstemp(writable.data());
@@ -209,132 +99,145 @@ class TemporaryFile final {
     std::filesystem::remove(path_, error);
   }
 
-  TemporaryFile(const TemporaryFile&) = delete;
-  TemporaryFile& operator=(const TemporaryFile&) = delete;
+  TemporaryFile(const TemporaryFile &) = delete;
+  TemporaryFile &operator=(const TemporaryFile &) = delete;
 
-  [[nodiscard]] const std::string& path() const noexcept { return path_; }
+  [[nodiscard]] const std::string &path() const noexcept { return path_; }
 
- private:
+private:
   std::string path_;
 };
 
-bool write_file(const std::string& path, const std::vector<std::uint8_t>& bytes) {
+bool write_file(const std::string &path,
+                const std::vector<std::uint8_t> &bytes) {
   std::ofstream output(path, std::ios::binary | std::ios::trunc);
-  output.write(reinterpret_cast<const char*>(bytes.data()),
+  output.write(reinterpret_cast<const char *>(bytes.data()),
                static_cast<std::streamsize>(bytes.size()));
   return output.good();
 }
 
-void expect_failure(const std::vector<std::uint8_t>& bytes,
+void expect_failure(const Fixture &fixture,
                     const std::string_view expected_message) {
   TemporaryFile file;
-  check(write_file(file.path(), bytes), "write corrupted fixture");
+  check(write_file(file.path(), fixture.bytes), "write invalid fixture");
   evo2c::ModelFile model;
   const auto status = model.open(file.path());
-  check(!status.ok(), "corrupted model is rejected");
+  check(!status.ok(), "invalid Safetensors file is rejected");
   check(status.code() == evo2c::ErrorCode::kModelFormat,
-        "corrupted model returns model_format error");
+        "invalid Safetensors file returns model_format");
   check(status.message().find(expected_message) != std::string::npos,
-        std::string{"corruption error explains "} + std::string{expected_message});
+        std::string{"failure explains "} + std::string{expected_message});
 }
 
-void test_valid_fixture(const Fixture& fixture) {
+void test_valid_fixture(const Fixture &fixture) {
   TemporaryFile file;
   check(write_file(file.path(), fixture.bytes), "write valid fixture");
   evo2c::ModelFile model;
   const auto status = model.open(file.path());
   check(status.ok(), std::string{"valid fixture loads: "} + status.message());
-  if (!status.ok()) {
+  if (!status.ok())
     return;
-  }
-  check(model.version() == 1, "format version parsed");
-  check(model.file_size() == fixture.bytes.size(), "file size parsed");
-  check(model.metadata().size() == 4, "all metadata entries parsed");
-  check(model.tensors().size() == 2, "all tensor descriptors parsed");
 
-  const auto* model_name = model.find_metadata("model.name");
-  check(model_name != nullptr, "metadata lookup finds model.name");
-  if (model_name != nullptr) {
-    check(evo2c::metadata_value_text(*model_name) == "tiny-evo2",
-          "string metadata value parsed");
-  }
-  const auto* tensor = model.find_tensor("embed.weight");
-  check(tensor != nullptr, "tensor lookup finds embed.weight");
-  if (tensor != nullptr) {
-    check(tensor->dtype == evo2c::TensorDType::kBF16, "tensor dtype parsed");
-    check(tensor->rank == 2 && tensor->dimensions[0] == 2 && tensor->dimensions[1] == 2,
-          "tensor shape parsed");
-    check(model.tensor_data(*tensor) != nullptr, "verified tensor payload is accessible");
-  }
+  check(model.format_name() == "SAFETENSORS", "format is Safetensors");
+  check(model.profile() == "evo2-runtime-v1", "runtime profile is exposed");
+  check(model.file_size() == fixture.bytes.size(), "file size is exposed");
+  check(model.metadata().size() == 7, "typed metadata entries are decoded");
+  check(model.tensors().size() == 2, "tensor descriptors are parsed");
+
+  const auto *const model_name = model.find_metadata("model.name");
+  check(model_name != nullptr &&
+            evo2c::metadata_value_text(*model_name) == "tiny-evo2",
+        "string metadata is decoded");
+  const auto *const layers = model.find_metadata("config.layers");
+  check(layers != nullptr && evo2c::metadata_value_text(*layers) == "[0,3]",
+        "list metadata is decoded");
+
+  const auto *const tensor = model.find_tensor("embed.weight");
+  check(tensor != nullptr, "tensor lookup succeeds");
+  if (tensor == nullptr)
+    return;
+  check(tensor->dtype == evo2c::TensorDType::kBF16, "tensor dtype is decoded");
+  check(tensor->rank == 2 && tensor->dimensions[0] == 2 &&
+            tensor->dimensions[1] == 2,
+        "tensor shape is decoded");
+  check(tensor->data_offset == fixture.data_offset,
+        "relative Safetensors offset becomes a mapped file offset");
+  check(model.tensor_data(*tensor) != nullptr,
+        "mapped tensor payload is directly addressable");
+  std::array<std::uint8_t, 3> range{};
+  auto read_status = model.read_tensor(*tensor, 2, range.data(), range.size());
+  check(read_status.ok(), "bounded tensor reads succeed");
+  check(std::equal(range.begin(), range.end(),
+                   fixture.bytes.begin() +
+                       static_cast<std::ptrdiff_t>(tensor->data_offset + 2)),
+        "bounded tensor reads are byte exact");
+  read_status = model.read_tensor(*tensor, tensor->data_size, range.data(), 1);
+  check(!read_status.ok(), "out-of-range tensor reads are rejected");
 }
 
-void test_corruption(const Fixture& fixture) {
-  auto bytes = fixture.bytes;
-  bytes[0] ^= 0xffU;
-  expect_failure(bytes, "bad magic");
+void test_invalid_files() {
+  auto fixture = valid_fixture();
+  fixture.bytes.resize(7);
+  expect_failure(fixture, "file is too short");
 
-  bytes = fixture.bytes;
-  bytes[kHeaderCrcOffset] ^= 0x01U;
-  expect_failure(bytes, "header CRC32 mismatch");
+  fixture = valid_fixture();
+  fixture.bytes[0] = 7;
+  std::fill(fixture.bytes.begin() + 1, fixture.bytes.begin() + 8, 0);
+  expect_failure(fixture, "header size");
 
-  bytes = fixture.bytes;
-  bytes.pop_back();
-  expect_failure(bytes, "file_size does not match");
+  expect_failure(make_fixture("{", {0}), "invalid root object entry");
 
-  bytes = fixture.bytes;
-  bytes[fixture.metadata_offset + 24] ^= 0x01U;
-  expect_failure(bytes, "metadata CRC32 mismatch");
+  expect_failure(make_fixture("{\"__metadata__\":{\"model.name\":\"s:tiny\"},"
+                              "\"x\":{\"dtype\":\"F32\",\"shape\":[1],"
+                              "\"data_offsets\":[0,4]}}",
+                              {0, 0, 0, 0}),
+                 "missing or unsupported evo2.profile");
 
-  bytes = fixture.bytes;
-  bytes[fixture.table_offset + 8] ^= 0x01U;
-  expect_failure(bytes, "descriptor CRC32 mismatch");
+  expect_failure(make_fixture("{" + metadata_json() +
+                                  ",\"x\":{\"dtype\":\"F32\",\"shape\":[1],"
+                                  "\"data_offsets\":[0,4]},"
+                                  "\"x\":{\"dtype\":\"F32\",\"shape\":[1],"
+                                  "\"data_offsets\":[4,8]}}",
+                              std::vector<std::uint8_t>(8)),
+                 "duplicate root key");
 
-  bytes = fixture.bytes;
-  const auto second_descriptor = fixture.table_offset + evo2c::kTensorDescriptorSize;
-  std::fill(bytes.begin() + static_cast<std::ptrdiff_t>(second_descriptor),
-            bytes.begin() + static_cast<std::ptrdiff_t>(second_descriptor + evo2c::kTensorNameCapacity),
-            0);
-  std::copy_n("embed.weight", 12,
-              bytes.begin() + static_cast<std::ptrdiff_t>(second_descriptor));
-  set_descriptor_crc(bytes, second_descriptor);
-  expect_failure(bytes, "duplicate tensor name");
+  expect_failure(make_fixture("{" + metadata_json() +
+                                  ",\"x\":{\"dtype\":\"F16\",\"shape\":[1],"
+                                  "\"data_offsets\":[0,2]}}",
+                              std::vector<std::uint8_t>(2)),
+                 "unsupported dtype");
 
-  bytes = fixture.bytes;
-  write_u64(bytes, second_descriptor + 168, fixture.first_payload_offset);
-  set_descriptor_crc(bytes, second_descriptor);
-  expect_failure(bytes, "payloads overlap");
+  expect_failure(make_fixture("{" + metadata_json() +
+                                  ",\"x\":{\"dtype\":\"F32\",\"shape\":[2],"
+                                  "\"data_offsets\":[0,4]}}",
+                              std::vector<std::uint8_t>(4)),
+                 "dtype/shape size mismatch");
 
-  bytes = fixture.bytes;
-  write_u64(bytes, second_descriptor + 168, fixture.second_payload_offset + 1);
-  set_descriptor_crc(bytes, second_descriptor);
-  expect_failure(bytes, "offset/size/alignment is invalid");
+  expect_failure(make_fixture("{" + metadata_json() +
+                                  ",\"a\":{\"dtype\":\"F32\",\"shape\":[1],"
+                                  "\"data_offsets\":[0,4]},"
+                                  "\"b\":{\"dtype\":\"F32\",\"shape\":[1],"
+                                  "\"data_offsets\":[8,12]}}",
+                              std::vector<std::uint8_t>(12)),
+                 "hole or overlap");
 
-  bytes = fixture.bytes;
-  write_u64(bytes, second_descriptor + 104, 3);
-  set_descriptor_crc(bytes, second_descriptor);
-  expect_failure(bytes, "element_count does not match");
+  expect_failure(make_fixture("{" + metadata_json() +
+                                  ",\"x\":{\"dtype\":\"F32\",\"shape\":[1],"
+                                  "\"data_offsets\":[0,4]}}",
+                              std::vector<std::uint8_t>(5)),
+                 "does not cover the complete file");
 
-  bytes = fixture.bytes;
-  bytes[second_descriptor + 97] = 2;
-  write_u64(bytes, second_descriptor + 104, UINT64_MAX);
-  write_u64(bytes, second_descriptor + 112, 2);
-  set_descriptor_crc(bytes, second_descriptor);
-  expect_failure(bytes, "dimensions are zero or overflow uint64");
-
-  bytes = fixture.bytes;
-  bytes[second_descriptor + 96] = 99;
-  set_descriptor_crc(bytes, second_descriptor);
-  expect_failure(bytes, "dtype is invalid");
-
-  bytes = fixture.bytes;
-  bytes[fixture.first_payload_offset] ^= 0x01U;
-  expect_failure(bytes, "payload CRC32 mismatch");
+  expect_failure(make_fixture("{" + metadata_json("plain-text") +
+                                  ",\"x\":{\"dtype\":\"F32\",\"shape\":[1],"
+                                  "\"data_offsets\":[0,4]}}",
+                              std::vector<std::uint8_t>(4)),
+                 "not typed");
 }
 
-}  // namespace
+} // namespace
 
-int main(const int argc, char** argv) {
-  const auto fixture = build_fixture();
+int main(const int argc, char **argv) {
+  const auto fixture = valid_fixture();
   if (argc == 3 && std::string_view{argv[1]} == "--write-fixture") {
     if (!write_file(argv[2], fixture.bytes)) {
       std::cerr << "failed to write fixture: " << argv[2] << '\n';
@@ -347,12 +250,8 @@ int main(const int argc, char** argv) {
     return 2;
   }
 
-  const std::array<std::uint8_t, 9> crc_vector{'1', '2', '3', '4', '5', '6', '7', '8', '9'};
-  check(evo2c::crc32(crc_vector.data(), crc_vector.size()) == 0xcbf43926U,
-        "CRC32 matches IEEE reference vector");
   test_valid_fixture(fixture);
-  test_corruption(fixture);
-
+  test_invalid_files();
   if (failures != 0) {
     std::cerr << failures << " model format test(s) failed\n";
     return 1;

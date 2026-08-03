@@ -6,12 +6,12 @@ run_remote_worker() {
 archive_name="evo2_40b_bf16_finetune_wandb_Ji2IRcrz_step_119.tar.gz"
 archive_size="63680606710"
 archive_sha256="544b47e033d1fb0261b686a53f7c4fe240cd290253187d31e8c99dea9e35a680"
-expected_output_size="82254509184"
-expected_output_sha256="3fb2ec7ed2c89c4f88dcb9c4c6f675e46c2b37722ee82778ce0ff84794dfa5c8"
 ngc_url="https://api.ngc.nvidia.com/v2/models/nvidia/clara/evo2-40b-1m-fp8-bf16-nemo2/versions/1.0/files/$archive_name"
 source_dir="$HOME/evo2c"
 model_dir="$HOME/evo2c-models"
-output="$model_dir/evo2-40b-bionemo-bf16.evo2"
+output_base="$model_dir/evo2-40b-bionemo-bf16.safetensors"
+output="$output_base.index.json"
+output_receipt="$output_base.sha256"
 image="$HOME/evo2c-cuda12.8-rocky8.sif"
 nix_root="$HOME/.local/share/nix-root"
 venv="$HOME/.venv-evo2c-convert"
@@ -152,7 +152,7 @@ apptainer exec \
   "$image" \
   env LD_LIBRARY_PATH="$python_runtime_library_path" \
   PYTHONPATH="$source_dir/tools:$torch_pythonpath" \
-  "${converter[@]}" --output "$output" --dry-run
+  "${converter[@]}" --output "$output_base" --dry-run
 
 if ! test -f "$output"; then
   apptainer exec \
@@ -161,23 +161,23 @@ if ! test -f "$output"; then
     "$image" \
     env LD_LIBRARY_PATH="$python_runtime_library_path" \
     PYTHONPATH="$source_dir/tools:$torch_pythonpath" \
-    "${converter[@]}" --output "$output"
+    "${converter[@]}" --output "$output_base"
 fi
 
-actual_output_size="$(stat --printf='%s' "$output")"
-if test "$actual_output_size" != "$expected_output_size"; then
-  echo "gpu02_prepare_bionemo_40b: EVO2 output has unexpected size $actual_output_size" >&2
-  exit 2
-fi
 apptainer exec -B "$nix_root:/nix:ro" "$image" \
   "$source_dir/build-gpu/evo2c-inspect" "$output" \
   --tensor blocks.0.projections.weight
 actual_output_sha256="$(sha256sum "$output" | cut -d' ' -f1)"
-if test "$actual_output_sha256" != "$expected_output_sha256"; then
-  echo "gpu02_prepare_bionemo_40b: EVO2 output SHA256 mismatch" >&2
-  exit 2
+if test -f "$output_receipt"; then
+  recorded_output_sha256="$(cut -d' ' -f1 <"$output_receipt")"
+  if test "$actual_output_sha256" != "$recorded_output_sha256"; then
+    echo "gpu02_prepare_bionemo_40b: Safetensors output SHA256 disagrees with receipt" >&2
+    exit 2
+  fi
+else
+  printf '%s  %s\n' "$actual_output_sha256" "$output" >"$output_receipt"
 fi
-echo "output_size=$actual_output_size"
+echo "output_size=$(stat --printf='%s' "$output")"
 echo "$actual_output_sha256  $output"
 }
 

@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <utility>
 
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
@@ -111,6 +112,36 @@ __global__ void rms_norm_kernel(const __nv_bfloat16 *const input,
   }
 }
 
+__device__ __forceinline__ __nv_bfloat16
+pytorch_gelu_bf16(const __nv_bfloat16 input) {
+  const float value = __bfloat162float(input);
+  constexpr float kAlpha = 0.70710678118654752440F;
+  const __nv_bfloat16 computed =
+      __float2bfloat16_rn(value * 0.5F * (1.0F + ::erf(value * kAlpha)));
+  // Exhaustive comparison of all 65,536 BF16 inputs found seven finite cases
+  // where CUDA 12.8's libdevice erf rounds GELU differently from the CUDA
+  // 13.3 libdevice used by pinned PyTorch.  Canonicalize those output bits so
+  // exact inference is independent of the build toolkit.
+  switch (__bfloat16_as_ushort(input)) {
+  case 0xc049:
+    return __ushort_as_bfloat16(0xbb2d);
+  case 0xc081:
+    return __ushort_as_bfloat16(0xb8eb);
+  case 0xc089:
+    return __ushort_as_bfloat16(0xb827);
+  case 0xc092:
+    return __ushort_as_bfloat16(0xb742);
+  case 0xc0a0:
+    return __ushort_as_bfloat16(0xb5c8);
+  case 0xc0a8:
+    return __ushort_as_bfloat16(0xb4fc);
+  case 0xc0ab:
+    return __ushort_as_bfloat16(0xb4ab);
+  default:
+    return computed;
+  }
+}
+
 __global__ void gated_kernel(const __nv_bfloat16 *const first,
                              const __nv_bfloat16 *const second,
                              __nv_bfloat16 *const output,
@@ -121,10 +152,23 @@ __global__ void gated_kernel(const __nv_bfloat16 *const first,
        index += static_cast<std::size_t>(blockDim.x) * gridDim.x) {
     float value = __bfloat162float(first[index]);
     if (gelu) {
-      value = 0.5F * value * (1.0F + erff(value * 0.70710678118654752440F));
+      // PyTorch evaluates F.gelu(z1) and the following multiplication as two
+      // distinct BF16 operations. Preserve the intermediate BF16 rounding.
+      value = __bfloat162float(pytorch_gelu_bf16(first[index]));
     }
     output[index] =
         __float2bfloat16_rn(value * __bfloat162float(second[index]));
+  }
+}
+
+__global__ void gelu_kernel(const __nv_bfloat16 *const input,
+                            __nv_bfloat16 *const output,
+                            const std::size_t elements) {
+  for (std::size_t index =
+           static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+       index < elements;
+       index += static_cast<std::size_t>(blockDim.x) * gridDim.x) {
+    output[index] = pytorch_gelu_bf16(input[index]);
   }
 }
 
@@ -140,9 +184,39 @@ __global__ void add_kernel(__nv_bfloat16 *const output,
   }
 }
 
-__global__ void software_lowp_kernel(
-    const __nv_bfloat16 *const input, std::uint8_t *const codes,
-    float *const dequantized, const std::size_t elements, const float scale) {
+__global__ void add_bias_kernel(__nv_bfloat16 *const output,
+                                const __nv_bfloat16 *const bias,
+                                const std::size_t elements,
+                                const std::size_t width) {
+  for (std::size_t index =
+           static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+       index < elements;
+       index += static_cast<std::size_t>(blockDim.x) * gridDim.x) {
+    output[index] = __float2bfloat16_rn(__bfloat162float(output[index]) +
+                                        __bfloat162float(bias[index % width]));
+  }
+}
+
+__global__ void row_to_column_major_kernel(const __nv_bfloat16 *const input,
+                                           __nv_bfloat16 *const output,
+                                           const std::size_t rows,
+                                           const std::size_t columns,
+                                           const std::size_t elements) {
+  for (std::size_t index =
+           static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+       index < elements;
+       index += static_cast<std::size_t>(blockDim.x) * gridDim.x) {
+    const std::size_t row = index / columns;
+    const std::size_t column = index % columns;
+    output[column * rows + row] = input[index];
+  }
+}
+
+__global__ void software_lowp_kernel(const __nv_bfloat16 *const input,
+                                     std::uint8_t *const codes,
+                                     float *const dequantized,
+                                     const std::size_t elements,
+                                     const float scale) {
   const float scale_inverse = __frcp_rn(scale);
   for (std::size_t index =
            static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -156,9 +230,10 @@ __global__ void software_lowp_kernel(
   }
 }
 
-__global__ void software_lowp_codes_kernel(
-    const __nv_bfloat16 *const input, std::uint8_t *const codes,
-    const std::size_t elements, const float scale) {
+__global__ void software_lowp_codes_kernel(const __nv_bfloat16 *const input,
+                                           std::uint8_t *const codes,
+                                           const std::size_t elements,
+                                           const float scale) {
   for (std::size_t index =
            static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
        index < elements;
@@ -169,9 +244,10 @@ __global__ void software_lowp_codes_kernel(
   }
 }
 
-__global__ void software_lowp_f32_codes_kernel(
-    const float *const input, std::uint8_t *const codes,
-    const std::size_t elements, const float scale) {
+__global__ void software_lowp_f32_codes_kernel(const float *const input,
+                                               std::uint8_t *const codes,
+                                               const std::size_t elements,
+                                               const float scale) {
   for (std::size_t index =
            static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
        index < elements;
@@ -182,24 +258,23 @@ __global__ void software_lowp_f32_codes_kernel(
 }
 
 __device__ int normal_exponent(const float value) {
-  return static_cast<int>((__float_as_uint(fabsf(value)) >> 23U) & 0xffU) -
-         127;
+  return static_cast<int>((__float_as_uint(fabsf(value)) >> 23U) & 0xffU) - 127;
 }
 
-__device__ std::int32_t align_significand(
-    const float value, const int operand_exponent,
-    const int maximum_exponent, const bool denormalized_product) {
+__device__ std::int32_t align_significand(const float value,
+                                          const int operand_exponent,
+                                          const int maximum_exponent,
+                                          const bool denormalized_product) {
   if (value == 0.0F)
     return 0;
   const std::uint32_t bits = __float_as_uint(value);
   const std::uint32_t magnitude = bits & 0x7fffffffU;
-  std::uint32_t significand =
-      (magnitude & 0x7fffffU) | 0x800000U;
+  std::uint32_t significand = (magnitude & 0x7fffffU) | 0x800000U;
   if (denormalized_product) {
     const int normalized_exponent =
         static_cast<int>((magnitude >> 23U) & 0xffU) - 127;
-    significand <<= static_cast<unsigned int>(
-        normalized_exponent - operand_exponent);
+    significand <<=
+        static_cast<unsigned int>(normalized_exponent - operand_exponent);
   }
   significand >>= 10U;
   const int shift = maximum_exponent - operand_exponent;
@@ -227,8 +302,7 @@ __device__ std::uint16_t pack_e4m3_integer(const std::uint8_t code) {
       return 0U;
     const int leading_bit = 31 - __clz(mantissa);
     exponent = -9 + leading_bit;
-    significand =
-        mantissa << static_cast<unsigned int>(3 - leading_bit);
+    significand = mantissa << static_cast<unsigned int>(3 - leading_bit);
   } else {
     exponent = static_cast<int>(exponent_field) - 7;
     significand = 8U + mantissa;
@@ -240,20 +314,18 @@ __device__ std::uint16_t pack_e4m3_integer(const std::uint8_t code) {
       ((code & 0x80U) != 0U ? 0x0400U : 0U));
 }
 
-__device__ std::int32_t aligned_e4m3_product(
-    const std::uint16_t left, const std::uint16_t right,
-    const int maximum_exponent) {
+__device__ std::int32_t aligned_e4m3_product(const std::uint16_t left,
+                                             const std::uint16_t right,
+                                             const int maximum_exponent) {
   constexpr int twice_exponent_bias = 32;
-  const int exponent =
-      static_cast<int>((left >> 5U) & 0x1fU) +
-      static_cast<int>((right >> 5U) & 0x1fU) -
-      twice_exponent_bias;
+  const int exponent = static_cast<int>((left >> 5U) & 0x1fU) +
+                       static_cast<int>((right >> 5U) & 0x1fU) -
+                       twice_exponent_bias;
   const int shift = maximum_exponent - exponent;
   if (shift > 31)
     return 0;
-  std::uint32_t value =
-      static_cast<std::uint32_t>(left & 0x1fU) *
-      static_cast<std::uint32_t>(right & 0x1fU) * 128U;
+  std::uint32_t value = static_cast<std::uint32_t>(left & 0x1fU) *
+                        static_cast<std::uint32_t>(right & 0x1fU) * 128U;
   if (shift > 0)
     value >>= static_cast<unsigned int>(shift);
   const auto aligned = static_cast<std::int32_t>(value);
@@ -263,10 +335,9 @@ __device__ std::int32_t aligned_e4m3_product(
 template <unsigned int TileRows, unsigned int TileColumns>
 __global__ void software_h100_qgmma_tiled_kernel(
     const std::uint8_t *const input_codes,
-    const std::uint8_t *const weight_codes,
-    __nv_bfloat16 *const output, const std::size_t rows,
-    const std::size_t in_features, const std::size_t out_features,
-    const float output_scale) {
+    const std::uint8_t *const weight_codes, __nv_bfloat16 *const output,
+    const std::size_t rows, const std::size_t in_features,
+    const std::size_t out_features, const float output_scale) {
   constexpr unsigned int tile_inner = 32;
   constexpr unsigned int threads = TileRows * TileColumns;
   static_assert((TileRows == 1 && TileColumns == 32) ||
@@ -297,21 +368,20 @@ __global__ void software_h100_qgmma_tiled_kernel(
           static_cast<std::size_t>(blockIdx.y) * TileRows + load_row;
       input_tile[load_row][load_inner] = pack_e4m3_integer(
           global_row < rows
-              ? input_codes[global_row * in_features + inner_start +
-                            load_inner]
+              ? input_codes[global_row * in_features + inner_start + load_inner]
               : 0U);
     }
-    for (unsigned int load = thread;
-         load < TileColumns * tile_inner; load += threads) {
+    for (unsigned int load = thread; load < TileColumns * tile_inner;
+         load += threads) {
       const unsigned int load_column = load / tile_inner;
       const unsigned int load_inner = load % tile_inner;
       const std::size_t global_column =
           static_cast<std::size_t>(blockIdx.x) * TileColumns + load_column;
-      weight_tile[load_inner][load_column] = pack_e4m3_integer(
-          global_column < out_features
-              ? weight_codes[global_column * in_features + inner_start +
-                             load_inner]
-              : 0U);
+      weight_tile[load_inner][load_column] =
+          pack_e4m3_integer(global_column < out_features
+                                ? weight_codes[global_column * in_features +
+                                               inner_start + load_inner]
+                                : 0U);
     }
     __syncthreads();
 
@@ -332,23 +402,19 @@ __global__ void software_h100_qgmma_tiled_kernel(
       std::int32_t aligned_sum =
           accumulator == 0.0F
               ? 0
-              : align_significand(accumulator,
-                                  normal_exponent(accumulator),
+              : align_significand(accumulator, normal_exponent(accumulator),
                                   maximum_exponent, false);
 #pragma unroll
       for (unsigned int inner = 0; inner < tile_inner; ++inner) {
         const std::uint16_t left = input_tile[local_row][inner];
         const std::uint16_t right = weight_tile[inner][local_column];
         if ((left & 0x1fU) != 0U && (right & 0x1fU) != 0U)
-          aligned_sum +=
-              aligned_e4m3_product(left, right, maximum_exponent);
+          aligned_sum += aligned_e4m3_product(left, right, maximum_exponent);
       }
-      accumulator =
-          aligned_sum == 0
-              ? 0.0F
-              : truncate_e8m13(
-                    ldexpf(static_cast<float>(aligned_sum),
-                           maximum_exponent - 13));
+      accumulator = aligned_sum == 0
+                        ? 0.0F
+                        : truncate_e8m13(ldexpf(static_cast<float>(aligned_sum),
+                                                maximum_exponent - 13));
     }
     __syncthreads();
   }
@@ -380,6 +446,48 @@ struct MatmulObjects final {
 
 } // namespace
 
+struct Bf16LinearPlan::Impl final {
+  MatmulObjects objects;
+  cublasLtMatmulHeuristicResult_t heuristic{};
+  int device{-1};
+  std::size_t rows{0};
+  std::size_t in_features{0};
+  std::size_t out_features{0};
+  std::size_t workspace_bytes{0};
+  bool has_bias{false};
+  LinearWeightLayout weight_layout{LinearWeightLayout::kOutputMajor};
+  LinearInputLayout input_layout{LinearInputLayout::kRowMajor};
+
+  [[nodiscard]] bool
+  matches(const int expected_device, const std::size_t expected_rows,
+          const std::size_t expected_in_features,
+          const std::size_t expected_out_features,
+          const std::size_t expected_workspace_bytes, const bool expected_bias,
+          const LinearWeightLayout expected_weight_layout,
+          const LinearInputLayout expected_input_layout) const noexcept {
+    return device == expected_device && rows == expected_rows &&
+           in_features == expected_in_features &&
+           out_features == expected_out_features &&
+           workspace_bytes == expected_workspace_bytes &&
+           has_bias == expected_bias &&
+           weight_layout == expected_weight_layout &&
+           input_layout == expected_input_layout;
+  }
+};
+
+Bf16LinearPlan::Bf16LinearPlan() = default;
+Bf16LinearPlan::~Bf16LinearPlan() = default;
+Bf16LinearPlan::Bf16LinearPlan(Bf16LinearPlan &&other) noexcept
+    : impl_(std::move(other.impl_)),
+      build_count_(std::exchange(other.build_count_, 0)) {}
+Bf16LinearPlan &Bf16LinearPlan::operator=(Bf16LinearPlan &&other) noexcept {
+  if (this != &other) {
+    impl_ = std::move(other.impl_);
+    build_count_ = std::exchange(other.build_count_, 0);
+  }
+  return *this;
+}
+
 Status MlpWorkspace::allocate(const int device, const std::size_t rows,
                               const std::size_t inner_width,
                               const std::size_t blas_bytes) {
@@ -401,6 +509,9 @@ Status MlpWorkspace::allocate(const int device, const std::size_t rows,
   status = gated.allocate(device, temporary_bytes);
   if (!status.ok())
     return status;
+  status = activated.allocate(device, temporary_bytes);
+  if (!status.ok())
+    return status;
   return blas.allocate(device, blas_bytes);
 }
 
@@ -408,9 +519,16 @@ Status bf16_linear(const BlasLt &handle, const DeviceBuffer &input,
                    const DeviceBuffer &weight, const DeviceBuffer *const bias,
                    const std::size_t rows, const std::size_t in_features,
                    const std::size_t out_features, DeviceBuffer *const output,
-                   DeviceBuffer *const workspace, const Stream &stream) {
+                   DeviceBuffer *const workspace, const Stream &stream,
+                   Bf16LinearPlan *const plan,
+                   const LinearWeightLayout weight_layout,
+                   const LinearInputLayout input_layout) {
   if (!handle.valid() || output == nullptr || workspace == nullptr ||
-      !stream.valid()) {
+      !stream.valid() ||
+      (weight_layout != LinearWeightLayout::kOutputMajor &&
+       weight_layout != LinearWeightLayout::kInputMajor) ||
+      (input_layout != LinearInputLayout::kRowMajor &&
+       input_layout != LinearInputLayout::kColumnMajor)) {
     return {ErrorCode::kInvalidArgument,
             "bf16_linear requires a handle, output, workspace, and stream"};
   }
@@ -476,31 +594,121 @@ Status bf16_linear(const BlasLt &handle, const DeviceBuffer &input,
   if (!status.ok())
     return status;
 
-  MatmulObjects objects;
-  status =
-      cublas_status(cublasLtMatmulDescCreate(&objects.operation,
-                                             CUBLAS_COMPUTE_32F, CUDA_R_32F),
-                    "cublasLtMatmulDescCreate");
-  if (!status.ok())
-    return status;
-  // Interpret row-major weight [N,K], input [M,K], and output [M,N] as
-  // column-major [K,N], [K,M], and [N,M]. This is the native cuBLASLt layout
-  // used by PyTorch and supports a fused BF16 bias epilogue.
-  const cublasOperation_t transpose = CUBLAS_OP_T;
-  status = cublas_status(cublasLtMatmulDescSetAttribute(
-                             objects.operation, CUBLASLT_MATMUL_DESC_TRANSA,
-                             &transpose, sizeof(transpose)),
-                         "cublasLtMatmulDescSetAttribute TRANSA");
-  if (!status.ok())
-    return status;
-  if (bias != nullptr) {
-    const cublasLtEpilogue_t epilogue = CUBLASLT_EPILOGUE_BIAS;
-    status = cublas_status(cublasLtMatmulDescSetAttribute(
-                               objects.operation, CUBLASLT_MATMUL_DESC_EPILOGUE,
-                               &epilogue, sizeof(epilogue)),
-                           "cublasLtMatmulDescSetAttribute EPILOGUE");
+  const auto workspace_bytes = workspace->bytes();
+  Bf16LinearPlan temporary_plan;
+  Bf16LinearPlan *const active_plan = plan == nullptr ? &temporary_plan : plan;
+  if (active_plan->impl_ == nullptr ||
+      !active_plan->impl_->matches(device, rows, in_features, out_features,
+                                   workspace_bytes, bias != nullptr,
+                                   weight_layout, input_layout)) {
+    auto candidate = std::make_unique<Bf16LinearPlan::Impl>();
+    auto &objects = candidate->objects;
+    status =
+        cublas_status(cublasLtMatmulDescCreate(&objects.operation,
+                                               CUBLAS_COMPUTE_32F, CUDA_R_32F),
+                      "cublasLtMatmulDescCreate");
     if (!status.ok())
       return status;
+    if (input_layout == LinearInputLayout::kColumnMajor) {
+      const cublasOperation_t input_transpose = CUBLAS_OP_T;
+      status = cublas_status(cublasLtMatmulDescSetAttribute(
+                                 objects.operation, CUBLASLT_MATMUL_DESC_TRANSB,
+                                 &input_transpose, sizeof(input_transpose)),
+                             "cublasLtMatmulDescSetAttribute TRANSB");
+      if (!status.ok())
+        return status;
+    }
+    // Interpret row-major weight [N,K], input [M,K], and output [M,N] as
+    // column-major [K,N], [K,M], and [N,M]. This is the native cuBLASLt layout
+    // used by PyTorch and supports a fused BF16 bias epilogue.
+    const cublasOperation_t transpose =
+        weight_layout == LinearWeightLayout::kOutputMajor ? CUBLAS_OP_T
+                                                          : CUBLAS_OP_N;
+    status = cublas_status(cublasLtMatmulDescSetAttribute(
+                               objects.operation, CUBLASLT_MATMUL_DESC_TRANSA,
+                               &transpose, sizeof(transpose)),
+                           "cublasLtMatmulDescSetAttribute TRANSA");
+    if (!status.ok())
+      return status;
+    if (bias != nullptr) {
+      const cublasLtEpilogue_t epilogue = CUBLASLT_EPILOGUE_BIAS;
+      status =
+          cublas_status(cublasLtMatmulDescSetAttribute(
+                            objects.operation, CUBLASLT_MATMUL_DESC_EPILOGUE,
+                            &epilogue, sizeof(epilogue)),
+                        "cublasLtMatmulDescSetAttribute EPILOGUE");
+      if (!status.ok())
+        return status;
+    }
+    status =
+        input_layout == LinearInputLayout::kRowMajor
+            ? cublas_status(cublasLtMatrixLayoutCreate(&objects.input,
+                                                       CUDA_R_16BF, in_features,
+                                                       rows, in_features),
+                            "cublasLtMatrixLayoutCreate row-major input")
+            : cublas_status(cublasLtMatrixLayoutCreate(&objects.input,
+                                                       CUDA_R_16BF, rows,
+                                                       in_features, rows),
+                            "cublasLtMatrixLayoutCreate column-major input");
+    if (!status.ok())
+      return status;
+    status = weight_layout == LinearWeightLayout::kOutputMajor
+                 ? cublas_status(
+                       cublasLtMatrixLayoutCreate(&objects.weight, CUDA_R_16BF,
+                                                  in_features, out_features,
+                                                  in_features),
+                       "cublasLtMatrixLayoutCreate output-major weight view")
+                 : cublas_status(
+                       cublasLtMatrixLayoutCreate(&objects.weight, CUDA_R_16BF,
+                                                  out_features, in_features,
+                                                  out_features),
+                       "cublasLtMatrixLayoutCreate input-major weight view");
+    if (!status.ok())
+      return status;
+    status = cublas_status(cublasLtMatrixLayoutCreate(&objects.output,
+                                                      CUDA_R_16BF, out_features,
+                                                      rows, out_features),
+                           "cublasLtMatrixLayoutCreate output transpose view");
+    if (!status.ok())
+      return status;
+    status = cublas_status(cublasLtMatmulPreferenceCreate(&objects.preference),
+                           "cublasLtMatmulPreferenceCreate");
+    if (!status.ok())
+      return status;
+    status = cublas_status(cublasLtMatmulPreferenceSetAttribute(
+                               objects.preference,
+                               CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES,
+                               &workspace_bytes, sizeof(workspace_bytes)),
+                           "cublasLtMatmulPreferenceSetAttribute workspace");
+    if (!status.ok())
+      return status;
+    int returned = 0;
+    status = cublas_status(cublasLtMatmulAlgoGetHeuristic(
+                               handle.get(), objects.operation, objects.weight,
+                               objects.input, objects.output, objects.output,
+                               objects.preference, 1, &candidate->heuristic,
+                               &returned),
+                           "cublasLtMatmulAlgoGetHeuristic");
+    if (!status.ok())
+      return status;
+    if (returned == 0) {
+      return {ErrorCode::kCuda,
+              "cuBLASLt found no BF16 row-major matmul algorithm"};
+    }
+    candidate->device = device;
+    candidate->rows = rows;
+    candidate->in_features = in_features;
+    candidate->out_features = out_features;
+    candidate->workspace_bytes = workspace_bytes;
+    candidate->has_bias = bias != nullptr;
+    candidate->weight_layout = weight_layout;
+    candidate->input_layout = input_layout;
+    active_plan->impl_ = std::move(candidate);
+    ++active_plan->build_count_;
+  }
+  auto &cached = *active_plan->impl_;
+  auto &objects = cached.objects;
+  if (bias != nullptr) {
     const void *const bias_pointer = bias->data();
     status =
         cublas_status(cublasLtMatmulDescSetAttribute(
@@ -510,65 +718,63 @@ Status bf16_linear(const BlasLt &handle, const DeviceBuffer &input,
     if (!status.ok())
       return status;
   }
-  status =
-      cublas_status(cublasLtMatrixLayoutCreate(&objects.input, CUDA_R_16BF,
-                                               in_features, rows, in_features),
-                    "cublasLtMatrixLayoutCreate input transpose view");
-  if (!status.ok())
-    return status;
-  status = cublas_status(cublasLtMatrixLayoutCreate(&objects.weight,
-                                                    CUDA_R_16BF, in_features,
-                                                    out_features, in_features),
-                         "cublasLtMatrixLayoutCreate weight transpose view");
-  if (!status.ok())
-    return status;
-  status = cublas_status(cublasLtMatrixLayoutCreate(&objects.output,
-                                                    CUDA_R_16BF, out_features,
-                                                    rows, out_features),
-                         "cublasLtMatrixLayoutCreate output transpose view");
-  if (!status.ok())
-    return status;
-  status = cublas_status(cublasLtMatmulPreferenceCreate(&objects.preference),
-                         "cublasLtMatmulPreferenceCreate");
-  if (!status.ok())
-    return status;
-  const auto workspace_bytes = workspace->bytes();
-  status = cublas_status(cublasLtMatmulPreferenceSetAttribute(
-                             objects.preference,
-                             CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES,
-                             &workspace_bytes, sizeof(workspace_bytes)),
-                         "cublasLtMatmulPreferenceSetAttribute workspace");
-  if (!status.ok())
-    return status;
-  cublasLtMatmulHeuristicResult_t heuristic{};
-  int returned = 0;
-  status = cublas_status(cublasLtMatmulAlgoGetHeuristic(
-                             handle.get(), objects.operation, objects.weight,
-                             objects.input, objects.output, objects.output,
-                             objects.preference, 1, &heuristic, &returned),
-                         "cublasLtMatmulAlgoGetHeuristic");
-  if (!status.ok())
-    return status;
-  if (returned == 0) {
-    return {ErrorCode::kCuda,
-            "cuBLASLt found no BF16 row-major matmul algorithm"};
-  }
   constexpr float alpha = 1.0F;
   constexpr float beta = 0.0F;
   status = cublas_status(
       cublasLtMatmul(handle.get(), objects.operation, &alpha, weight.data(),
                      objects.weight, input.data(), objects.input, &beta,
                      output->data(), objects.output, output->data(),
-                     objects.output, &heuristic.algo, workspace->data(),
+                     objects.output, &cached.heuristic.algo, workspace->data(),
                      workspace_bytes, stream.get()),
       "cublasLtMatmul");
   return status;
 }
 
-Status software_e4m3_quantize_bf16(
-    const DeviceBuffer &input, const std::size_t elements, const float scale,
-    DeviceBuffer *const codes, DeviceBuffer *const dequantized_f32,
-    const Stream &stream) {
+Status bf16_row_to_column_major(const DeviceBuffer &input,
+                                const std::size_t rows,
+                                const std::size_t columns,
+                                DeviceBuffer *const output,
+                                const Stream &stream) {
+  if (output == nullptr || !stream.valid()) {
+    return {ErrorCode::kInvalidArgument,
+            "bf16_row_to_column_major requires output and stream"};
+  }
+  std::size_t elements = 0;
+  std::size_t bytes = 0;
+  if (!multiply(rows, columns, &elements)) {
+    return {ErrorCode::kInvalidArgument,
+            "bf16_row_to_column_major dimensions overflow"};
+  }
+  auto status = required_bytes(elements, sizeof(__nv_bfloat16), &bytes,
+                               "bf16 row-to-column-major");
+  if (!status.ok())
+    return status;
+  const int device = input.device();
+  if (stream.device() != device) {
+    return {ErrorCode::kInvalidArgument,
+            "bf16_row_to_column_major stream is on a different CUDA device"};
+  }
+  status = buffer_size(input, bytes, device, "bf16 row-to-column-major input");
+  if (!status.ok())
+    return status;
+  status =
+      buffer_size(*output, bytes, device, "bf16 row-to-column-major output");
+  if (!status.ok())
+    return status;
+  status = select_device(device);
+  if (!status.ok())
+    return status;
+  row_to_column_major_kernel<<<grid_for(elements), kThreads, 0, stream.get()>>>(
+      static_cast<const __nv_bfloat16 *>(input.data()),
+      static_cast<__nv_bfloat16 *>(output->data()), rows, columns, elements);
+  return launch_status("row_to_column_major_kernel");
+}
+
+Status software_e4m3_quantize_bf16(const DeviceBuffer &input,
+                                   const std::size_t elements,
+                                   const float scale, DeviceBuffer *const codes,
+                                   DeviceBuffer *const dequantized_f32,
+                                   const Stream &stream) {
   if (dequantized_f32 == nullptr || !stream.valid() || !std::isfinite(scale) ||
       scale <= 0.0F) {
     return {ErrorCode::kInvalidArgument,
@@ -606,24 +812,24 @@ Status software_e4m3_quantize_bf16(
     return status;
   software_lowp_kernel<<<grid_for(elements), kThreads, 0, stream.get()>>>(
       static_cast<const __nv_bfloat16 *>(input.data()),
-      codes == nullptr ? nullptr
-                       : static_cast<std::uint8_t *>(codes->data()),
+      codes == nullptr ? nullptr : static_cast<std::uint8_t *>(codes->data()),
       static_cast<float *>(dequantized_f32->data()), elements, scale);
   return launch_status("software_lowp_kernel");
 }
 
-Status software_e4m3_quantize_bf16_codes(
-    const DeviceBuffer &input, const std::size_t elements, const float scale,
-    DeviceBuffer *const codes, const Stream &stream) {
-  if (codes == nullptr || !stream.valid() ||
-      !std::isfinite(scale) || scale <= 0.0F) {
+Status software_e4m3_quantize_bf16_codes(const DeviceBuffer &input,
+                                         const std::size_t elements,
+                                         const float scale,
+                                         DeviceBuffer *const codes,
+                                         const Stream &stream) {
+  if (codes == nullptr || !stream.valid() || !std::isfinite(scale) ||
+      scale <= 0.0F) {
     return {ErrorCode::kInvalidArgument,
             "software_e4m3_quantize_bf16_codes received invalid arguments"};
   }
   std::size_t input_bytes = 0;
-  auto status =
-      required_bytes(elements, sizeof(__nv_bfloat16), &input_bytes,
-                     "software E4M3 code input");
+  auto status = required_bytes(elements, sizeof(__nv_bfloat16), &input_bytes,
+                               "software E4M3 code input");
   if (!status.ok())
     return status;
   const int device = input.device();
@@ -631,27 +837,26 @@ Status software_e4m3_quantize_bf16_codes(
     return {ErrorCode::kInvalidArgument,
             "software E4M3 payload stream is on a different CUDA device"};
   }
-  status =
-      buffer_size(input, input_bytes, device, "software E4M3 code input");
+  status = buffer_size(input, input_bytes, device, "software E4M3 code input");
   if (!status.ok())
     return status;
-  status = buffer_size(*codes, elements, device,
-                       "software E4M3 code output");
+  status = buffer_size(*codes, elements, device, "software E4M3 code output");
   if (!status.ok())
     return status;
   status = select_device(device);
   if (!status.ok())
     return status;
-  software_lowp_codes_kernel<<<grid_for(elements), kThreads, 0,
-                               stream.get()>>>(
+  software_lowp_codes_kernel<<<grid_for(elements), kThreads, 0, stream.get()>>>(
       static_cast<const __nv_bfloat16 *>(input.data()),
       static_cast<std::uint8_t *>(codes->data()), elements, scale);
   return launch_status("software_lowp_codes_kernel");
 }
 
-Status software_e4m3_quantize_f32_codes(
-    const DeviceBuffer &input, const std::size_t elements, const float scale,
-    DeviceBuffer *const codes, const Stream &stream) {
+Status software_e4m3_quantize_f32_codes(const DeviceBuffer &input,
+                                        const std::size_t elements,
+                                        const float scale,
+                                        DeviceBuffer *const codes,
+                                        const Stream &stream) {
   if (codes == nullptr || !stream.valid() || !std::isfinite(scale) ||
       scale <= 0.0F) {
     return {ErrorCode::kInvalidArgument,
@@ -667,12 +872,12 @@ Status software_e4m3_quantize_f32_codes(
     return {ErrorCode::kInvalidArgument,
             "software E4M3 F32 stream is on a different CUDA device"};
   }
-  status = buffer_size(input, input_bytes, device,
-                       "software E4M3 F32 code input");
+  status =
+      buffer_size(input, input_bytes, device, "software E4M3 F32 code input");
   if (!status.ok())
     return status;
-  status = buffer_size(*codes, elements, device,
-                       "software E4M3 F32 code output");
+  status =
+      buffer_size(*codes, elements, device, "software E4M3 F32 code output");
   if (!status.ok())
     return status;
   status = select_device(device);
@@ -690,11 +895,10 @@ Status software_e4m3_h100_linear(
     const std::size_t rows, const std::size_t in_features,
     const std::size_t out_features, const float input_scale,
     const float output_scale, DeviceBuffer *const input_codes_workspace,
-    DeviceBuffer *const output,
-    const Stream &stream) {
+    DeviceBuffer *const output, const Stream &stream) {
   if (input_codes_workspace == nullptr || output == nullptr ||
-      !stream.valid() || rows == 0 ||
-      in_features == 0 || in_features % 32U != 0 || out_features == 0 ||
+      !stream.valid() || rows == 0 || in_features == 0 ||
+      in_features % 32U != 0 || out_features == 0 ||
       !std::isfinite(input_scale) || input_scale <= 0.0F ||
       !std::isfinite(output_scale) || output_scale <= 0.0F) {
     return {ErrorCode::kInvalidArgument,
@@ -715,8 +919,8 @@ Status software_e4m3_h100_linear(
                                &input_bytes, "software E4M3 linear input");
   if (!status.ok())
     return status;
-  status = required_bytes(output_elements, sizeof(__nv_bfloat16),
-                          &output_bytes, "software E4M3 linear output");
+  status = required_bytes(output_elements, sizeof(__nv_bfloat16), &output_bytes,
+                          "software E4M3 linear output");
   if (!status.ok())
     return status;
   const int device = input.device();
@@ -724,8 +928,8 @@ Status software_e4m3_h100_linear(
     return {ErrorCode::kInvalidArgument,
             "software E4M3 linear stream is on a different CUDA device"};
   }
-  status = buffer_size(input, input_bytes, device,
-                       "software E4M3 linear input");
+  status =
+      buffer_size(input, input_bytes, device, "software E4M3 linear input");
   if (!status.ok())
     return status;
   status = buffer_size(weight_codes, weight_elements, device,
@@ -736,8 +940,8 @@ Status software_e4m3_h100_linear(
                        "software E4M3 linear input-code workspace");
   if (!status.ok())
     return status;
-  status = buffer_size(*output, output_bytes, device,
-                       "software E4M3 linear output");
+  status =
+      buffer_size(*output, output_bytes, device, "software E4M3 linear output");
   if (!status.ok())
     return status;
   status = select_device(device);
@@ -754,26 +958,23 @@ Status software_e4m3_h100_linear(
   constexpr unsigned int decode_columns = 32;
   constexpr unsigned int prefill_rows = 16;
   constexpr unsigned int prefill_columns = 16;
-  const dim3 grid(static_cast<unsigned int>(
-                      (out_features +
-                       (rows == 1 ? decode_columns : prefill_columns) - 1U) /
-                      (rows == 1 ? decode_columns : prefill_columns)),
-                  static_cast<unsigned int>(
-                      rows == 1 ? 1 : (rows + prefill_rows - 1U) /
-                                             prefill_rows));
+  const dim3 grid(
+      static_cast<unsigned int>(
+          (out_features + (rows == 1 ? decode_columns : prefill_columns) - 1U) /
+          (rows == 1 ? decode_columns : prefill_columns)),
+      static_cast<unsigned int>(
+          rows == 1 ? 1 : (rows + prefill_rows - 1U) / prefill_rows));
   if (rows == 1) {
     software_h100_qgmma_tiled_kernel<1, decode_columns>
         <<<grid, decode_columns, 0, stream.get()>>>(
-            static_cast<const std::uint8_t *>(
-                input_codes_workspace->data()),
+            static_cast<const std::uint8_t *>(input_codes_workspace->data()),
             static_cast<const std::uint8_t *>(weight_codes.data()),
             static_cast<__nv_bfloat16 *>(output->data()), rows, in_features,
             out_features, output_scale);
   } else {
     software_h100_qgmma_tiled_kernel<prefill_rows, prefill_columns>
         <<<grid, prefill_rows * prefill_columns, 0, stream.get()>>>(
-            static_cast<const std::uint8_t *>(
-                input_codes_workspace->data()),
+            static_cast<const std::uint8_t *>(input_codes_workspace->data()),
             static_cast<const std::uint8_t *>(weight_codes.data()),
             static_cast<__nv_bfloat16 *>(output->data()), rows, in_features,
             out_features, output_scale);
@@ -874,6 +1075,37 @@ Status bf16_gated_elementwise(const DeviceBuffer &first,
   return launch_status("gated_kernel");
 }
 
+Status bf16_gelu(const DeviceBuffer &input, const std::size_t elements,
+                 DeviceBuffer *const output, const Stream &stream) {
+  if (output == nullptr || !stream.valid()) {
+    return {ErrorCode::kInvalidArgument,
+            "bf16_gelu received invalid arguments"};
+  }
+  std::size_t bytes = 0;
+  auto status =
+      required_bytes(elements, sizeof(__nv_bfloat16), &bytes, "GELU tensor");
+  if (!status.ok())
+    return status;
+  const int device = input.device();
+  if (stream.device() != device) {
+    return {ErrorCode::kInvalidArgument,
+            "GELU stream is on a different CUDA device"};
+  }
+  status = buffer_size(input, bytes, device, "GELU input");
+  if (!status.ok())
+    return status;
+  status = buffer_size(*output, bytes, device, "GELU output");
+  if (!status.ok())
+    return status;
+  status = select_device(device);
+  if (!status.ok())
+    return status;
+  gelu_kernel<<<grid_for(elements), kThreads, 0, stream.get()>>>(
+      static_cast<const __nv_bfloat16 *>(input.data()),
+      static_cast<__nv_bfloat16 *>(output->data()), elements);
+  return launch_status("gelu_kernel");
+}
+
 Status bf16_add_inplace(DeviceBuffer *const output,
                         const DeviceBuffer &residual,
                         const std::size_t elements, const Stream &stream) {
@@ -906,6 +1138,47 @@ Status bf16_add_inplace(DeviceBuffer *const output,
   return launch_status("add_kernel");
 }
 
+Status bf16_add_bias_inplace(DeviceBuffer *const output,
+                             const DeviceBuffer &bias, const std::size_t rows,
+                             const std::size_t width, const Stream &stream) {
+  if (output == nullptr || !stream.valid() || rows == 0 || width == 0) {
+    return {ErrorCode::kInvalidArgument,
+            "bf16_add_bias_inplace received invalid arguments"};
+  }
+  std::size_t elements = 0;
+  if (!multiply(rows, width, &elements)) {
+    return {ErrorCode::kInvalidArgument, "bias add dimensions overflow"};
+  }
+  std::size_t output_bytes = 0;
+  std::size_t bias_bytes = 0;
+  auto status = required_bytes(elements, sizeof(__nv_bfloat16), &output_bytes,
+                               "bias add output");
+  if (!status.ok())
+    return status;
+  status = required_bytes(width, sizeof(__nv_bfloat16), &bias_bytes,
+                          "bias add bias");
+  if (!status.ok())
+    return status;
+  const int device = output->device();
+  if (stream.device() != device) {
+    return {ErrorCode::kInvalidArgument,
+            "bias add stream is on a different CUDA device"};
+  }
+  status = buffer_size(*output, output_bytes, device, "bias add output");
+  if (!status.ok())
+    return status;
+  status = buffer_size(bias, bias_bytes, device, "bias add bias");
+  if (!status.ok())
+    return status;
+  status = select_device(device);
+  if (!status.ok())
+    return status;
+  add_bias_kernel<<<grid_for(elements), kThreads, 0, stream.get()>>>(
+      static_cast<__nv_bfloat16 *>(output->data()),
+      static_cast<const __nv_bfloat16 *>(bias.data()), elements, width);
+  return launch_status("add_bias_kernel");
+}
+
 Status bf16_mlp(const BlasLt &handle, const DeviceBuffer &input,
                 const DeviceBuffer &l1_weight, const DeviceBuffer &l2_weight,
                 const DeviceBuffer &l3_weight, const std::size_t rows,
@@ -916,27 +1189,36 @@ Status bf16_mlp(const BlasLt &handle, const DeviceBuffer &input,
     return {ErrorCode::kInvalidArgument,
             "bf16_mlp requires workspace and output"};
   }
-  auto status =
-      bf16_linear(handle, input, l1_weight, nullptr, rows, width, inner_width,
-                  &workspace->first, &workspace->blas, stream);
+  auto status = bf16_linear(handle, input, l1_weight, nullptr, rows, width,
+                            inner_width, &workspace->first, &workspace->blas,
+                            stream, &workspace->up_plan);
   if (!status.ok())
     return status;
-  status =
-      bf16_linear(handle, input, l2_weight, nullptr, rows, width, inner_width,
-                  &workspace->second, &workspace->blas, stream);
+  status = bf16_linear(handle, input, l2_weight, nullptr, rows, width,
+                       inner_width, &workspace->second, &workspace->blas,
+                       stream, &workspace->up_plan);
   if (!status.ok())
     return status;
   std::size_t gated_elements = 0;
   if (!multiply(rows, inner_width, &gated_elements)) {
     return {ErrorCode::kInvalidArgument, "bf16_mlp dimensions overflow"};
   }
-  status = bf16_gated_elementwise(workspace->first, workspace->second,
-                                  gated_elements, activation, &workspace->gated,
-                                  stream);
+  const DeviceBuffer *gated_first = &workspace->first;
+  if (activation == GatedActivation::kGelu) {
+    status = bf16_gelu(workspace->first, gated_elements, &workspace->activated,
+                       stream);
+    if (!status.ok())
+      return status;
+    gated_first = &workspace->activated;
+  }
+  status = bf16_gated_elementwise(*gated_first, workspace->second,
+                                  gated_elements, GatedActivation::kIdentity,
+                                  &workspace->gated, stream);
   if (!status.ok())
     return status;
   return bf16_linear(handle, workspace->gated, l3_weight, nullptr, rows,
-                     inner_width, width, output, &workspace->blas, stream);
+                     inner_width, width, output, &workspace->blas, stream,
+                     &workspace->down_plan);
 }
 
 } // namespace evo2c::cuda

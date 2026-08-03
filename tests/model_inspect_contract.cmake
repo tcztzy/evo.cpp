@@ -24,7 +24,7 @@ execute_process(
 if(NOT inspect_result EQUAL 0)
   message(FATAL_ERROR "evo2c-inspect failed: ${inspect_error}${inspect_output}")
 endif()
-if(NOT inspect_output MATCHES "format=EVO2C version=1.*checksum=ok" OR
+if(NOT inspect_output MATCHES "format=SAFETENSORS profile=evo2-runtime-v1.*validation=ok" OR
    NOT inspect_output MATCHES "metadata model.name type=string value=tiny-evo2" OR
    NOT inspect_output MATCHES "tensor_count=2" OR
    NOT inspect_output MATCHES "tensor embed.weight dtype=BF16 shape=\\[2,2\\]")
@@ -51,4 +51,3 @@ if(missing_result EQUAL 0 OR NOT missing_error MATCHES "invalid_argument: tensor
 endif()
 
 file(REMOVE "${EVO2C_FIXTURE_PATH}")
-

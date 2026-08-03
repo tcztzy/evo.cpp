@@ -83,15 +83,6 @@ def metrics(result: subprocess.CompletedProcess[bytes]) -> dict[str, object]:
     raise AssertionError("successful CUDA CLI command omitted parseable metrics")
 
 
-def cosine(left: tuple[float, ...], right: tuple[float, ...]) -> float:
-    dot = math.fsum(
-        first * second for first, second in zip(left, right, strict=True)
-    )
-    left_norm = math.sqrt(math.fsum(value * value for value in left))
-    right_norm = math.sqrt(math.fsum(value * value for value in right))
-    return dot / (left_norm * right_norm)
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", required=True, type=Path)
@@ -105,7 +96,7 @@ def main() -> int:
     gpu_list = ",".join(str(index) for index in range(gpu_count))
 
     args.work_dir.mkdir(parents=True, exist_ok=True)
-    model = args.work_dir / "tiny-50l-512v.evo2"
+    model = args.work_dir / "tiny-50l-512v.safetensors"
     subprocess.run(
         [
             sys.executable,
@@ -185,17 +176,9 @@ def main() -> int:
         raise AssertionError(
             "teacher-forced prompt cache changed the greedy continuation"
         )
-    _, full_values = npy_f32(full_prompt_logits)
-    _, forced_values = npy_f32(forced_prompt_logits)
-    prompt_cosine = cosine(full_values, forced_values)
-    if (
-        prompt_cosine < 0.9999
-        or max(range(len(full_values)), key=full_values.__getitem__)
-        != max(range(len(forced_values)), key=forced_values.__getitem__)
-    ):
+    if full_prompt_logits.read_bytes() != forced_prompt_logits.read_bytes():
         raise AssertionError(
-            "teacher-forced prompt cache does not meet the cached-decode "
-            f"contract (cosine={prompt_cosine})"
+            "teacher-forced prompt cache changed a raw generation-logit bit"
         )
 
     long_prompt_logits = args.work_dir / "long-prompt-chunked-logits.npy"
@@ -232,35 +215,24 @@ def main() -> int:
             "multi-token continuation changed the greedy token relative to "
             "one-token cached decode"
         )
-    _, long_chunked_values = npy_f32(long_prompt_logits)
-    _, long_forced_values = npy_f32(long_forced_logits)
-    long_cosine = cosine(long_chunked_values, long_forced_values)
-    if (
-        long_cosine < 0.9999
-        or max(
-            range(len(long_chunked_values)), key=long_chunked_values.__getitem__
-        )
-        != max(range(len(long_forced_values)), key=long_forced_values.__getitem__)
-    ):
+    if long_prompt_logits.read_bytes() != long_forced_logits.read_bytes():
         raise AssertionError(
-            "multi-token continuation does not match one-token cached decode "
-            f"(cosine={long_cosine})"
+            "default and explicit exact prompt forcing changed a raw logit bit"
         )
     chunked_metrics = metrics(long_chunked)
     forced_metrics = metrics(long_forced)
     if (
-        chunked_metrics["prefill_tokens"] != 9
-        or chunked_metrics["teacher_force_tokens"] != 0
+        chunked_metrics["prefill_tokens"] != 8
+        or chunked_metrics["teacher_force_tokens"] != 1
         or chunked_metrics["kv_cache"] != "bf16_contiguous"
         or forced_metrics["prefill_tokens"] != 8
         or forced_metrics["teacher_force_tokens"] != 1
     ):
         raise AssertionError(
-            "chunked prefill and teacher-force metrics do not expose their "
-            "distinct execution paths"
+            "default or explicit exact prompt-forcing metrics are incorrect"
         )
 
-    q8_capacity = run_checked(
+    rejected_q8 = subprocess.run(
         [
             str(args.binary),
             "-m",
@@ -275,38 +247,37 @@ def main() -> int:
             gpu_list,
             "--top-k",
             "1",
-        ]
-    )
-    q8_metrics = metrics(q8_capacity)
-    q8_cache_bytes = sum(
-        int(stage["cache_bytes"]) for stage in q8_metrics["gpus"]
-    )
-    if (
-        q8_metrics["kv_cache"] != "q8_paged"
-        or q8_cache_bytes < 8 * 524288
-    ):
-        raise AssertionError(
-            "Q8 metrics do not include all eight lazily allocated first pages"
-        )
-
-    rejected_layer = subprocess.run(
-        [
-            *long_prompt_command,
-            "--dump-layer",
-            f"17:{args.work_dir / 'rejected-chunked-layer.npy'}",
         ],
         check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
     if (
-        rejected_layer.returncode == 0
-        or b"--dump-layer is unavailable when prefill spans multiple "
-        b"activation chunks" not in rejected_layer.stderr
+        rejected_q8.returncode == 0
+        or b"exact Vortex cached attention requires a BF16 KV cache"
+        not in rejected_q8.stderr
     ):
         raise AssertionError(
-            "multi-chunk layer dump did not fail with its actionable "
-            "limitation"
+            "exact generation silently accepted the approximate Q8 KV path"
+        )
+
+    rejected_threshold = subprocess.run(
+        [
+            *long_prompt_command,
+            "--force-prompt-threshold",
+            "9",
+        ],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if (
+        rejected_threshold.returncode == 0
+        or b"exact cached prefill must fit one activation chunk"
+        not in rejected_threshold.stderr
+    ):
+        raise AssertionError(
+            "oversized exact cached prefill threshold was not rejected"
         )
 
     score_input = args.work_dir / "score.txt"

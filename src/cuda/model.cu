@@ -13,6 +13,7 @@
 #include <limits>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include <cuda_bf16.h>
@@ -31,7 +32,27 @@ constexpr std::size_t kMaximumArenaTokens = 8192;
 constexpr std::size_t kTestFixtureArenaTokens = 8;
 constexpr std::size_t kQ8KvContextThreshold = 131072;
 constexpr std::size_t kQ8KvPageTokens = 16384;
-enum class ForwardMode { kPrefill, kContinue, kDecode };
+constexpr std::size_t kBackendWarmupTokens = 128;
+enum class ForwardMode {
+  kPrefill,
+  kCachedPrefill,
+  kContinue,
+  kDecode,
+  kCachedDecode
+};
+
+constexpr bool is_initial_prefill(const ForwardMode mode) noexcept {
+  return mode == ForwardMode::kPrefill || mode == ForwardMode::kCachedPrefill;
+}
+
+constexpr bool is_decode(const ForwardMode mode) noexcept {
+  return mode == ForwardMode::kDecode || mode == ForwardMode::kCachedDecode;
+}
+
+constexpr bool uses_cached_attention(const ForwardMode mode) noexcept {
+  return mode == ForwardMode::kCachedPrefill ||
+         mode == ForwardMode::kCachedDecode;
+}
 
 bool multiply(const std::size_t left, const std::size_t right,
               std::size_t *const result) {
@@ -136,9 +157,22 @@ Status metadata_list(const ModelFile &model, const std::string_view key,
 bool valid_dump_point(const LayerDumpPoint point) noexcept {
   return point == LayerDumpPoint::kBlockOutput ||
          point == LayerDumpPoint::kPreNorm ||
+         point == LayerDumpPoint::kMixerInputProjection ||
+         point == LayerDumpPoint::kMixerShortFilter ||
+         point == LayerDumpPoint::kMixerX2 ||
+         point == LayerDumpPoint::kMixerX1 ||
+         point == LayerDumpPoint::kMixerValue ||
+         point == LayerDumpPoint::kMixerPregate ||
+         point == LayerDumpPoint::kMixerState ||
+         point == LayerDumpPoint::kMixerFilter ||
+         point == LayerDumpPoint::kMixerConvolution ||
          point == LayerDumpPoint::kMixerOutput ||
+         point == LayerDumpPoint::kMixerProjection ||
          point == LayerDumpPoint::kMixerResidual ||
          point == LayerDumpPoint::kPostNorm ||
+         point == LayerDumpPoint::kMlpL1 || point == LayerDumpPoint::kMlpL2 ||
+         point == LayerDumpPoint::kMlpActivation ||
+         point == LayerDumpPoint::kMlpGated ||
          point == LayerDumpPoint::kMlpOutput;
 }
 
@@ -181,64 +215,27 @@ Status upload_tensor(const ModelFile &model, const std::string &name,
   return Status::Ok();
 }
 
-Status projection_fp8_scales(const ModelFile &model,
-                             const std::string &prefix,
+Status projection_fp8_scales(const ModelFile &model, const std::string &prefix,
                              float *const input_scale,
-                             float *const weight_scale,
                              float *const output_scale) {
   const TensorInfo *scale_tensor = nullptr;
-  const TensorInfo *inverse_tensor = nullptr;
-  const TensorInfo *history_tensor = nullptr;
-  auto status = checked_tensor(
-      model, prefix + ".fp8_scale_fwd", TensorDType::kF32, {2},
-      &scale_tensor);
-  if (!status.ok())
-    return status;
-  status = checked_tensor(
-      model, prefix + ".fp8_scale_inv_fwd", TensorDType::kF32, {2},
-      &inverse_tensor);
-  if (!status.ok())
-    return status;
-  status = checked_tensor(
-      model, prefix + ".fp8_amax_history_fwd", TensorDType::kF32, {16, 2},
-      &history_tensor);
+  auto status = checked_tensor(model, prefix + ".fp8_runtime_scales",
+                               TensorDType::kF32, {2}, &scale_tensor);
   if (!status.ok())
     return status;
 
   std::array<float, 2> scales{};
-  std::array<float, 2> inverse{};
-  std::array<float, 32> history{};
-  std::memcpy(scales.data(), model.tensor_data(*scale_tensor),
-              sizeof(scales));
-  std::memcpy(inverse.data(), model.tensor_data(*inverse_tensor),
-              sizeof(inverse));
-  std::memcpy(history.data(), model.tensor_data(*history_tensor),
-              sizeof(history));
+  status = model.read_tensor(*scale_tensor, 0, scales.data(), sizeof(scales));
+  if (!status.ok())
+    return status;
   if (std::any_of(scales.begin(), scales.end(), [](const float value) {
         return !std::isfinite(value) || value <= 0.0F;
-      }) ||
-      std::any_of(inverse.begin(), inverse.end(), [](const float value) {
-        return !std::isfinite(value) || value <= 0.0F;
-      }) ||
-      std::any_of(history.begin(), history.end(), [](const float value) {
-        return !std::isfinite(value) || value < 0.0F;
       })) {
     return {ErrorCode::kModelFormat,
-            prefix + " contains invalid software-FP8 scale state"};
-  }
-  if (inverse[0] != 1.0F / scales[0] ||
-      inverse[1] != 1.0F / scales[1]) {
-    return {ErrorCode::kModelFormat,
-            prefix + " inverse scales do not match forward scales"};
-  }
-  const float combined_inverse = inverse[0] * inverse[1];
-  if (!std::isfinite(combined_inverse) || combined_inverse <= 0.0F) {
-    return {ErrorCode::kModelFormat,
-            prefix + " combined inverse scale is invalid"};
+            prefix + " contains invalid software-FP8 runtime scales"};
   }
   *input_scale = scales[0];
-  *weight_scale = scales[1];
-  *output_scale = combined_inverse;
+  *output_scale = scales[1];
   return Status::Ok();
 }
 
@@ -276,6 +273,119 @@ __global__ void embedding_kernel(const TokenId *const tokens,
     output[index] =
         embedding[static_cast<std::size_t>(tokens[token]) * width + column];
   }
+}
+
+__global__ void qkv_weight_to_input_major_kernel(
+    const __nv_bfloat16 *const source, __nv_bfloat16 *const target,
+    const std::size_t width, const std::size_t head_dim,
+    const std::size_t elements) {
+  const std::size_t output_width = width * 3;
+  for (std::size_t index =
+           static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+       index < elements;
+       index += static_cast<std::size_t>(blockDim.x) * gridDim.x) {
+    const std::size_t source_output = index / width;
+    const std::size_t input = index % width;
+    const std::size_t head = source_output / (3 * head_dim);
+    const std::size_t within_head = source_output % (3 * head_dim);
+    const std::size_t component = within_head / head_dim;
+    const std::size_t dimension = within_head % head_dim;
+    const std::size_t projection_output =
+        component * width + head * head_dim + dimension;
+    target[input * output_width + projection_output] = source[index];
+  }
+}
+
+template <typename Element>
+__global__ void
+expand_grouped_filter_kernel(const Element *const source, Element *const target,
+                             const std::size_t channels_per_group,
+                             const std::size_t kernel_size,
+                             const std::size_t elements) {
+  for (std::size_t index =
+           static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+       index < elements;
+       index += static_cast<std::size_t>(blockDim.x) * gridDim.x) {
+    const std::size_t channel = index / kernel_size;
+    const std::size_t tap = index % kernel_size;
+    const std::size_t group = channel / channels_per_group;
+    target[index] = source[group * kernel_size + tap];
+  }
+}
+
+Status canonicalize_qkv_weight(const int device, const std::size_t width,
+                               const std::size_t head_dim, const Stream &stream,
+                               DeviceBuffer *const weight) {
+  std::size_t elements = 0;
+  if (weight == nullptr || head_dim == 0 || width % head_dim != 0 ||
+      !multiply(width, width, &elements) || !multiply(elements, 3, &elements)) {
+    return {ErrorCode::kInvalidArgument,
+            "QKV weight canonicalization dimensions overflow"};
+  }
+  DeviceBuffer source = std::move(*weight);
+  auto status =
+      allocate_bf16(weight, device, elements, "input-major QKV weight");
+  if (!status.ok())
+    return status;
+  status = select_device(device);
+  if (!status.ok())
+    return status;
+  qkv_weight_to_input_major_kernel<<<grid_for(elements), kThreads, 0,
+                                     stream.get()>>>(
+      static_cast<const __nv_bfloat16 *>(source.data()),
+      static_cast<__nv_bfloat16 *>(weight->data()), width, head_dim, elements);
+  status = cuda_status(cudaPeekAtLastError(),
+                       "input-major QKV weight canonicalization kernel");
+  if (!status.ok())
+    return status;
+  // The temporary source owns the checkpoint-order allocation. Complete the
+  // queued upload and reorder before that allocation is released.
+  return stream.synchronize();
+}
+
+Status expand_grouped_filter(const int device, const std::size_t channels,
+                             const std::size_t groups,
+                             const std::size_t kernel_size,
+                             const HcmFilterDType dtype, const Stream &stream,
+                             DeviceBuffer *const weight) {
+  std::size_t elements = 0;
+  const std::size_t element_size =
+      dtype == HcmFilterDType::kF32 ? sizeof(float) : sizeof(__nv_bfloat16);
+  std::size_t bytes = 0;
+  if (weight == nullptr || groups == 0 || channels % groups != 0 ||
+      !multiply(channels, kernel_size, &elements) ||
+      !multiply(elements, element_size, &bytes)) {
+    return {ErrorCode::kInvalidArgument,
+            "grouped filter expansion dimensions overflow"};
+  }
+  DeviceBuffer source = std::move(*weight);
+  auto status = weight->allocate(device, bytes);
+  if (!status.ok())
+    return status;
+  status = select_device(device);
+  if (!status.ok())
+    return status;
+  const std::size_t channels_per_group = channels / groups;
+  if (dtype == HcmFilterDType::kF32) {
+    expand_grouped_filter_kernel<float>
+        <<<grid_for(elements), kThreads, 0, stream.get()>>>(
+            static_cast<const float *>(source.data()),
+            static_cast<float *>(weight->data()), channels_per_group,
+            kernel_size, elements);
+  } else {
+    expand_grouped_filter_kernel<__nv_bfloat16>
+        <<<grid_for(elements), kThreads, 0, stream.get()>>>(
+            static_cast<const __nv_bfloat16 *>(source.data()),
+            static_cast<__nv_bfloat16 *>(weight->data()), channels_per_group,
+            kernel_size, elements);
+  }
+  status =
+      cuda_status(cudaPeekAtLastError(), "grouped filter expansion kernel");
+  if (!status.ok())
+    return status;
+  // The upload and expansion are ordered on this stream. Synchronize before
+  // the checkpoint-order source allocation is released.
+  return stream.synchronize();
 }
 
 Status write_npy(const std::string &path, const std::vector<float> &values,
@@ -346,8 +456,16 @@ struct Arena final {
   DeviceBuffer value;
   DeviceBuffer mixer_scratch;
   DeviceBuffer mixer_output;
+  DeviceBuffer attention_lse_accum;
+  DeviceBuffer attention_output_accum;
+  DeviceBuffer attention_scaled_key;
+  DeviceBuffer attention_scores;
+  DeviceBuffer attention_probabilities;
   DeviceBuffer logits;
   DeviceBuffer blas_workspace;
+  Bf16LinearPlan projection_plan;
+  Bf16LinearPlan output_plan;
+  Bf16LinearPlan final_plan;
   MlpWorkspace mlp;
 };
 
@@ -374,15 +492,43 @@ std::size_t layer_cache_bytes(const Layer &layer) noexcept {
 }
 
 std::size_t arena_bytes(const Arena &arena) noexcept {
-  return total_bytes({&arena.token_ids, &arena.hidden, &arena.residual,
-                      &arena.normalized, &arena.projection,
-                      &arena.short_filtered, &arena.x2, &arena.x1, &arena.value,
-                      &arena.mixer_scratch, &arena.mixer_output, &arena.logits,
-                      &arena.blas_workspace, &arena.mlp.first,
-                      &arena.mlp.second, &arena.mlp.gated, &arena.mlp.blas});
+  return total_bytes({&arena.token_ids,
+                      &arena.hidden,
+                      &arena.residual,
+                      &arena.normalized,
+                      &arena.projection,
+                      &arena.short_filtered,
+                      &arena.x2,
+                      &arena.x1,
+                      &arena.value,
+                      &arena.mixer_scratch,
+                      &arena.mixer_output,
+                      &arena.attention_lse_accum,
+                      &arena.attention_output_accum,
+                      &arena.attention_scaled_key,
+                      &arena.attention_scores,
+                      &arena.attention_probabilities,
+                      &arena.logits,
+                      &arena.blas_workspace,
+                      &arena.mlp.first,
+                      &arena.mlp.second,
+                      &arena.mlp.activated,
+                      &arena.mlp.gated,
+                      &arena.mlp.blas});
 }
 
 } // namespace
+
+std::size_t backend_warmup_tokens(const RuntimeModelConfig &config,
+                                  const std::size_t arena_capacity) noexcept {
+  constexpr std::string_view family = "evo2_7b";
+  // Populate lazy CUDA modules plus the common short-prefill FFT/BLAS plans
+  // while model loading is already an explicitly synchronized operation.
+  return !config.test_fixture && arena_capacity >= kBackendWarmupTokens &&
+                 config.model_id.compare(0, family.size(), family) == 0
+             ? kBackendWarmupTokens
+             : 0;
+}
 
 Status read_runtime_model_config(const ModelFile &model,
                                  const bool allow_test_fixture,
@@ -390,8 +536,15 @@ Status read_runtime_model_config(const ModelFile &model,
   if (config == nullptr)
     return {ErrorCode::kInvalidArgument, "model config output is null"};
   RuntimeModelConfig candidate;
+  std::string runtime_abi;
+  auto status = metadata_string(model, "runtime.abi", &runtime_abi);
+  if (!status.ok())
+    return status;
+  if (runtime_abi != "evo2-safetensors-v1") {
+    return {ErrorCode::kUnsupported, "unsupported runtime ABI: " + runtime_abi};
+  }
   std::string architecture;
-  auto status = metadata_string(model, "model.architecture", &architecture);
+  status = metadata_string(model, "model.architecture", &architecture);
   if (!status.ok())
     return status;
   if (architecture != "StripedHyena2" && architecture != "StripedHyena2Test") {
@@ -407,7 +560,7 @@ Status read_runtime_model_config(const ModelFile &model,
               "synthetic model fixtures require explicit test permission"};
   }
   const bool has_model_id = model.find_metadata("model.id") != nullptr;
-  for (const auto item :
+  for (const auto &item :
        {std::pair{"config.vocab_size", &candidate.vocab_size},
         std::pair{"config.hidden_size", &candidate.width},
         std::pair{"config.num_layers", &candidate.layers},
@@ -435,7 +588,7 @@ Status read_runtime_model_config(const ModelFile &model,
     std::size_t max_batch_size = 0;
     std::size_t inner_size_multiple = 0;
     std::size_t projection_groups = 0;
-    for (const auto item :
+    for (const auto &item :
          {std::pair{"config.num_filters", &num_filters},
           std::pair{"config.max_batch_size", &max_batch_size},
           std::pair{"config.inner_size_multiple_of", &inner_size_multiple},
@@ -450,9 +603,8 @@ Status read_runtime_model_config(const ModelFile &model,
               "model filter/batch/projection metadata is not an official "
               "Evo 2 profile"};
     }
-    status =
-        metadata_u64(model, "config.hcl_filter_groups",
-                     &candidate.hcl_filter_groups);
+    status = metadata_u64(model, "config.hcl_filter_groups",
+                          &candidate.hcl_filter_groups);
     if (!status.ok())
       return status;
     status = metadata_u64(model, "config.max_seqlen", &candidate.max_seqlen);
@@ -513,7 +665,8 @@ Status read_runtime_model_config(const ModelFile &model,
       column_split_hyena || !interleave || flip)
     return {ErrorCode::kUnsupported,
             "model semantic flags do not match supported Evo 2"};
-  candidate.qkv_head_major = column_split;
+  candidate.qkv_source_head_major = column_split;
+  candidate.qkv_head_major = false;
   if (!candidate.test_fixture) {
     bool short_filter_bias = true;
     bool evo2_activations = false;
@@ -521,7 +674,7 @@ Status read_runtime_model_config(const ModelFile &model,
     bool qkv_bias = true;
     bool mha_bias = false;
     bool hyena_bias = false;
-    for (const auto item :
+    for (const auto &item :
          {std::pair{"config.short_filter_bias", &short_filter_bias},
           std::pair{"config.evo2_style_activations", &evo2_activations},
           std::pair{"config.final_norm", &final_norm},
@@ -535,10 +688,9 @@ Status read_runtime_model_config(const ModelFile &model,
     std::string tokenizer;
     std::string prefill;
     std::string activation;
-    for (const auto item :
-         {std::pair{"config.tokenizer_type", &tokenizer},
-          std::pair{"config.prefill_style", &prefill},
-          std::pair{"config.mlp_activation", &activation}}) {
+    for (const auto &item : {std::pair{"config.tokenizer_type", &tokenizer},
+                             std::pair{"config.prefill_style", &prefill},
+                             std::pair{"config.mlp_activation", &activation}}) {
       status = metadata_string(model, item.first, item.second);
       if (!status.ok())
         return status;
@@ -558,8 +710,7 @@ Status read_runtime_model_config(const ModelFile &model,
     if (!status.ok())
       return status;
   } else if (candidate.test_fixture || use_fp8_input_projections) {
-    projection_dtype =
-        use_fp8_input_projections ? "E4M3_SW" : "BF16";
+    projection_dtype = use_fp8_input_projections ? "E4M3_SW" : "BF16";
   } else {
     return {ErrorCode::kModelFormat,
             "required metadata is missing: hyena_projection_dtype"};
@@ -575,9 +726,8 @@ Status read_runtime_model_config(const ModelFile &model,
   const bool software_fp8 =
       candidate.hyena_projection_dtype == HyenaProjectionDType::kE4M3Sw;
   if (software_fp8 != use_fp8_input_projections) {
-    return {ErrorCode::kModelFormat,
-            "hyena_projection_dtype disagrees with "
-            "config.use_fp8_input_projections"};
+    return {ErrorCode::kModelFormat, "hyena_projection_dtype disagrees with "
+                                     "config.use_fp8_input_projections"};
   }
 
   std::string hcm_filter_dtype = "BF16";
@@ -597,26 +747,6 @@ Status read_runtime_model_config(const ModelFile &model,
             "unsupported medium-Hyena filter dtype: " + hcm_filter_dtype};
   }
 
-  std::string projection_weight_dtype = "BF16";
-  if (model.find_metadata("hyena_projection_weight_dtype") != nullptr) {
-    status = metadata_string(model, "hyena_projection_weight_dtype",
-                             &projection_weight_dtype);
-    if (!status.ok())
-      return status;
-  } else if (has_model_id)
-    return {ErrorCode::kModelFormat,
-            "registered models require hyena_projection_weight_dtype metadata"};
-  if (projection_weight_dtype == "BF16") {
-    candidate.hyena_projection_weight_dtype =
-        HyenaProjectionWeightDType::kBF16;
-  } else if (projection_weight_dtype == "F32") {
-    candidate.hyena_projection_weight_dtype = HyenaProjectionWeightDType::kF32;
-  } else {
-    return {ErrorCode::kUnsupported,
-            "unsupported Hyena projection weight dtype: " +
-                projection_weight_dtype};
-  }
-
   if (!candidate.test_fixture && software_fp8) {
     std::string fp8_reference;
     status = metadata_string(model, "fp8.reference", &fp8_reference);
@@ -627,8 +757,7 @@ Status read_runtime_model_config(const ModelFile &model,
               "unsupported software-FP8 checkpoint reference: " +
                   fp8_reference};
     }
-  } else if (!software_fp8 &&
-             model.find_metadata("fp8.reference") != nullptr) {
+  } else if (!software_fp8 && model.find_metadata("fp8.reference") != nullptr) {
     return {ErrorCode::kModelFormat,
             "BF16 Hyena projections must not declare fp8.reference"};
   }
@@ -671,11 +800,6 @@ Status read_runtime_model_config(const ModelFile &model,
       const bool precision =
           (candidate.hyena_projection_dtype == HyenaProjectionDType::kBF16) ==
           (spec.projection_precision == OfficialProjectionPrecision::kBF16);
-      const bool weight_dtype =
-          (candidate.hyena_projection_weight_dtype ==
-           HyenaProjectionWeightDType::kBF16) ==
-          (spec.projection_weight_dtype ==
-           OfficialProjectionWeightDType::kBF16);
       const bool hcm_dtype =
           (candidate.hcm_filter_dtype == HcmFilterDType::kBF16) ==
           (spec.hcm_filter_dtype == OfficialHcmFilterDType::kBF16);
@@ -695,9 +819,8 @@ Status read_runtime_model_config(const ModelFile &model,
              candidate.rope_base == static_cast<float>(spec.rope_base) &&
              candidate.rope_scale == static_cast<float>(spec.rope_scale) &&
              candidate.interpolated_rope == spec.interpolated_rope &&
-             precision && weight_dtype && hcm_dtype && hcs == spec.hcs &&
-             hcm == spec.hcm && hcl == spec.hcl &&
-             attention == spec.attention;
+             precision && hcm_dtype && hcs == spec.hcs && hcm == spec.hcm &&
+             hcl == spec.hcl && attention == spec.attention;
     };
     const OfficialModelSpec *official = nullptr;
     if (has_model_id) {
@@ -772,16 +895,15 @@ Status read_runtime_model_config(const ModelFile &model,
                           {candidate.vocab_size, candidate.width});
   if (!status.ok())
     return status;
-  status =
-      require_tensor("norm.scale", TensorDType::kF32, {candidate.width});
+  status = require_tensor("norm.scale", TensorDType::kF32, {candidate.width});
   if (!status.ok())
     return status;
 
   for (std::size_t index = 0; index < candidate.layers; ++index) {
     const auto type = candidate.mixer_types[index];
     const std::string block = "blocks." + std::to_string(index);
-    for (const auto &name : {block + ".pre_norm.scale",
-                             block + ".post_norm.scale"}) {
+    for (const auto &name :
+         {block + ".pre_norm.scale", block + ".post_norm.scale"}) {
       status = require_tensor(name, TensorDType::kF32, {candidate.width});
       if (!status.ok())
         return status;
@@ -813,37 +935,32 @@ Status read_runtime_model_config(const ModelFile &model,
                               TensorDType::kBF16, {candidate.width});
       if (!status.ok())
         return status;
-      status = require_tensor(
-          block + ".inner_mha_cls.rotary_emb.inv_freq", TensorDType::kF32,
-          {candidate.head_dim() / 2});
+      status = require_tensor(block + ".inner_mha_cls.rotary_emb.inv_freq",
+                              TensorDType::kF32, {candidate.head_dim() / 2});
       if (!status.ok())
         return status;
       continue;
     }
 
     const std::string projection = block + ".projections";
-    status = require_tensor(
-        projection + ".weight",
-        candidate.hyena_projection_weight_dtype ==
-                HyenaProjectionWeightDType::kF32
-            ? TensorDType::kF32
-            : TensorDType::kBF16,
-        {candidate.width * 3, candidate.width});
+    status = require_tensor(projection + ".weight",
+                            software_fp8 ? TensorDType::kE4M3Software
+                                         : TensorDType::kBF16,
+                            {candidate.width * 3, candidate.width});
     if (!status.ok())
       return status;
-    status = require_tensor(block + ".out_filter_dense.weight",
-                            TensorDType::kBF16,
-                            {candidate.width, candidate.width});
+    status =
+        require_tensor(block + ".out_filter_dense.weight", TensorDType::kBF16,
+                       {candidate.width, candidate.width});
     if (!status.ok())
       return status;
     status = require_tensor(block + ".out_filter_dense.bias",
                             TensorDType::kBF16, {candidate.width});
     if (!status.ok())
       return status;
-    status = require_tensor(block + ".filter.short_filter_weight",
-                            TensorDType::kBF16,
-                            {candidate.width * 3, 1,
-                             candidate.short_filter_length});
+    status = require_tensor(
+        block + ".filter.short_filter_weight", TensorDType::kBF16,
+        {candidate.width * 3, 1, candidate.short_filter_length});
     if (!status.ok())
       return status;
     if (type == MixerType::kHcs) {
@@ -861,12 +978,10 @@ Status read_runtime_model_config(const ModelFile &model,
                 : TensorDType::kBF16,
             {candidate.hcm_filter_groups, 1, candidate.hcm_filter_length});
       } else if (status.ok()) {
-        status = require_tensor(
-            block + ".filter.log_poles", TensorDType::kF32,
-            {candidate.width, candidate.state_size, 1});
+        status = require_tensor(block + ".filter.log_poles", TensorDType::kF32,
+                                {candidate.width, candidate.state_size, 1});
         if (status.ok()) {
-          status = require_tensor(block + ".filter.residues",
-                                  TensorDType::kF32,
+          status = require_tensor(block + ".filter.residues", TensorDType::kF32,
                                   {candidate.width, candidate.state_size});
         }
       }
@@ -874,16 +989,8 @@ Status read_runtime_model_config(const ModelFile &model,
     if (!status.ok())
       return status;
     if (software_fp8) {
-      status = require_tensor(projection + ".fp8_scale_fwd",
+      status = require_tensor(projection + ".fp8_runtime_scales",
                               TensorDType::kF32, {2});
-      if (status.ok()) {
-        status = require_tensor(projection + ".fp8_scale_inv_fwd",
-                                TensorDType::kF32, {2});
-      }
-      if (status.ok()) {
-        status = require_tensor(projection + ".fp8_amax_history_fwd",
-                                TensorDType::kF32, {16, 2});
-      }
       if (!status.ok())
         return status;
     }
@@ -891,9 +998,9 @@ Status read_runtime_model_config(const ModelFile &model,
   if (expected_tensors.size() != model.tensors().size()) {
     for (const auto &tensor : model.tensors()) {
       if (expected_tensors.count(tensor.name) == 0) {
-        return {ErrorCode::kModelFormat,
-                "unknown tensor for model profile '" + candidate.model_id +
-                    "': " + tensor.name};
+        return {ErrorCode::kModelFormat, "unknown tensor for model profile '" +
+                                             candidate.model_id +
+                                             "': " + tensor.name};
       }
     }
     return {ErrorCode::kModelFormat,
@@ -913,6 +1020,7 @@ struct SingleGpuModel::Impl final {
   bool q8_kv_cache{false};
   bool loaded{false};
   bool state_valid{false};
+  bool cached_attention{false};
   Stream stream;
   BlasLt blas;
   DeviceBuffer embedding;
@@ -1006,6 +1114,13 @@ struct SingleGpuModel::Impl final {
           {config.width * 3, config.width}, device, stream, &layer->projection);
       if (!status.ok())
         return status;
+      if (config.qkv_source_head_major) {
+        status =
+            canonicalize_qkv_weight(device, config.width, config.head_dim(),
+                                    stream, &layer->projection);
+        if (!status.ok())
+          return status;
+      }
       status = upload_tensor(model, prefix + ".inner_mha_cls.out_proj.weight",
                              TensorDType::kBF16, {config.width, config.width},
                              device, stream, &layer->output_weight);
@@ -1024,60 +1139,28 @@ struct SingleGpuModel::Impl final {
         return status;
       return q8_kv_cache
                  ? layer->kv_cache.allocate_q8_paged(
-                       device, context_capacity, config.heads, config.head_dim(),
-                       kQ8KvPageTokens, stream)
+                       device, context_capacity, config.heads,
+                       config.head_dim(), kQ8KvPageTokens, stream)
                  : layer->kv_cache.allocate(device, context_capacity,
                                             config.heads, config.head_dim());
     }
 
     if (config.hyena_projection_dtype == HyenaProjectionDType::kE4M3Sw) {
-      float weight_scale = 0.0F;
-      status = projection_fp8_scales(
-          model, prefix + ".projections", &layer->projection_input_scale,
-          &weight_scale, &layer->projection_output_scale);
+      status = projection_fp8_scales(model, prefix + ".projections",
+                                     &layer->projection_input_scale,
+                                     &layer->projection_output_scale);
       if (!status.ok())
         return status;
-      DeviceBuffer original_projection;
       status = upload_tensor(
-          model, prefix + ".projections.weight",
-          config.hyena_projection_weight_dtype ==
-                  HyenaProjectionWeightDType::kF32
-              ? TensorDType::kF32
-              : TensorDType::kBF16,
-          {config.width * 3, config.width}, device, stream,
-          &original_projection);
+          model, prefix + ".projections.weight", TensorDType::kE4M3Software,
+          {config.width * 3, config.width}, device, stream, &layer->projection);
       if (!status.ok())
         return status;
-      std::size_t projection_elements = 0;
-      if (!multiply(config.width * 3, config.width,
-                    &projection_elements)) {
-        return {ErrorCode::kInvalidArgument,
-                "projection weight dimensions overflow"};
-      }
-      status = layer->projection.allocate(device, projection_elements);
-      if (!status.ok())
-        return status;
-      status = config.hyena_projection_weight_dtype ==
-                       HyenaProjectionWeightDType::kF32
-                   ? software_e4m3_quantize_f32_codes(
-                         original_projection, projection_elements,
-                         weight_scale, &layer->projection, stream)
-                   : software_e4m3_quantize_bf16_codes(
-                         original_projection, projection_elements,
-                         weight_scale, &layer->projection, stream);
-      if (!status.ok())
-        return status;
-      status = stream.synchronize();
-      if (!status.ok())
-        return {status.code(),
-                "software-FP8 projection quantization: " +
-                    status.message()};
       layer->software_fp8_projection = true;
     } else {
       status = upload_tensor(
           model, prefix + ".projections.weight", TensorDType::kBF16,
-          {config.width * 3, config.width}, device, stream,
-          &layer->projection);
+          {config.width * 3, config.width}, device, stream, &layer->projection);
       if (!status.ok())
         return status;
     }
@@ -1115,11 +1198,16 @@ struct SingleGpuModel::Impl final {
     if (layer->type == MixerType::kHcm) {
       status = upload_tensor(
           model, prefix + ".filter.h",
-          config.hcm_filter_dtype == HcmFilterDType::kF32
-              ? TensorDType::kF32
-              : TensorDType::kBF16,
+          config.hcm_filter_dtype == HcmFilterDType::kF32 ? TensorDType::kF32
+                                                          : TensorDType::kBF16,
           {config.hcm_filter_groups, 1, config.hcm_filter_length}, device,
           stream, &layer->inner_filter);
+      if (!status.ok())
+        return status;
+      status = expand_grouped_filter(
+          device, config.width, config.hcm_filter_groups,
+          config.hcm_filter_length, config.hcm_filter_dtype, stream,
+          &layer->inner_filter);
       if (!status.ok())
         return status;
       status = upload_tensor(model, prefix + ".filter.D", TensorDType::kBF16,
@@ -1155,19 +1243,25 @@ struct SingleGpuModel::Impl final {
       if (layer.type == MixerType::kAttention)
         layer.kv_cache.reset_length();
     }
-    const std::size_t hcm_size = fir_fft_size(rows, config.hcm_filter_length);
-    const std::size_t hcl_size = rows == 1 ? 0 : fir_fft_size(rows, rows);
-    if (hcm_size == 0 || (rows > 1 && hcl_size == 0))
+    const bool hcm_uses_fft = hcm_prefill_uses_fft(rows);
+    const std::size_t hcm_size = hcm_uses_fft ? hcm_fft_size(rows) : 0;
+    const std::size_t hcl_size = hcl_fft_size(rows);
+    if ((hcm_uses_fft && hcm_size == 0) || hcl_size == 0)
       return {ErrorCode::kInvalidArgument, "prefill FFT dimensions overflow"};
-    hcm_fft.reset();
-    hcl_fft.reset();
-    auto status = hcm_fft.allocate(device, config.width,
-                                   config.hcm_filter_groups, hcm_size);
-    if (!status.ok())
-      return status;
-    if (rows == 1)
+    if (hcm_uses_fft &&
+        !hcm_fft.matches(device, config.width, config.width, hcm_size)) {
+      hcm_fft.reset();
+      auto status =
+          hcm_fft.allocate(device, config.width, config.width, hcm_size);
+      if (!status.ok())
+        return status;
+    }
+    if (hcl_fft.matches(device, config.width, config.width, hcl_size,
+                        FftInputMode::kRealFullSpectrum))
       return Status::Ok();
-    return hcl_fft.allocate(device, config.width, config.width, hcl_size);
+    hcl_fft.reset();
+    return hcl_fft.allocate(device, config.width, config.width, hcl_size,
+                            FftInputMode::kRealFullSpectrum);
   }
 
   [[nodiscard]] Status embed(const std::vector<TokenId> &tokens) {
@@ -1196,7 +1290,9 @@ struct SingleGpuModel::Impl final {
   }
 
   [[nodiscard]] Status run_mixer(Layer *const layer, const std::size_t rows,
-                                 const ForwardMode mode) {
+                                 const ForwardMode mode,
+                                 const std::size_t index,
+                                 const std::vector<LayerDump> &dumps) {
     auto status =
         layer->software_fp8_projection
             ? software_e4m3_h100_linear(
@@ -1206,7 +1302,16 @@ struct SingleGpuModel::Impl final {
                   &arena.projection, stream)
             : bf16_linear(blas, arena.normalized, layer->projection, nullptr,
                           rows, config.width, config.width * 3,
-                          &arena.projection, &arena.blas_workspace, stream);
+                          &arena.projection, &arena.blas_workspace, stream,
+                          &arena.projection_plan,
+                          layer->type == MixerType::kAttention &&
+                                  config.qkv_source_head_major
+                              ? LinearWeightLayout::kInputMajor
+                              : LinearWeightLayout::kOutputMajor);
+    if (!status.ok())
+      return status;
+    status = dump_matching(dumps, index, LayerDumpPoint::kMixerInputProjection,
+                           arena.projection, rows, config.width * 3);
     if (!status.ok())
       return status;
     if (layer->type == MixerType::kAttention) {
@@ -1223,15 +1328,45 @@ struct SingleGpuModel::Impl final {
                                config.rope_scale, stream);
       if (!status.ok())
         return status;
+      for (const auto &[point, buffer] :
+           {std::pair{LayerDumpPoint::kMixerX2, &arena.x2},
+            std::pair{LayerDumpPoint::kMixerX1, &arena.x1},
+            std::pair{LayerDumpPoint::kMixerValue, &arena.value}}) {
+        status =
+            dump_matching(dumps, index, point, *buffer, rows, config.width);
+        if (!status.ok())
+          return status;
+      }
       status =
           bf16_kv_append(arena.x1, arena.value, rows, &layer->kv_cache, stream);
       if (!status.ok())
         return status;
-      return bf16_online_causal_attention(
-          arena.x2, rows, prefix, layer->kv_cache, &arena.mixer_output, stream);
+      if (uses_cached_attention(mode)) {
+        if (layer->kv_cache.type != KvCacheType::kBF16) {
+          return {ErrorCode::kUnsupported,
+                  "exact Vortex cached attention requires a BF16 KV cache"};
+        }
+        return bf16_cached_cross_attention(
+            arena.x2, layer->kv_cache.key, layer->kv_cache.value, rows,
+            layer->kv_cache.length, config.heads, config.head_dim(),
+            &arena.attention_scaled_key, &arena.attention_scores,
+            &arena.attention_probabilities, &arena.mixer_output, stream);
+      }
+      return layer->kv_cache.type == KvCacheType::kBF16 &&
+                     config.head_dim() == 128
+                 ? bf16_flash_causal_attention(
+                       arena.x2, layer->kv_cache.key, layer->kv_cache.value,
+                       rows, layer->kv_cache.length, config.heads,
+                       config.head_dim(), &arena.mixer_scratch,
+                       &arena.attention_lse_accum,
+                       &arena.attention_output_accum, &arena.mixer_output,
+                       stream)
+                 : bf16_online_causal_attention(arena.x2, rows, prefix,
+                                                layer->kv_cache,
+                                                &arena.mixer_output, stream);
     }
 
-    if (mode == ForwardMode::kPrefill) {
+    if (is_initial_prefill(mode)) {
       status = bf16_fir_prefill_direct(
           arena.projection, layer->short_filter, nullptr, rows,
           config.width * 3, config.width * 3, config.short_filter_length,
@@ -1252,79 +1387,117 @@ struct SingleGpuModel::Impl final {
     }
     if (!status.ok())
       return status;
+    status = dump_matching(dumps, index, LayerDumpPoint::kMixerShortFilter,
+                           arena.short_filtered, rows, config.width * 3);
+    if (!status.ok())
+      return status;
     status =
         bf16_split_hyena_projection(arena.short_filtered, rows, config.width,
                                     &arena.x2, &arena.x1, &arena.value, stream);
     if (!status.ok())
       return status;
+    for (const auto &[point, buffer] :
+         {std::pair{LayerDumpPoint::kMixerX2, &arena.x2},
+          std::pair{LayerDumpPoint::kMixerX1, &arena.x1},
+          std::pair{LayerDumpPoint::kMixerValue, &arena.value}}) {
+      status = dump_matching(dumps, index, point, *buffer, rows, config.width);
+      if (!status.ok())
+        return status;
+    }
     if (layer->type == MixerType::kHcs) {
-      if (mode == ForwardMode::kPrefill) {
-        return bf16_hcs_prefill(
+      if (is_initial_prefill(mode)) {
+        status = bf16_hcs_prefill(
             arena.x2, arena.x1, arena.value, layer->inner_filter, rows,
             config.width, config.hcs_filter_groups, config.hcs_filter_length,
             &layer->inner_cache, &arena.mixer_scratch, &arena.mixer_output,
             stream);
-      }
-      if (mode == ForwardMode::kContinue) {
-        return bf16_hcs_continue(
+      } else if (mode == ForwardMode::kContinue) {
+        status = bf16_hcs_continue(
             arena.x2, arena.x1, arena.value, layer->inner_filter, rows,
             config.width, config.hcs_filter_groups, config.hcs_filter_length,
             &layer->inner_cache, &arena.mixer_scratch, &arena.mixer_output,
             stream);
+      } else {
+        status = bf16_hcs_decode(
+            arena.x2, arena.x1, arena.value, layer->inner_filter, config.width,
+            config.hcs_filter_groups, config.hcs_filter_length,
+            &layer->inner_cache, &arena.mixer_scratch, &arena.mixer_output,
+            stream);
       }
-      return bf16_hcs_decode(
-          arena.x2, arena.x1, arena.value, layer->inner_filter, config.width,
-          config.hcs_filter_groups, config.hcs_filter_length,
-          &layer->inner_cache, &arena.mixer_scratch, &arena.mixer_output,
-          stream);
-    }
-    if (layer->type == MixerType::kHcm) {
-      const auto weight_type =
-          config.hcm_filter_dtype == HcmFilterDType::kF32
-              ? FirWeightType::kF32
-              : FirWeightType::kBF16;
-      if (mode == ForwardMode::kPrefill) {
-        return bf16_hcm_prefill(
-            arena.x2, arena.x1, arena.value, layer->inner_filter,
-            layer->direct, rows, config.width, config.hcm_filter_groups,
-            config.hcm_filter_length, &layer->inner_cache,
-            &arena.mixer_scratch, &arena.mixer_output, &hcm_fft, stream,
-            weight_type);
+    } else if (layer->type == MixerType::kHcm) {
+      const auto weight_type = config.hcm_filter_dtype == HcmFilterDType::kF32
+                                   ? FirWeightType::kF32
+                                   : FirWeightType::kBF16;
+      if (is_initial_prefill(mode)) {
+        if (!hcm_prefill_uses_fft(rows)) {
+          status = bf16_hcm_prefill_direct(
+              arena.x2, arena.x1, arena.value, layer->inner_filter,
+              layer->direct, rows, config.width, config.width,
+              config.hcm_filter_length, &layer->inner_cache,
+              &arena.mixer_scratch, &arena.mixer_output, stream, weight_type);
+        } else {
+          status = bf16_hcm_prefill(
+              arena.x2, arena.x1, arena.value, layer->inner_filter,
+              layer->direct, rows, config.width, config.width,
+              config.hcm_filter_length, &layer->inner_cache,
+              &arena.mixer_scratch, &arena.mixer_output, &hcm_fft, stream,
+              weight_type);
+        }
+      } else if (mode == ForwardMode::kContinue) {
+        status = bf16_hcm_continue(
+            arena.x2, arena.x1, arena.value, layer->inner_filter, layer->direct,
+            rows, config.width, config.width, config.hcm_filter_length,
+            &layer->inner_cache, &arena.mixer_scratch, &arena.mixer_output,
+            stream, weight_type);
+      } else {
+        status = bf16_hcm_decode(
+            arena.x2, arena.x1, arena.value, layer->inner_filter, layer->direct,
+            config.width, config.width, config.hcm_filter_length,
+            &layer->inner_cache, &arena.mixer_scratch, &arena.mixer_output,
+            stream, weight_type);
       }
-      if (mode == ForwardMode::kContinue) {
-        return bf16_hcm_continue(
-            arena.x2, arena.x1, arena.value, layer->inner_filter,
-            layer->direct, rows, config.width, config.hcm_filter_groups,
-            config.hcm_filter_length, &layer->inner_cache,
-            &arena.mixer_scratch, &arena.mixer_output, stream, weight_type);
-      }
-      return bf16_hcm_decode(
-          arena.x2, arena.x1, arena.value, layer->inner_filter, layer->direct,
-          config.width, config.hcm_filter_groups, config.hcm_filter_length,
-          &layer->inner_cache, &arena.mixer_scratch, &arena.mixer_output,
-          stream, weight_type);
-    }
-    if (mode == ForwardMode::kContinue) {
-      return bf16_hcl_prefill(
+    } else if (mode == ForwardMode::kContinue) {
+      status = bf16_hcl_prefill(
           arena.x2, arena.x1, arena.value, layer->direct, layer->log_poles,
           layer->residues, rows, config.width, config.state_size,
           HclPrefillMode::kRecurrenceContinue, &layer->iir_cache,
           &arena.mixer_scratch, &arena.mixer_output, nullptr, stream);
+    } else if (is_initial_prefill(mode)) {
+      status = bf16_hcl_prefill(
+          arena.x2, arena.x1, arena.value, layer->direct, layer->log_poles,
+          layer->residues, rows, config.width, config.state_size,
+          HclPrefillMode::kFft, &layer->iir_cache, &arena.mixer_scratch,
+          &arena.mixer_output, &hcl_fft, stream);
+    } else {
+      status = bf16_hcl_decode(
+          arena.x2, arena.x1, arena.value, layer->direct, layer->log_poles,
+          layer->residues, config.width, config.state_size, &layer->iir_cache,
+          &arena.mixer_scratch, &arena.mixer_output, stream);
     }
-    const auto hcl_mode =
-        rows == 1 ? HclPrefillMode::kRecurrence : HclPrefillMode::kFft;
-    return mode == ForwardMode::kPrefill
-               ? bf16_hcl_prefill(
-                     arena.x2, arena.x1, arena.value, layer->direct,
-                     layer->log_poles, layer->residues, rows, config.width,
-                     config.state_size, hcl_mode, &layer->iir_cache,
-                     &arena.mixer_scratch, &arena.mixer_output,
-                     rows == 1 ? nullptr : &hcl_fft, stream)
-               : bf16_hcl_decode(
-                     arena.x2, arena.x1, arena.value, layer->direct,
-                     layer->log_poles, layer->residues, config.width,
-                     config.state_size, &layer->iir_cache,
-                     &arena.mixer_output, stream);
+    if (!status.ok())
+      return status;
+    if (layer->type == MixerType::kHcl) {
+      status = dump_f32_matching(dumps, index, LayerDumpPoint::kMixerState,
+                                 layer->iir_cache.state, config.width,
+                                 config.state_size);
+      if (!status.ok())
+        return status;
+    }
+    status = dump_matching(dumps, index, LayerDumpPoint::kMixerPregate,
+                           arena.mixer_scratch, rows, config.width);
+    if (!status.ok())
+      return status;
+    if (layer->type == MixerType::kHcl && is_initial_prefill(mode)) {
+      status = dump_channel_time_f32_matching(
+          dumps, index, LayerDumpPoint::kMixerFilter, hcl_fft.filter_time(),
+          config.width, rows, hcl_fft.fft_size());
+      if (!status.ok())
+        return status;
+      return dump_channel_time_f32_matching(
+          dumps, index, LayerDumpPoint::kMixerConvolution,
+          hcl_fft.output_time(), config.width, rows, hcl_fft.fft_size());
+    }
+    return Status::Ok();
   }
 
   [[nodiscard]] Status dump_buffer(const DeviceBuffer &buffer,
@@ -1344,6 +1517,75 @@ struct SingleGpuModel::Impl final {
     for (const auto value : raw)
       values.push_back(__bfloat162float(value));
     return write_npy(dump.path, values, rows, columns);
+  }
+
+  [[nodiscard]] Status dump_f32(const DeviceBuffer &buffer,
+                                const LayerDump &dump, const std::size_t rows,
+                                const std::size_t columns) {
+    std::vector<float> values(rows * columns);
+    auto status = buffer.copy_to_host(
+        values.data(), values.size() * sizeof(values[0]), stream);
+    if (!status.ok())
+      return status;
+    status = stream.synchronize();
+    if (!status.ok())
+      return status;
+    return write_npy(dump.path, values, rows, columns);
+  }
+
+  [[nodiscard]] Status dump_f32_matching(const std::vector<LayerDump> &dumps,
+                                         const std::size_t layer,
+                                         const LayerDumpPoint point,
+                                         const DeviceBuffer &buffer,
+                                         const std::size_t rows,
+                                         const std::size_t columns) {
+    for (const auto &dump : dumps) {
+      if (dump.layer == layer && dump.point == point) {
+        auto status = dump_f32(buffer, dump, rows, columns);
+        if (!status.ok())
+          return status;
+      }
+    }
+    return Status::Ok();
+  }
+
+  [[nodiscard]] Status dump_channel_time_f32(const DeviceBuffer &buffer,
+                                             const LayerDump &dump,
+                                             const std::size_t channels,
+                                             const std::size_t length,
+                                             const std::size_t stride) {
+    std::vector<float> channel_major(channels * stride);
+    auto status = buffer.copy_to_host(
+        channel_major.data(), channel_major.size() * sizeof(float), stream);
+    if (!status.ok())
+      return status;
+    status = stream.synchronize();
+    if (!status.ok())
+      return status;
+    std::vector<float> time_major(length * channels);
+    for (std::size_t time = 0; time < length; ++time) {
+      for (std::size_t channel = 0; channel < channels; ++channel) {
+        time_major[time * channels + channel] =
+            channel_major[channel * stride + time];
+      }
+    }
+    return write_npy(dump.path, time_major, length, channels);
+  }
+
+  [[nodiscard]] Status dump_channel_time_f32_matching(
+      const std::vector<LayerDump> &dumps, const std::size_t layer,
+      const LayerDumpPoint point, const DeviceBuffer &buffer,
+      const std::size_t channels, const std::size_t length,
+      const std::size_t stride) {
+    for (const auto &dump : dumps) {
+      if (dump.layer == layer && dump.point == point) {
+        auto status =
+            dump_channel_time_f32(buffer, dump, channels, length, stride);
+        if (!status.ok())
+          return status;
+      }
+    }
+    return Status::Ok();
   }
 
   [[nodiscard]] Status
@@ -1376,16 +1618,47 @@ struct SingleGpuModel::Impl final {
                              arena.normalized, rows, config.width);
       if (!status.ok())
         break;
-      status = run_mixer(&layer, rows, mode);
+      status = run_mixer(&layer, rows, mode, index, dumps);
       if (!status.ok())
         break;
       status = dump_matching(dumps, index, LayerDumpPoint::kMixerOutput,
                              arena.mixer_output, rows, config.width);
       if (!status.ok())
         break;
-      status = bf16_linear(blas, arena.mixer_output, layer.output_weight,
-                           &layer.output_bias, rows, config.width, config.width,
-                           &arena.residual, &arena.blas_workspace, stream);
+      const bool hyena_single_row =
+          layer.type != MixerType::kAttention && rows == 1;
+      const DeviceBuffer *const fused_output_bias =
+          layer.type == MixerType::kAttention || hyena_single_row
+              ? &layer.output_bias
+              : nullptr;
+      const bool hyena_noncontiguous =
+          layer.type != MixerType::kAttention && rows > 1;
+      const DeviceBuffer *projection_input = &arena.mixer_output;
+      auto projection_input_layout = LinearInputLayout::kRowMajor;
+      if (hyena_noncontiguous) {
+        status =
+            bf16_row_to_column_major(arena.mixer_output, rows, config.width,
+                                     &arena.mixer_scratch, stream);
+        if (!status.ok())
+          break;
+        projection_input = &arena.mixer_scratch;
+        projection_input_layout = LinearInputLayout::kColumnMajor;
+      }
+      status = bf16_linear(blas, *projection_input, layer.output_weight,
+                           fused_output_bias, rows, config.width, config.width,
+                           &arena.residual, &arena.blas_workspace, stream,
+                           &arena.output_plan, LinearWeightLayout::kOutputMajor,
+                           projection_input_layout);
+      if (!status.ok())
+        break;
+      if (fused_output_bias == nullptr) {
+        status = bf16_add_bias_inplace(&arena.residual, layer.output_bias, rows,
+                                       config.width, stream);
+        if (!status.ok())
+          break;
+      }
+      status = dump_matching(dumps, index, LayerDumpPoint::kMixerProjection,
+                             arena.residual, rows, config.width);
       if (!status.ok())
         break;
       status = bf16_add_inplace(&arena.residual, arena.hidden,
@@ -1410,6 +1683,24 @@ struct SingleGpuModel::Impl final {
       status = bf16_mlp(blas, arena.normalized, layer.l1, layer.l2, layer.l3,
                         rows, config.width, config.inner_width, activation,
                         &arena.mlp, &arena.hidden, stream);
+      if (!status.ok())
+        break;
+      status = dump_matching(dumps, index, LayerDumpPoint::kMlpL1,
+                             arena.mlp.first, rows, config.inner_width);
+      if (!status.ok())
+        break;
+      status = dump_matching(dumps, index, LayerDumpPoint::kMlpL2,
+                             arena.mlp.second, rows, config.inner_width);
+      if (!status.ok())
+        break;
+      if (activation == GatedActivation::kGelu) {
+        status = dump_matching(dumps, index, LayerDumpPoint::kMlpActivation,
+                               arena.mlp.activated, rows, config.inner_width);
+        if (!status.ok())
+          break;
+      }
+      status = dump_matching(dumps, index, LayerDumpPoint::kMlpGated,
+                             arena.mlp.gated, rows, config.inner_width);
       if (!status.ok())
         break;
       status = dump_matching(dumps, index, LayerDumpPoint::kMlpOutput,
@@ -1439,13 +1730,13 @@ struct SingleGpuModel::Impl final {
       return {ErrorCode::kInvalidArgument,
               "model forward arguments are invalid"};
     }
-    if (mode == ForwardMode::kPrefill) {
+    if (is_initial_prefill(mode)) {
       auto status = prepare_prefill(tokens.size());
       if (!status.ok())
         return status;
     } else if (!state_valid || position > context_capacity ||
                tokens.size() > context_capacity - position ||
-               (mode == ForwardMode::kDecode && tokens.size() != 1)) {
+               (is_decode(mode) && tokens.size() != 1)) {
       return {ErrorCode::kInvalidArgument,
               "continuation requires a valid prefill and free context "
               "capacity"};
@@ -1472,7 +1763,7 @@ struct SingleGpuModel::Impl final {
     if (status.ok()) {
       status = bf16_linear(blas, arena.normalized, embedding, nullptr, rows,
                            config.width, config.vocab_size, &arena.logits,
-                           &arena.blas_workspace, stream);
+                           &arena.blas_workspace, stream, &arena.final_plan);
     }
     if (!status.ok()) {
       state_valid = false;
@@ -1491,8 +1782,10 @@ struct SingleGpuModel::Impl final {
     logits->reserve(raw.size());
     for (const auto value : raw)
       logits->push_back(__bfloat162float(value));
-    position = mode == ForwardMode::kPrefill ? rows : position + rows;
+    position = is_initial_prefill(mode) ? rows : position + rows;
     state_valid = true;
+    if (is_initial_prefill(mode))
+      cached_attention = uses_cached_attention(mode);
     return Status::Ok();
   }
 };
@@ -1522,7 +1815,7 @@ Status SingleGpuModel::load(const ModelFile &model, const int device,
   impl_->context_capacity = context_capacity;
   impl_->arena_capacity = std::min(
       context_capacity, impl_->config.test_fixture ? kTestFixtureArenaTokens
-                                                  : kMaximumArenaTokens);
+                                                   : kMaximumArenaTokens);
   impl_->q8_kv_cache = context_capacity >= kQ8KvContextThreshold;
   status = select_device(device);
   if (!status.ok())
@@ -1563,6 +1856,20 @@ Status SingleGpuModel::load(const ModelFile &model, const int device,
   if (!status.ok())
     return status;
   impl_->loaded = true;
+  const auto warmup_tokens =
+      backend_warmup_tokens(impl_->config, impl_->arena_capacity);
+  if (warmup_tokens != 0) {
+    const std::vector<TokenId> tokens(warmup_tokens, static_cast<TokenId>('A'));
+    std::vector<float> logits;
+    status = impl_->forward(tokens, ForwardMode::kPrefill, &logits, {});
+    if (!status.ok()) {
+      impl_->loaded = false;
+      return {status.code(), "warm up CUDA backend: " + status.message()};
+    }
+    impl_->position = 0;
+    impl_->state_valid = false;
+    impl_->cached_attention = false;
+  }
   return Status::Ok();
 }
 
@@ -1581,15 +1888,40 @@ Status SingleGpuModel::prefill_with_dumps(const std::vector<TokenId> &tokens,
   return impl_->forward(tokens, ForwardMode::kPrefill, logits, dumps);
 }
 
+Status SingleGpuModel::prefill_cached(const std::vector<TokenId> &tokens,
+                                      std::vector<float> *const logits) {
+  return impl_->forward(tokens, ForwardMode::kCachedPrefill, logits, {});
+}
+
+Status
+SingleGpuModel::prefill_cached_with_dumps(const std::vector<TokenId> &tokens,
+                                          std::vector<float> *const logits,
+                                          const std::vector<LayerDump> &dumps) {
+  return impl_->forward(tokens, ForwardMode::kCachedPrefill, logits, dumps);
+}
+
 Status SingleGpuModel::prefill_chunk(const std::vector<TokenId> &tokens,
                                      std::vector<float> *const logits) {
+  if (impl_->cached_attention) {
+    return {ErrorCode::kInvalidArgument,
+            "cached prefill can only be continued with exact token decode"};
+  }
   return impl_->forward(tokens, ForwardMode::kContinue, logits, {});
 }
 
 Status SingleGpuModel::decode(const TokenId token,
                               std::vector<float> *const logits) {
-  return impl_->forward(std::vector<TokenId>{token}, ForwardMode::kDecode,
-                        logits, {});
+  const auto mode = impl_->cached_attention ? ForwardMode::kCachedDecode
+                                            : ForwardMode::kDecode;
+  return impl_->forward(std::vector<TokenId>{token}, mode, logits, {});
+}
+
+Status SingleGpuModel::decode_with_dumps(const TokenId token,
+                                         std::vector<float> *const logits,
+                                         const std::vector<LayerDump> &dumps) {
+  const auto mode = impl_->cached_attention ? ForwardMode::kCachedDecode
+                                            : ForwardMode::kDecode;
+  return impl_->forward(std::vector<TokenId>{token}, mode, logits, dumps);
 }
 
 const RuntimeModelConfig &SingleGpuModel::config() const noexcept {
@@ -1615,6 +1947,7 @@ struct PipelineModel::Impl final {
   bool q8_kv_cache{false};
   bool loaded{false};
   bool state_valid{false};
+  bool cached_attention{false};
   std::vector<StageAssignment> assignments;
   std::vector<std::unique_ptr<SingleGpuModel::Impl>> stages;
 
@@ -1626,7 +1959,7 @@ struct PipelineModel::Impl final {
       const int source = assignments[index].device;
       const int destination =
           assignments[(index + 1) % assignments.size()].device;
-      for (const auto pair :
+      for (const auto &pair :
            {std::pair{source, destination}, std::pair{destination, source}}) {
         if (!enabled.insert(pair).second)
           continue;
@@ -1672,7 +2005,7 @@ struct PipelineModel::Impl final {
       return {ErrorCode::kInvalidArgument,
               "pipeline model forward arguments are invalid"};
     }
-    if (mode == ForwardMode::kPrefill) {
+    if (is_initial_prefill(mode)) {
       position = 0;
       state_valid = false;
       for (auto &stage : stages) {
@@ -1684,7 +2017,7 @@ struct PipelineModel::Impl final {
       }
     } else if (!state_valid || position > context_capacity ||
                tokens.size() > context_capacity - position ||
-               (mode == ForwardMode::kDecode && tokens.size() != 1)) {
+               (is_decode(mode) && tokens.size() != 1)) {
       return {ErrorCode::kInvalidArgument,
               "pipeline continuation requires a valid prefill and free "
               "context capacity"};
@@ -1733,10 +2066,10 @@ struct PipelineModel::Impl final {
         bf16_rms_norm(head.arena.hidden, head.final_norm, rows, config.width,
                       config.epsilon, &head.arena.normalized, head.stream);
     if (status.ok()) {
-      status =
-          bf16_linear(head.blas, head.arena.normalized, head.embedding, nullptr,
-                      rows, config.width, config.vocab_size, &head.arena.logits,
-                      &head.arena.blas_workspace, head.stream);
+      status = bf16_linear(head.blas, head.arena.normalized, head.embedding,
+                           nullptr, rows, config.width, config.vocab_size,
+                           &head.arena.logits, &head.arena.blas_workspace,
+                           head.stream, &head.arena.final_plan);
     }
     if (!status.ok()) {
       state_valid = false;
@@ -1755,8 +2088,10 @@ struct PipelineModel::Impl final {
     logits->reserve(raw.size());
     for (const auto value : raw)
       logits->push_back(__bfloat162float(value));
-    position = mode == ForwardMode::kPrefill ? rows : position + rows;
+    position = is_initial_prefill(mode) ? rows : position + rows;
     state_valid = true;
+    if (is_initial_prefill(mode))
+      cached_attention = uses_cached_attention(mode);
     return Status::Ok();
   }
 };
@@ -1795,9 +2130,8 @@ Status PipelineModel::load(const ModelFile &model,
   }
   candidate->context_capacity = context_capacity;
   candidate->arena_capacity = std::min(
-      context_capacity, candidate->config.test_fixture
-                            ? kTestFixtureArenaTokens
-                            : kMaximumArenaTokens);
+      context_capacity, candidate->config.test_fixture ? kTestFixtureArenaTokens
+                                                       : kMaximumArenaTokens);
   candidate->q8_kv_cache = context_capacity >= kQ8KvContextThreshold;
   const std::size_t stage_count = devices.size();
   std::vector<std::size_t> layer_ends;
@@ -1910,10 +2244,10 @@ Status PipelineModel::load(const ModelFile &model,
       stage.layers.emplace_back();
       auto stage_status = stage.load_layer(model, index, &stage.layers.back());
       if (!stage_status.ok()) {
-        return {stage_status.code(),
-                "load block " + std::to_string(index) + " on CUDA device " +
-                    std::to_string(stage.device) + ": " +
-                    stage_status.message()};
+        return {stage_status.code(), "load block " + std::to_string(index) +
+                                         " on CUDA device " +
+                                         std::to_string(stage.device) + ": " +
+                                         stage_status.message()};
       }
     }
     auto stage_status = stage.allocate_arena();
@@ -1935,16 +2269,16 @@ Status PipelineModel::load(const ModelFile &model,
   try {
     for (std::size_t stage_index = 0; stage_index < stage_count;
          ++stage_index) {
-      stage_loads.push_back(std::async(std::launch::async, load_stage,
-                                       stage_index));
+      stage_loads.push_back(
+          std::async(std::launch::async, load_stage, stage_index));
     }
     for (std::size_t stage_index = 0; stage_index < stage_count;
          ++stage_index) {
       status = stage_loads[stage_index].get();
       if (!status.ok()) {
-        return {status.code(),
-                "load pipeline stage " + std::to_string(stage_index) + ": " +
-                    status.message()};
+        return {status.code(), "load pipeline stage " +
+                                   std::to_string(stage_index) + ": " +
+                                   status.message()};
       }
     }
   } catch (const std::exception &error) {
@@ -1954,6 +2288,19 @@ Status PipelineModel::load(const ModelFile &model,
   candidate->assignments.front().weight_bytes +=
       total_bytes({&head.embedding, &head.unembed, &head.final_norm});
   candidate->loaded = true;
+  const auto warmup_tokens =
+      backend_warmup_tokens(candidate->config, candidate->arena_capacity);
+  if (warmup_tokens != 0) {
+    const std::vector<TokenId> tokens(warmup_tokens, static_cast<TokenId>('A'));
+    std::vector<float> logits;
+    status = candidate->forward(tokens, ForwardMode::kPrefill, &logits, {});
+    if (!status.ok()) {
+      return {status.code(), "warm up CUDA pipeline: " + status.message()};
+    }
+    candidate->position = 0;
+    candidate->state_valid = false;
+    candidate->cached_attention = false;
+  }
   impl_ = std::move(candidate);
   return Status::Ok();
 }
@@ -1973,15 +2320,40 @@ Status PipelineModel::prefill_with_dumps(const std::vector<TokenId> &tokens,
   return impl_->forward(tokens, ForwardMode::kPrefill, logits, dumps);
 }
 
+Status PipelineModel::prefill_cached(const std::vector<TokenId> &tokens,
+                                     std::vector<float> *const logits) {
+  return impl_->forward(tokens, ForwardMode::kCachedPrefill, logits, {});
+}
+
+Status
+PipelineModel::prefill_cached_with_dumps(const std::vector<TokenId> &tokens,
+                                         std::vector<float> *const logits,
+                                         const std::vector<LayerDump> &dumps) {
+  return impl_->forward(tokens, ForwardMode::kCachedPrefill, logits, dumps);
+}
+
 Status PipelineModel::prefill_chunk(const std::vector<TokenId> &tokens,
                                     std::vector<float> *const logits) {
+  if (impl_->cached_attention) {
+    return {ErrorCode::kInvalidArgument,
+            "cached prefill can only be continued with exact token decode"};
+  }
   return impl_->forward(tokens, ForwardMode::kContinue, logits, {});
 }
 
 Status PipelineModel::decode(const TokenId token,
                              std::vector<float> *const logits) {
-  return impl_->forward(std::vector<TokenId>{token}, ForwardMode::kDecode,
-                        logits, {});
+  const auto mode = impl_->cached_attention ? ForwardMode::kCachedDecode
+                                            : ForwardMode::kDecode;
+  return impl_->forward(std::vector<TokenId>{token}, mode, logits, {});
+}
+
+Status PipelineModel::decode_with_dumps(const TokenId token,
+                                        std::vector<float> *const logits,
+                                        const std::vector<LayerDump> &dumps) {
+  const auto mode = impl_->cached_attention ? ForwardMode::kCachedDecode
+                                            : ForwardMode::kDecode;
+  return impl_->forward(std::vector<TokenId>{token}, mode, logits, dumps);
 }
 
 const RuntimeModelConfig &PipelineModel::config() const noexcept {

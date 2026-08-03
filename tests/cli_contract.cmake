@@ -33,13 +33,13 @@ if(NOT invalid_error MATCHES "invalid_argument: a nonempty model path is require
 endif()
 
 execute_process(
-  COMMAND "${EVO2C_BINARY}" -m fake.evo2 -p "Aé" -n 1 --gpu 0,1 --dump-tokens
+  COMMAND "${EVO2C_BINARY}" -m fake.safetensors -p "Aé" -n 1 --gpu 0,1 --dump-tokens
   RESULT_VARIABLE token_result
   OUTPUT_VARIABLE token_output
   ERROR_VARIABLE token_error)
 string(FIND "${token_error}" "tokens prompt=[65,195,169]" token_position)
 string(FIND "${token_error}" "unsupported: this evo2c binary was built without CUDA support" no_cuda_position)
-string(FIND "${token_error}" "io: open 'fake.evo2':" cuda_position)
+string(FIND "${token_error}" "io: open 'fake.safetensors':" cuda_position)
 if(token_result EQUAL 0 OR token_position EQUAL -1 OR
    (no_cuda_position EQUAL -1 AND cuda_position EQUAL -1))
   message(FATAL_ERROR "byte-token CLI contract failed: ${token_error}${token_output}")

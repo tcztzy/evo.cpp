@@ -322,8 +322,6 @@ def main() -> int:
             raise ValueError("prompt must encode to at least one byte")
         if args.generate_tokens < 0:
             raise ValueError("--generate-tokens must be nonnegative")
-        if args.generate_tokens > 0 and not args.logits_only:
-            raise ValueError("--generate-tokens requires --logits-only")
         if args.cached_generate and args.generate_tokens == 0:
             raise ValueError("--cached-generate requires --generate-tokens")
         if args.force_prompt_threshold <= 0:
@@ -368,9 +366,9 @@ def main() -> int:
 
         torch.manual_seed(1)
         torch.cuda.manual_seed_all(1)
-        if torch.cuda.device_count() != 4:
+        if torch.cuda.device_count() < 1:
             raise RuntimeError(
-                f"reference generation requires exactly four visible GPUs, found "
+                f"reference generation requires at least one visible GPU, found "
                 f"{torch.cuda.device_count()}"
             )
         model = StripedHyena(config)
@@ -390,6 +388,9 @@ def main() -> int:
             raise ValueError("--debug-layer is outside the model")
 
         handles: list[torch.utils.hooks.RemovableHandle] = []
+        debug_engine = None
+        original_modal_prefill = None
+        original_step_iir = None
 
         def save_tensor(filename: str, output: object) -> None:
             value = output[0] if isinstance(output, tuple) else output
@@ -425,9 +426,98 @@ def main() -> int:
 
         if args.debug_layer is not None:
             debug_block = model.blocks[args.debug_layer]
-            if not hasattr(debug_block, "filter"):
-                raise ValueError("--debug-layer currently requires a Hyena layer")
             debug_prefix = f"layer_{args.debug_layer}"
+
+            if (
+                hasattr(debug_block, "filter")
+                and debug_block.filter.fir_inner_filter_length is None
+            ):
+                debug_engine = debug_block.filter.engine
+                original_modal_prefill = debug_engine.prefill_via_modal_fft
+                original_step_iir = debug_engine.step_iir
+
+                def save_iir_state(state: torch.Tensor) -> None:
+                    if state.ndim != 3 or state.shape[0] != 1:
+                        raise TypeError("HCL state diagnostic has an unexpected shape")
+                    np.save(
+                        args.output_dir / f"{debug_prefix}_mixer_state.npy",
+                        state[0].detach().float().cpu().numpy(),
+                        allow_pickle=False,
+                    )
+
+                def capture_modal_prefill(*call_args: object, **call_kwargs: object) -> object:
+                    result = original_modal_prefill(*call_args, **call_kwargs)
+                    inference_params = call_kwargs.get("inference_params")
+                    layer_idx = call_kwargs.get("layer_idx")
+                    if inference_params is None or not isinstance(layer_idx, int):
+                        raise TypeError("HCL modal prefill diagnostic lacks cache metadata")
+                    save_iir_state(inference_params.state_dict[layer_idx])
+                    return result
+
+                def capture_step_iir(*call_args: object, **call_kwargs: object) -> object:
+                    if len(call_args) < 7 or not all(
+                        isinstance(value, torch.Tensor) for value in call_args[:7]
+                    ):
+                        raise TypeError("HCL step diagnostic lacks tensor inputs")
+                    x2, x1, value, direct, residues, poles, old_state = call_args[:7]
+                    gated = x1 * value
+                    expanded_poles = torch.exp(poles)[..., 0][None]
+                    decayed = expanded_poles * old_state
+                    updated = decayed + gated[..., None]
+                    residue_product = residues[None] * updated
+                    modal = torch.sum(residue_product, dim=-1)
+                    direct_product = direct * gated
+                    mixed = modal + direct_product
+                    postgate = x2 * mixed
+                    for suffix, tensor in (
+                        ("step_x2", x2),
+                        ("step_x1", x1),
+                        ("step_value", value),
+                        ("step_gated", gated),
+                        ("step_state_before", old_state),
+                        ("step_poles", expanded_poles),
+                        ("step_decayed", decayed),
+                        ("step_state_updated", updated),
+                        ("step_residue_product", residue_product),
+                        ("step_modal", modal),
+                        ("step_direct_product", direct_product),
+                        ("step_mixed", mixed),
+                        ("step_postgate", postgate),
+                    ):
+                        np.save(
+                            args.output_dir / f"{debug_prefix}_{suffix}.npy",
+                            tensor.detach().float().cpu().numpy(),
+                            allow_pickle=False,
+                        )
+                    for suffix, tensor in (
+                        ("x2", x2),
+                        ("x1", x1),
+                        ("value", value),
+                        ("pregate", gated),
+                    ):
+                        np.save(
+                            args.output_dir
+                            / f"{debug_prefix}_mixer_{suffix}.npy",
+                            tensor.detach().float().cpu().numpy(),
+                            allow_pickle=False,
+                        )
+                    short_filter = torch.stack((x2, x1, value), dim=-1)
+                    np.save(
+                        args.output_dir
+                        / f"{debug_prefix}_mixer_short_filter.npy",
+                        short_filter.flatten(1).detach().float().cpu().numpy(),
+                        allow_pickle=False,
+                    )
+                    result = original_step_iir(*call_args, **call_kwargs)
+                    if not isinstance(result, tuple) or not isinstance(
+                        result[1], torch.Tensor
+                    ):
+                        raise TypeError("HCL step diagnostic returned an invalid state")
+                    save_iir_state(result[1])
+                    return result
+
+                debug_engine.prefill_via_modal_fft = capture_modal_prefill
+                debug_engine.step_iir = capture_step_iir
 
             def capture_named(
                 filename: str,
@@ -454,13 +544,147 @@ def main() -> int:
 
                 return capture
 
+            def capture_mlp_l1(
+                _module: torch.nn.Module,
+                _inputs: tuple[object, ...],
+                output: object,
+            ) -> None:
+                if not isinstance(output, torch.Tensor):
+                    raise TypeError("MLP l1 debug hook received an unexpected value")
+                save_tensor(f"{debug_prefix}_mlp_l1.npy", output)
+                save_tensor(
+                    f"{debug_prefix}_mlp_activation.npy",
+                    torch.nn.functional.gelu(output),
+                )
+
+            def capture_hyena_input(
+                module: torch.nn.Module,
+                inputs: tuple[object, ...],
+            ) -> None:
+                if not inputs or not isinstance(inputs[0], torch.Tensor):
+                    raise TypeError("Hyena debug pre-hook received no tensor input")
+                projection = inputs[0]
+                save_tensor(
+                    f"{debug_prefix}_mixer_input_projection.npy", projection
+                )
+                length = projection.shape[1]
+                if args.cached_generate and length == 1:
+                    # Sequential Hyena uses its FIR/IIR caches. Recomputing a
+                    # length-one parallel convolution here would create
+                    # plausible-looking tensors that are not part of the
+                    # executed inference path. capture_step_iir records the
+                    # actual cached x2/x1/value/gate instead.
+                    return
+                channel_major = projection.permute(0, 2, 1)
+                short = torch.nn.functional.conv1d(
+                    channel_major.to(torch.float32),
+                    module.short_filter_weight.to(torch.float32),
+                    bias=None,
+                    stride=1,
+                    padding=module.short_filter_length - 1,
+                    groups=channel_major.shape[1],
+                )[..., :length].to(channel_major.dtype)
+                save_tensor(
+                    f"{debug_prefix}_mixer_short_filter.npy",
+                    short.permute(0, 2, 1),
+                )
+                if module.config.interleave:
+                    x2, x1, value = short[:, 0::3], short[:, 1::3], short[:, 2::3]
+                else:
+                    x2, x1, value = short.split(module.hidden_size, dim=1)
+                for suffix, tensor in (
+                    ("x2", x2),
+                    ("x1", x1),
+                    ("value", value),
+                ):
+                    save_tensor(
+                        f"{debug_prefix}_mixer_{suffix}.npy",
+                        tensor.permute(0, 2, 1),
+                    )
+                gated = x1 * value
+                save_tensor(
+                    f"{debug_prefix}_mixer_pregate.npy",
+                    gated.permute(0, 2, 1),
+                )
+                if module.h is not None:
+                    return
+                module.update_time(length, projection.device)
+                residues = module.residues.to(torch.float32)
+                log_poles = module.log_poles.to(torch.float32)
+                h = (
+                    residues[..., None] * (log_poles * module.t).exp()
+                ).sum(1)[None]
+                fft_size = 2 * length
+                spectrum = torch.fft.rfft(h, n=fft_size) / fft_size
+                input_spectrum = torch.fft.fft(gated.to(torch.float32), n=fft_size)
+                convolution = torch.fft.irfft(
+                    input_spectrum[..., : spectrum.shape[-1]] * spectrum,
+                    n=fft_size,
+                    norm="forward",
+                )[..., :length]
+                save_tensor(
+                    f"{debug_prefix}_mixer_filter.npy", h.permute(0, 2, 1)
+                )
+                save_tensor(
+                    f"{debug_prefix}_mixer_convolution.npy",
+                    convolution.permute(0, 2, 1),
+                )
+                convolved = convolution.to(gated.dtype)
+                direct = module.D[None, :, None]
+                direct_product = gated * direct
+                mixed = convolved + direct_product
+                postgate = mixed * x2
+                for suffix, tensor in (
+                    ("convolution_bf16", convolved),
+                    ("direct", direct.expand_as(gated)),
+                    ("direct_product", direct_product),
+                    ("mixed", mixed),
+                    ("postgate", postgate),
+                ):
+                    save_tensor(
+                        f"{debug_prefix}_mixer_{suffix}.npy",
+                        tensor.permute(0, 2, 1),
+                    )
+
+            def capture_attention_input(
+                _module: torch.nn.Module,
+                inputs: tuple[object, ...],
+            ) -> None:
+                if not inputs or not isinstance(inputs[0], torch.Tensor):
+                    raise TypeError("attention debug pre-hook received no qkv tensor")
+                qkv = inputs[0]
+                if qkv.ndim != 5 or qkv.shape[2] != 3:
+                    raise TypeError("attention debug pre-hook received malformed qkv")
+                for suffix, tensor in zip(("x2", "x1", "value"), qkv.unbind(2)):
+                    save_tensor(
+                        f"{debug_prefix}_mixer_{suffix}.npy",
+                        tensor.flatten(2),
+                    )
+
+            def capture_attention_output(
+                _module: torch.nn.Module,
+                _inputs: tuple[object, ...],
+                output: object,
+            ) -> None:
+                if not isinstance(output, torch.Tensor) or output.ndim != 4:
+                    raise TypeError("attention debug hook received malformed context")
+                save_tensor(
+                    f"{debug_prefix}_mixer_output.npy", output.flatten(2)
+                )
+
             handles.extend(
-                [
+                (
                     debug_block.pre_norm.register_forward_hook(
                         capture_named(f"{debug_prefix}_pre_norm.npy")
                     ),
-                    debug_block.filter.register_forward_hook(
-                        capture_named(f"{debug_prefix}_mixer_output.npy")
+                    debug_block.filter.register_forward_pre_hook(
+                        capture_hyena_input
+                    )
+                    if hasattr(debug_block, "filter")
+                    else debug_block.inner_mha_cls.Wqkv.register_forward_hook(
+                        capture_named(
+                            f"{debug_prefix}_mixer_input_projection.npy"
+                        )
                     ),
                     debug_block.post_norm.register_forward_pre_hook(
                         capture_input(f"{debug_prefix}_mixer_residual.npy")
@@ -468,11 +692,53 @@ def main() -> int:
                     debug_block.post_norm.register_forward_hook(
                         capture_named(f"{debug_prefix}_post_norm.npy")
                     ),
+                    debug_block.mlp.l1.register_forward_hook(capture_mlp_l1),
+                    debug_block.mlp.l2.register_forward_hook(
+                        capture_named(f"{debug_prefix}_mlp_l2.npy")
+                    ),
+                    debug_block.mlp.l3.register_forward_pre_hook(
+                        capture_input(f"{debug_prefix}_mlp_gated.npy")
+                    ),
                     debug_block.mlp.register_forward_hook(
                         capture_named(f"{debug_prefix}_mlp_output.npy")
                     ),
-                ]
+                )
             )
+            if hasattr(debug_block, "filter"):
+                handles.extend(
+                    (
+                        debug_block.filter.register_forward_hook(
+                            capture_named(f"{debug_prefix}_mixer_output.npy")
+                        ),
+                        debug_block.out_filter_dense.register_forward_hook(
+                            capture_named(
+                                f"{debug_prefix}_mixer_projection.npy"
+                            )
+                        ),
+                    )
+                )
+            else:
+                mha = debug_block.inner_mha_cls
+                handles.extend(
+                    (
+                        mha.inner_attn.register_forward_pre_hook(
+                            capture_attention_input
+                        ),
+                        mha.inner_attn.register_forward_hook(
+                            capture_attention_output
+                        ),
+                        mha.out_proj.register_forward_pre_hook(
+                            capture_input(
+                                f"{debug_prefix}_mixer_output.npy"
+                            )
+                        ),
+                        mha.out_proj.register_forward_hook(
+                            capture_named(
+                                f"{debug_prefix}_mixer_projection.npy"
+                            )
+                        ),
+                    )
+                )
 
         input_ids = torch.tensor(tokens, dtype=torch.int, device="cuda:0").unsqueeze(0)
         generated: list[int] = []
@@ -546,6 +812,9 @@ def main() -> int:
         finally:
             for handle in handles:
                 handle.remove()
+            if debug_engine is not None:
+                debug_engine.prefill_via_modal_fft = original_modal_prefill
+                debug_engine.step_iir = original_step_iir
         np.save(args.output_dir / "logits.npy", logits.numpy(), allow_pickle=False)
 
         top_values, top_tokens = torch.topk(logits[-1], k=10)
@@ -585,7 +854,7 @@ def main() -> int:
             "last_top10_logits": [float(value) for value in top_values.tolist()],
             "peak_allocated_bytes": [
                 int(torch.cuda.max_memory_allocated(torch.device(f"cuda:{device}")))
-                for device in range(4)
+                for device in range(torch.cuda.device_count())
             ],
         }
         manifest_partial = args.output_dir / ".manifest.json.partial"

@@ -1,35 +1,38 @@
-"""Streaming writer for the EVO2C v1 model container."""
+"""Deterministic streaming writer for runtime-ready Safetensors shards."""
 
 from __future__ import annotations
 
 import dataclasses
+import json
+import math
 import os
 import re
 import struct
 import tempfile
-import zlib
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
 
 
-MAGIC = b"EVO2C\0\0\0"
-HEADER_SIZE = 128
-DESCRIPTOR_SIZE = 256
-NAME_CAPACITY = 96
+PROFILE_KEY = "evo2.profile"
+PROFILE_VALUE = "evo2-runtime-v1"
+HEADER_ALIGNMENT = 8
+MAX_HEADER_SIZE = 16 * 1024 * 1024
 MAX_RANK = 8
-ALIGNMENT = 64
-HEADER_CRC_OFFSET = 80
-DESCRIPTOR_CRC_OFFSET = 196
+NAME_CAPACITY = 96
 DEFAULT_CHUNK_SIZE = 16 * 1024 * 1024
+DEFAULT_MAX_SHARD_SIZE = 4 * 1024 * 1024 * 1024
 
-DTYPE_IDS = {"F32": 1, "BF16": 2, "Q8_0": 3, "E4M3_SW": 4}
-METADATA_TYPE_IDS = {"string": 1, "u64": 2, "f64": 3, "bool": 4, "u64[]": 5, "bytes": 6}
+SAFETENSORS_DTYPES = {
+    "F32": "F32",
+    "BF16": "BF16",
+    "E4M3_SW": "F8_E4M3",
+}
 KEY_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 class FormatError(ValueError):
-    """Raised when an input cannot be represented by EVO2C v1."""
+    """Raised when an input cannot be represented by the runtime profile."""
 
 
 class TensorSource(Protocol):
@@ -58,17 +61,6 @@ class BytesTensorSource:
             yield view[offset : offset + chunk_size]
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
-class _TensorRecord:
-    source: TensorSource
-    offset: int
-    crc32: int
-
-
-def _align_up(value: int, alignment: int = ALIGNMENT) -> int:
-    return (value + alignment - 1) // alignment * alignment
-
-
 def _expected_nbytes(dtype: str, shape: tuple[int, ...]) -> int:
     elements = 1
     for dimension in shape:
@@ -83,10 +75,6 @@ def _expected_nbytes(dtype: str, shape: tuple[int, ...]) -> int:
         return elements * 2
     if dtype == "E4M3_SW":
         return elements
-    if dtype == "Q8_0":
-        if elements % 32:
-            raise FormatError("Q8_0 element count must be divisible by 32")
-        return elements // 32 * 34
     raise FormatError(f"unsupported tensor dtype {dtype!r}")
 
 
@@ -104,108 +92,256 @@ def _validate_tensor(source: TensorSource) -> None:
     expected = _expected_nbytes(source.dtype, source.shape)
     if source.nbytes != expected:
         raise FormatError(
-            f"tensor {source.name!r} has {source.nbytes} bytes; {source.dtype}{source.shape} requires {expected}"
+            f"tensor {source.name!r} has {source.nbytes} bytes; "
+            f"{source.dtype}{source.shape} requires {expected}"
         )
 
 
-def _encode_metadata_value(value: object) -> tuple[int, bytes]:
+def _encode_metadata_value(value: object) -> str:
     if isinstance(value, bool):
-        return METADATA_TYPE_IDS["bool"], bytes([int(value)])
+        return f"b:{int(value)}"
     if isinstance(value, int):
         if value < 0 or value >= 1 << 64:
             raise FormatError(f"metadata integer outside uint64: {value}")
-        return METADATA_TYPE_IDS["u64"], struct.pack("<Q", value)
+        return f"u:{value}"
     if isinstance(value, float):
-        return METADATA_TYPE_IDS["f64"], struct.pack("<d", value)
+        if not math.isfinite(value):
+            raise FormatError("metadata float must be finite")
+        bits = struct.unpack("<Q", struct.pack("<d", value))[0]
+        return f"f:{bits:016x}"
     if isinstance(value, str):
-        return METADATA_TYPE_IDS["string"], value.encode("utf-8")
+        return f"s:{value}"
     if isinstance(value, bytes):
-        return METADATA_TYPE_IDS["bytes"], value
-    if isinstance(value, list) and all(isinstance(item, int) and not isinstance(item, bool) for item in value):
+        return f"x:{value.hex()}"
+    if isinstance(value, list) and all(
+        isinstance(item, int) and not isinstance(item, bool) for item in value
+    ):
         if any(item < 0 or item >= 1 << 64 for item in value):
             raise FormatError("metadata u64 list contains an out-of-range value")
-        return METADATA_TYPE_IDS["u64[]"], b"".join(struct.pack("<Q", item) for item in value)
+        return "l:" + ",".join(str(item) for item in value)
     raise FormatError(f"unsupported metadata value type: {type(value).__name__}")
 
 
-def encode_metadata(metadata: Mapping[str, object]) -> bytes:
-    if len(metadata) > 4096:
-        raise FormatError("metadata entry count exceeds 4096")
-    section = bytearray(16)
-    section[:4] = b"META"
-    struct.pack_into("<H", section, 4, 1)
-    struct.pack_into("<I", section, 8, len(metadata))
+def encode_metadata(metadata: Mapping[str, object]) -> dict[str, str]:
+    if len(metadata) >= 4096:
+        raise FormatError("metadata entry count exceeds 4095")
+    encoded: dict[str, str] = {}
     for key in sorted(metadata):
         if not KEY_PATTERN.fullmatch(key) or len(key.encode("ascii")) > 255:
             raise FormatError(f"invalid metadata key {key!r}")
-        type_id, encoded_value = _encode_metadata_value(metadata[key])
-        encoded_key = key.encode("ascii")
-        section.extend(struct.pack("<HBBI", len(encoded_key), type_id, 0, len(encoded_value)))
-        section.extend(encoded_key)
-        section.extend(encoded_value)
-        section.extend(b"\0" * (_align_up(len(section), 8) - len(section)))
-    struct.pack_into("<I", section, 12, zlib.crc32(section[16:]))
-    if len(section) > 16 * 1024 * 1024:
-        raise FormatError("metadata section exceeds 16 MiB")
-    return bytes(section)
+        if key == PROFILE_KEY:
+            raise FormatError(f"{PROFILE_KEY} is reserved by the writer")
+        encoded[key] = _encode_metadata_value(metadata[key])
+    encoded[PROFILE_KEY] = f"s:{PROFILE_VALUE}"
+    return dict(sorted(encoded.items()))
 
 
-def _descriptor(record: _TensorRecord) -> bytes:
-    source = record.source
-    descriptor = bytearray(DESCRIPTOR_SIZE)
-    encoded_name = source.name.encode("ascii")
-    descriptor[: len(encoded_name)] = encoded_name
-    descriptor[96] = DTYPE_IDS[source.dtype]
-    descriptor[97] = len(source.shape)
-    elements = 1
-    for index, dimension in enumerate(source.shape):
-        struct.pack_into("<Q", descriptor, 104 + index * 8, dimension)
-        elements *= dimension
-    struct.pack_into("<Q", descriptor, 168, record.offset)
-    struct.pack_into("<Q", descriptor, 176, source.nbytes)
-    struct.pack_into("<Q", descriptor, 184, elements)
-    struct.pack_into("<I", descriptor, 192, record.crc32)
-    struct.pack_into("<I", descriptor, DESCRIPTOR_CRC_OFFSET, 0)
-    struct.pack_into("<I", descriptor, DESCRIPTOR_CRC_OFFSET, zlib.crc32(descriptor))
-    return bytes(descriptor)
-
-
-def _header(
-    *,
-    file_size: int,
-    metadata_size: int,
-    table_offset: int,
-    tensor_count: int,
-    data_offset: int,
+def _encode_header(
+    metadata: Mapping[str, object],
+    tensors: Sequence[TensorSource],
 ) -> bytes:
-    header = bytearray(HEADER_SIZE)
-    header[:8] = MAGIC
-    struct.pack_into("<I", header, 8, 1)
-    struct.pack_into("<I", header, 12, 0x01020304)
-    struct.pack_into("<I", header, 16, HEADER_SIZE)
-    struct.pack_into("<Q", header, 24, file_size)
-    struct.pack_into("<Q", header, 32, HEADER_SIZE)
-    struct.pack_into("<Q", header, 40, metadata_size)
-    struct.pack_into("<Q", header, 48, table_offset)
-    struct.pack_into("<Q", header, 56, tensor_count)
-    struct.pack_into("<I", header, 64, DESCRIPTOR_SIZE)
-    struct.pack_into("<I", header, 68, ALIGNMENT)
-    struct.pack_into("<Q", header, 72, data_offset)
-    struct.pack_into("<I", header, HEADER_CRC_OFFSET, 0)
-    struct.pack_into("<I", header, HEADER_CRC_OFFSET, zlib.crc32(header))
-    return bytes(header)
+    root: dict[str, object] = {"__metadata__": encode_metadata(metadata)}
+    offset = 0
+    for source in tensors:
+        end = offset + source.nbytes
+        if end >= 1 << 64:
+            raise FormatError("Safetensors data buffer exceeds uint64")
+        root[source.name] = {
+            "dtype": SAFETENSORS_DTYPES[source.dtype],
+            "shape": list(source.shape),
+            "data_offsets": [offset, end],
+        }
+        offset = end
+    raw = json.dumps(
+        root,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    padding = (-len(raw)) % HEADER_ALIGNMENT
+    header = raw + b" " * padding
+    if len(header) == 0 or len(header) > MAX_HEADER_SIZE:
+        raise FormatError("Safetensors header exceeds 16 MiB")
+    return header
 
 
-def _publish(temp_path: Path, output_path: Path, *, force: bool) -> None:
-    if force:
-        os.replace(temp_path, output_path)
-        return
+def _ordered_tensors(tensors: Sequence[TensorSource]) -> list[TensorSource]:
+    by_name = {source.name: source for source in tensors}
+    globals_first = [
+        by_name[name]
+        for name in ("embedding_layer.weight", "unembed.weight", "norm.scale")
+        if name in by_name
+    ]
+    global_names = {source.name for source in globals_first}
+    return [
+        *globals_first,
+        *(source for source in tensors if source.name not in global_names),
+    ]
+
+
+def _split_tensors(
+    tensors: Sequence[TensorSource], max_shard_size: int
+) -> list[list[TensorSource]]:
+    if max_shard_size <= 0:
+        raise ValueError("max_shard_size must be positive")
+    shards: list[list[TensorSource]] = []
+    shard: list[TensorSource] = []
+    shard_size = 0
+    for source in tensors:
+        if shard and shard_size + source.nbytes > max_shard_size:
+            shards.append(shard)
+            shard = []
+            shard_size = 0
+        shard.append(source)
+        shard_size += source.nbytes
+    if shard:
+        shards.append(shard)
+    return shards
+
+
+def plan_shards(
+    tensors: Sequence[TensorSource],
+    max_shard_size: int = DEFAULT_MAX_SHARD_SIZE,
+) -> list[list[TensorSource]]:
+    """Plan deterministic tensor-boundary shards in runtime load order."""
+    return _split_tensors(_ordered_tensors(tensors), max_shard_size)
+
+
+def _artifact_paths(output_path: Path, shard_count: int) -> tuple[list[Path], Path]:
+    if output_path.suffix != ".safetensors":
+        raise FormatError("output path must end in .safetensors")
+    if shard_count == 1:
+        return [output_path], output_path
+    stem = output_path.name.removesuffix(".safetensors")
+    shards = [
+        output_path.with_name(
+            f"{stem}-{index:05d}-of-{shard_count:05d}.safetensors"
+        )
+        for index in range(1, shard_count + 1)
+    ]
+    return shards, output_path.with_name(output_path.name + ".index.json")
+
+
+def _temporary_path(output_path: Path) -> tuple[object, Path]:
+    temporary = tempfile.NamedTemporaryFile(
+        mode="w+b",
+        prefix=f".{output_path.name}.",
+        suffix=".tmp",
+        dir=output_path.parent,
+        delete=False,
+    )
+    return temporary, Path(temporary.name)
+
+
+def _write_safetensors(
+    output_path: Path,
+    metadata: Mapping[str, object],
+    tensors: Sequence[TensorSource],
+    *,
+    chunk_size: int,
+    progress: Callable[[TensorSource], None] | None,
+) -> Path:
+    encoded_header = _encode_header(metadata, tensors)
+    temporary, temp_path = _temporary_path(output_path)
     try:
-        os.link(temp_path, output_path)
-    except FileExistsError:
-        raise FileExistsError(f"output already exists: {output_path}") from None
-    else:
-        temp_path.unlink()
+        with temporary as output:
+            total_size = (
+                8 + len(encoded_header) + sum(source.nbytes for source in tensors)
+            )
+            output.truncate(total_size)
+            output.seek(0)
+            output.write(struct.pack("<Q", len(encoded_header)))
+            output.write(encoded_header)
+            for source in tensors:
+                if progress is not None:
+                    progress(source)
+                written = 0
+                for raw_chunk in source.iter_chunks(chunk_size):
+                    chunk = memoryview(raw_chunk)
+                    if not chunk.contiguous:
+                        raise FormatError(
+                            f"tensor {source.name!r} yielded a non-contiguous chunk"
+                        )
+                    chunk = chunk.cast("B")
+                    if written + len(chunk) > source.nbytes:
+                        raise FormatError(
+                            f"tensor {source.name!r} yielded more bytes than declared"
+                        )
+                    output.write(chunk)
+                    written += len(chunk)
+                if written != source.nbytes:
+                    raise FormatError(
+                        f"tensor {source.name!r} yielded {written} bytes, "
+                        f"expected {source.nbytes}"
+                    )
+            output.flush()
+            os.fsync(output.fileno())
+        return temp_path
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+def _write_index(
+    output_path: Path,
+    tensors: Sequence[TensorSource],
+    shard_paths: Sequence[Path],
+    shards: Sequence[Sequence[TensorSource]],
+) -> Path:
+    weight_map = {
+        source.name: shard_path.name
+        for shard_path, shard in zip(shard_paths, shards, strict=True)
+        for source in shard
+    }
+    if len(weight_map) != len(tensors):
+        raise FormatError("internal error while building shard weight map")
+    payload = {
+        "metadata": {"total_size": sum(source.nbytes for source in tensors)},
+        "weight_map": weight_map,
+    }
+    temporary, temp_path = _temporary_path(output_path)
+    try:
+        with temporary as output:
+            output.write(
+                json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode(
+                    "ascii"
+                )
+            )
+            output.write(b"\n")
+            output.flush()
+            os.fsync(output.fileno())
+        return temp_path
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+def _publish_artifacts(
+    temporary_paths: Sequence[Path],
+    output_paths: Sequence[Path],
+    *,
+    force: bool,
+) -> None:
+    if len(temporary_paths) != len(output_paths):
+        raise FormatError("internal error while publishing model artifacts")
+    if not force:
+        for path in output_paths:
+            if path.exists():
+                raise FileExistsError(f"output already exists: {path}")
+
+    published: list[Path] = []
+    try:
+        for temporary, output in zip(temporary_paths, output_paths, strict=True):
+            if force:
+                os.replace(temporary, output)
+            else:
+                os.link(temporary, output)
+                temporary.unlink()
+                published.append(output)
+    except BaseException:
+        if not force:
+            for path in published:
+                path.unlink(missing_ok=True)
+        raise
 
 
 def write_model(
@@ -215,94 +351,71 @@ def write_model(
     *,
     force: bool = False,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
+    max_shard_size: int = DEFAULT_MAX_SHARD_SIZE,
     progress: Callable[[int, int, TensorSource], None] | None = None,
-) -> None:
-    """Write a model atomically while holding at most one chunk of tensor data."""
+) -> Path:
+    """Write one Safetensors file or standard size-based shards.
+
+    The returned path is the path the runtime should open: the Safetensors file
+    for a single shard, or ``model.safetensors.index.json`` for multiple shards.
+    """
     if chunk_size <= 0:
         raise ValueError("chunk_size must be positive")
+    if max_shard_size <= 0:
+        raise ValueError("max_shard_size must be positive")
     if not tensors:
         raise FormatError("model must contain at least one tensor")
     if len(tensors) > 1_000_000:
         raise FormatError("tensor count exceeds 1000000")
+
     names: set[str] = set()
     for source in tensors:
         _validate_tensor(source)
-        if source.name in names:
-            raise FormatError(f"duplicate tensor name {source.name!r}")
+        if source.name == "__metadata__" or source.name in names:
+            raise FormatError(f"duplicate or reserved tensor name {source.name!r}")
         names.add(source.name)
-
-    encoded_metadata = encode_metadata(metadata)
-    table_offset = _align_up(HEADER_SIZE + len(encoded_metadata))
-    data_offset = _align_up(table_offset + len(tensors) * DESCRIPTOR_SIZE)
-    planned_offsets: list[int] = []
-    cursor = data_offset
-    for source in tensors:
-        cursor = _align_up(cursor)
-        planned_offsets.append(cursor)
-        cursor += source.nbytes
-        if cursor >= 1 << 64:
-            raise FormatError("model file size exceeds uint64")
-    file_size = cursor
+    shards = plan_shards(tensors, max_shard_size)
+    tensors = [source for shard in shards for source in shard]
 
     output_path = output_path.resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    if output_path.exists() and not force:
-        raise FileExistsError(f"output already exists: {output_path}")
+    shard_paths, load_path = _artifact_paths(output_path, len(shards))
+    output_paths = [*shard_paths]
+    if len(shards) > 1:
+        output_paths.append(load_path)
+    if not force:
+        preflight_paths = {*output_paths, output_path}
+        for path in preflight_paths:
+            if path.exists():
+                raise FileExistsError(f"output already exists: {path}")
 
-    temporary = tempfile.NamedTemporaryFile(
-        mode="w+b",
-        prefix=f".{output_path.name}.",
-        suffix=".tmp",
-        dir=output_path.parent,
-        delete=False,
-    )
-    temp_path = Path(temporary.name)
-    records: list[_TensorRecord] = []
+    written = 0
+
+    def report(source: TensorSource) -> None:
+        nonlocal written
+        written += 1
+        if progress is not None:
+            progress(written, len(tensors), source)
+
+    temporary_paths: list[Path] = []
     try:
-        with temporary as output:
-            output.write(b"\0" * data_offset)
-            output.seek(HEADER_SIZE)
-            output.write(encoded_metadata)
-
-            for index, (source, offset) in enumerate(zip(tensors, planned_offsets, strict=True), start=1):
-                if progress is not None:
-                    progress(index, len(tensors), source)
-                output.seek(offset)
-                crc = 0
-                written = 0
-                for raw_chunk in source.iter_chunks(chunk_size):
-                    chunk = memoryview(raw_chunk)
-                    if not chunk.contiguous:
-                        raise FormatError(f"tensor {source.name!r} yielded a non-contiguous chunk")
-                    chunk = chunk.cast("B")
-                    if written + len(chunk) > source.nbytes:
-                        raise FormatError(f"tensor {source.name!r} yielded more bytes than declared")
-                    output.write(chunk)
-                    crc = zlib.crc32(chunk, crc)
-                    written += len(chunk)
-                if written != source.nbytes:
-                    raise FormatError(
-                        f"tensor {source.name!r} yielded {written} bytes, expected {source.nbytes}"
-                    )
-                records.append(_TensorRecord(source=source, offset=offset, crc32=crc))
-
-            output.truncate(file_size)
-            output.seek(table_offset)
-            for record in records:
-                output.write(_descriptor(record))
-            output.seek(0)
-            output.write(
-                _header(
-                    file_size=file_size,
-                    metadata_size=len(encoded_metadata),
-                    table_offset=table_offset,
-                    tensor_count=len(tensors),
-                    data_offset=data_offset,
+        for shard_path, shard in zip(shard_paths, shards, strict=True):
+            temporary_paths.append(
+                _write_safetensors(
+                    shard_path,
+                    metadata,
+                    shard,
+                    chunk_size=chunk_size,
+                    progress=report,
                 )
             )
-            output.flush()
-            os.fsync(output.fileno())
-        _publish(temp_path, output_path, force=force)
+        if len(shards) > 1:
+            temporary_paths.append(
+                _write_index(load_path, tensors, shard_paths, shards)
+            )
+        _publish_artifacts(temporary_paths, output_paths, force=force)
     except BaseException:
-        temp_path.unlink(missing_ok=True)
+        for path in temporary_paths:
+            path.unlink(missing_ok=True)
         raise
+    return load_path

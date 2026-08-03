@@ -17,7 +17,7 @@ def main() -> int:
     parser.add_argument("--check-precision-metadata", action="store_true")
     args = parser.parse_args()
     args.work_dir.mkdir(parents=True, exist_ok=True)
-    model = args.work_dir / "tiny-50l.evo2"
+    model = args.work_dir / "tiny-50l.safetensors"
     expected_logits = args.work_dir / "expected-logits.f32"
     expected_decode = args.work_dir / "expected-decode.f32"
     expected_layer = args.work_dir / "expected-layer.f32"
@@ -44,15 +44,15 @@ def main() -> int:
     if args.check_precision_metadata:
         variants = (
             (
-                args.work_dir / "invalid-projection-mismatch.evo2",
+                args.work_dir / "invalid-projection-mismatch.safetensors",
                 ["--hyena-projection-dtype", "E4M3_SW"],
             ),
             (
-                args.work_dir / "invalid-projection-dtype.evo2",
+                args.work_dir / "invalid-projection-dtype.safetensors",
                 ["--hyena-projection-dtype", "FP16"],
             ),
             (
-                args.work_dir / "invalid-bf16-fp8-residue.evo2",
+                args.work_dir / "invalid-bf16-fp8-residue.safetensors",
                 ["--add-fp8-residue"],
             ),
         )

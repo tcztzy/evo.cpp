@@ -15,7 +15,12 @@ except ModuleNotFoundError:
     print("SKIP: PyTorch is not installed; install requirements-convert.txt", file=sys.stderr)
     raise SystemExit(77)
 
-from evo2c.checkpoint import CheckpointError, load_checkpoint, prepare_runtime_sources
+from evo2c.checkpoint import (
+    CheckpointError,
+    load_checkpoint,
+    prepare_runtime_image_sources,
+    prepare_runtime_sources,
+)
 from evo2c.model_config import TensorSpec
 
 
@@ -83,6 +88,34 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(fp8_sources, [])
         self.assertEqual(b"".join(bytes(chunk) for chunk in sources[0].iter_chunks(3)), expected_bf16)
         self.assertEqual(b"".join(bytes(chunk) for chunk in sources[1].iter_chunks(3)), expected_f32)
+        self.assertEqual(bytes(sources[0].read_range(3, 5)), expected_bf16[3:8])
+        with self.assertRaisesRegex(CheckpointError, "out of range"):
+            sources[0].read_range(len(expected_bf16), 1)
+
+    def test_contiguous_storage_slice_is_streamed_from_its_offset(self) -> None:
+        state = self.valid_state()
+        state["bf16.weight"] = torch.arange(8, dtype=torch.bfloat16)[1:7].reshape(2, 3)
+        self.assertTrue(state["bf16.weight"].is_contiguous())
+        self.assertEqual(state["bf16.weight"].storage_offset(), 1)
+        expected = bytes(state["bf16.weight"].view(torch.uint8).reshape(-1).numpy())
+
+        sources, _, _ = load_checkpoint(
+            self.save(state), self.manifest, expected_extra_states=1
+        )
+        self.assertGreater(sources[0].tensor.storage_offset(), 0)
+        self.assertEqual(
+            b"".join(bytes(chunk) for chunk in sources[0].iter_chunks(3)),
+            expected,
+        )
+
+    def test_noncontiguous_storage_is_rejected(self) -> None:
+        state = self.valid_state()
+        state["bf16.weight"] = torch.arange(6, dtype=torch.bfloat16).reshape(3, 2).T
+        self.assertFalse(state["bf16.weight"].is_contiguous())
+        with self.assertRaisesRegex(CheckpointError, "must be dense contiguous"):
+            load_checkpoint(
+                self.save(state), self.manifest, expected_extra_states=1
+            )
 
     def test_projection_fp8_state_is_extracted_bit_exactly(self) -> None:
         state = self.valid_state()
@@ -112,6 +145,74 @@ class CheckpointTests(unittest.TestCase):
         for source, tensor in zip(fp8_sources, expected, strict=True):
             actual = b"".join(bytes(chunk) for chunk in source.iter_chunks(7))
             self.assertEqual(actual, bytes(tensor.view(torch.uint8).reshape(-1).numpy()))
+
+    def test_runtime_image_stores_final_e4m3_codes_and_minimal_scales(self) -> None:
+        float8 = getattr(torch, "float8_e4m3fn", None)
+        if float8 is None:
+            self.skipTest("PyTorch does not expose float8_e4m3fn")
+        for source_dtype, torch_dtype in (
+            ("BF16", torch.bfloat16),
+            ("F32", torch.float32),
+        ):
+            with self.subTest(source_dtype=source_dtype):
+                weight = torch.tensor(
+                    [[-300.0, -2.0, 0.0], [1.0, 100.0, 200.0]],
+                    dtype=torch_dtype,
+                )
+                original = weight.clone()
+                state = {
+                    "blocks.0.projections.weight": weight,
+                    "blocks.0.projections._extra_state": self.fp8_payload(),
+                }
+                manifest = [
+                    TensorSpec(
+                        "blocks.0.projections.weight", source_dtype, (2, 3)
+                    )
+                ]
+                sources, _, fp8_sources = load_checkpoint(
+                    self.save(state, f"fp8-runtime-{source_dtype}.pt"),
+                    manifest,
+                    expected_extra_states=1,
+                    fp8_projection_layers=(0,),
+                )
+                prepared = prepare_runtime_image_sources(
+                    sources, fp8_sources, (0,)
+                )
+                self.assertEqual(
+                    [source.name for source in prepared],
+                    [
+                        "blocks.0.projections.fp8_runtime_scales",
+                        "blocks.0.projections.weight",
+                    ],
+                )
+                self.assertEqual(
+                    [source.dtype for source in prepared], ["F32", "E4M3_SW"]
+                )
+                actual_scales = b"".join(
+                    bytes(chunk) for chunk in prepared[0].iter_chunks(3)
+                )
+                expected_scales = torch.tensor(
+                    [2.0, 0.125], dtype=torch.float32
+                )
+                self.assertEqual(
+                    actual_scales,
+                    bytes(
+                        expected_scales.view(torch.uint8).reshape(-1).numpy()
+                    ),
+                )
+                actual_codes = b"".join(
+                    bytes(chunk) for chunk in prepared[1].iter_chunks(2)
+                )
+                expected_codes = (
+                    weight.float()
+                    .mul(4.0)
+                    .clamp(-448.0, 448.0)
+                    .to(float8)
+                    .view(torch.uint8)
+                    .reshape(-1)
+                )
+                self.assertEqual(actual_codes, bytes(expected_codes.numpy()))
+                self.assertTrue(torch.equal(sources[0].tensor, original))
 
     def test_projection_fp8_state_rejects_invalid_metadata(self) -> None:
         invalid = {

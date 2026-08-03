@@ -135,6 +135,23 @@ int main(const int argc, char **argv) {
     std::cout << "GPU=" << properties.name << " sm=" << properties.major
               << properties.minor << '\n';
 
+    evo2c::cuda::RuntimeModelConfig warmup_config;
+    warmup_config.model_id = "evo2_7b";
+    check(evo2c::cuda::backend_warmup_tokens(warmup_config, 128) == 128,
+          "7B backend warmup policy selects 128 tokens");
+    warmup_config.model_id = "evo2_7b_262k";
+    check(evo2c::cuda::backend_warmup_tokens(warmup_config, 8192) == 128,
+          "7B variants share the backend warmup policy");
+    check(evo2c::cuda::backend_warmup_tokens(warmup_config, 127) == 0,
+          "undersized activation arena disables backend warmup");
+    warmup_config.test_fixture = true;
+    check(evo2c::cuda::backend_warmup_tokens(warmup_config, 8192) == 0,
+          "synthetic fixtures never run production backend warmup");
+    warmup_config.test_fixture = false;
+    warmup_config.model_id = "evo2_40b";
+    check(evo2c::cuda::backend_warmup_tokens(warmup_config, 8192) == 0,
+          "non-7B profiles do not inherit the 7B warmup policy");
+
     evo2c::ModelFile file;
     require(file.open(argv[1]), "open synthetic model");
     evo2c::cuda::RuntimeModelConfig config;
@@ -154,20 +171,20 @@ int main(const int argc, char **argv) {
     check(config.hcm_filter_dtype == evo2c::cuda::HcmFilterDType::kF32,
           "synthetic model selects BioNeMo F32 medium-Hyena filters");
 
-    const auto check_rejected_config =
-        [](const char *const path, const std::string_view expected) {
-          evo2c::ModelFile invalid;
-          require(invalid.open(path), "open invalid synthetic model");
-          evo2c::cuda::RuntimeModelConfig ignored;
-          const auto rejected =
-              evo2c::cuda::read_runtime_model_config(invalid, true, &ignored);
-          check(!rejected.ok() &&
-                    rejected.message().find(expected) != std::string::npos,
-                "invalid precision metadata is rejected before CUDA load");
-        };
+    const auto check_rejected_config = [](const char *const path,
+                                          const std::string_view expected) {
+      evo2c::ModelFile invalid;
+      require(invalid.open(path), "open invalid synthetic model");
+      evo2c::cuda::RuntimeModelConfig ignored;
+      const auto rejected =
+          evo2c::cuda::read_runtime_model_config(invalid, true, &ignored);
+      check(!rejected.ok() &&
+                rejected.message().find(expected) != std::string::npos,
+            "invalid precision metadata is rejected before CUDA load");
+    };
     check_rejected_config(argv[7], "disagrees");
     check_rejected_config(argv[8], "unsupported Hyena projection dtype");
-    check_rejected_config(argv[9], "contains software-FP8 tensors");
+    check_rejected_config(argv[9], "unknown tensor");
 
     evo2c::cuda::SingleGpuModel model;
     require(model.load(file, device, 12, true), "load single-GPU model");
@@ -209,10 +226,10 @@ int main(const int argc, char **argv) {
     check(model.position() == prompt.size() + 1,
           "decode advances the model position");
 
-    const std::vector<evo2c::TokenId> long_prompt{
-        2, 5, 7, 3, 9, 11, 13, 17, 19};
-    const std::vector<evo2c::TokenId> initial_chunk(
-        long_prompt.begin(), long_prompt.begin() + 8);
+    const std::vector<evo2c::TokenId> long_prompt{2,  5,  7,  3, 9,
+                                                  11, 13, 17, 19};
+    const std::vector<evo2c::TokenId> initial_chunk(long_prompt.begin(),
+                                                    long_prompt.begin() + 8);
     std::vector<float> first_chunk;
     std::vector<float> final_chunk;
     require(model.prefill(initial_chunk, &first_chunk),
@@ -221,8 +238,7 @@ int main(const int argc, char **argv) {
             "one-token continued model chunk");
     const auto expected_chunked = read_f32(argv[6]);
     const std::vector<float> expected_last(
-        expected_chunked.end() -
-            static_cast<std::ptrdiff_t>(config.vocab_size),
+        expected_chunked.end() - static_cast<std::ptrdiff_t>(config.vocab_size),
         expected_chunked.end());
     check(all_close(final_chunk, expected_last, 0.08F, 0.06F),
           "chunked model final logits match full Python causal oracle");
@@ -230,6 +246,17 @@ int main(const int argc, char **argv) {
           "chunked model final-logit cosine is at least 0.999");
     check(model.position() == long_prompt.size(),
           "chunked model records the full logical position");
+
+    std::vector<float> cached_logits;
+    require(model.prefill_cached({2, 5}, &cached_logits),
+            "exact cached model prefill");
+    const auto invalid_cached_chunk = model.prefill_chunk({7}, &cached_logits);
+    check(!invalid_cached_chunk.ok() &&
+              invalid_cached_chunk.message().find("exact token decode") !=
+                  std::string::npos,
+          "cached prefill rejects a numerically different chunk continuation");
+    require(model.decode(7, &cached_logits),
+            "cached prefill continues through exact token decode");
   } catch (const std::exception &error) {
     std::cerr << "FAIL: " << error.what() << '\n';
     return 1;

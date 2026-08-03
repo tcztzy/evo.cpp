@@ -46,6 +46,7 @@ def compare(
     reference_path: Path,
     candidate_path: Path,
     minimum_cosine: float,
+    minimum_top1_agreement: float,
     reference_bytes: Path | None,
     candidate_bytes: Path | None,
 ) -> dict[str, object]:
@@ -86,16 +87,18 @@ def compare(
             }
         )
     finite = all(math.isfinite(value) for value in (*reference, *candidate))
-    top1_exact = all(
+    matching_top1 = sum(
         row["reference_top1"] == row["candidate_top1"] for row in row_metrics
     )
+    top1_agreement = matching_top1 / rows
+    top1_exact = matching_top1 == rows
     minimum_observed = min(float(row["cosine"]) for row in row_metrics)
     byte_exact = None
     if reference_bytes is not None and candidate_bytes is not None:
         byte_exact = reference_bytes.read_bytes() == candidate_bytes.read_bytes()
     passed = (
         finite
-        and top1_exact
+        and top1_agreement >= minimum_top1_agreement
         and minimum_observed >= minimum_cosine
         and byte_exact is not False
     )
@@ -107,6 +110,8 @@ def compare(
         "shape": list(reference_shape),
         "minimum_cosine_required": minimum_cosine,
         "minimum_cosine_observed": minimum_observed,
+        "minimum_top1_agreement_required": minimum_top1_agreement,
+        "top1_agreement": top1_agreement,
         "finite": finite,
         "top1_exact": top1_exact,
         "output_byte_exact": byte_exact,
@@ -120,18 +125,22 @@ def main() -> int:
     parser.add_argument("--reference", required=True, type=Path)
     parser.add_argument("--candidate", required=True, type=Path)
     parser.add_argument("--minimum-cosine", type=float, default=0.999)
+    parser.add_argument("--minimum-top1-agreement", type=float, default=1.0)
     parser.add_argument("--reference-bytes", type=Path)
     parser.add_argument("--candidate-bytes", type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     if not 0.0 < args.minimum_cosine <= 1.0:
         parser.error("--minimum-cosine must be in (0, 1]")
+    if not 0.0 <= args.minimum_top1_agreement <= 1.0:
+        parser.error("--minimum-top1-agreement must be in [0, 1]")
     if (args.reference_bytes is None) != (args.candidate_bytes is None):
         parser.error("both byte-output paths must be supplied together")
     report = compare(
         args.reference,
         args.candidate,
         args.minimum_cosine,
+        args.minimum_top1_agreement,
         args.reference_bytes,
         args.candidate_bytes,
     )

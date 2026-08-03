@@ -3,7 +3,7 @@
 set -euo pipefail
 
 if (( $# < 2 || $# > 3 )); then
-  echo "usage: $0 MODEL.evo2 GPU_LIST [CONTEXT]" >&2
+  echo "usage: $0 MODEL.safetensors[.index.json] GPU_LIST [CONTEXT]" >&2
   exit 2
 fi
 

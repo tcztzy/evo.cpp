@@ -52,10 +52,11 @@ struct KvCache final {
   [[nodiscard]] Status allocate(int device, std::size_t token_capacity,
                                 std::size_t head_count,
                                 std::size_t dimensions_per_head);
-  [[nodiscard]] Status allocate_q8_paged(
-      int device, std::size_t token_capacity, std::size_t head_count,
-      std::size_t dimensions_per_head, std::size_t tokens_per_page,
-      const Stream &stream);
+  [[nodiscard]] Status allocate_q8_paged(int device, std::size_t token_capacity,
+                                         std::size_t head_count,
+                                         std::size_t dimensions_per_head,
+                                         std::size_t tokens_per_page,
+                                         const Stream &stream);
   [[nodiscard]] std::size_t allocated_bytes() const noexcept;
   [[nodiscard]] bool quantized() const noexcept {
     return type == KvCacheType::kQ8Paged;
@@ -68,6 +69,12 @@ struct AttentionWorkspace final {
   DeviceBuffer query;
   DeviceBuffer key;
   DeviceBuffer value;
+  DeviceBuffer softmax_lse;
+  DeviceBuffer softmax_lse_accum;
+  DeviceBuffer output_accum;
+  DeviceBuffer scaled_key;
+  DeviceBuffer scores;
+  DeviceBuffer probabilities;
   std::size_t tokens{0};
   std::size_t heads{0};
   std::size_t head_dim{0};
@@ -76,6 +83,18 @@ struct AttentionWorkspace final {
                                 std::size_t head_count,
                                 std::size_t dimensions_per_head);
 };
+
+// PyTorch FlashAttention-compatible BF16 causal attention. Inputs use
+// [tokens,heads,128], key/value may include a prefix, and softmax_lse is F32
+// scratch with at least query_tokens*heads elements. The two accumulator
+// buffers are grown on demand when PyTorch's split-KV occupancy heuristic
+// selects the two-stage forward kernel.
+[[nodiscard]] Status bf16_flash_causal_attention(
+    const DeviceBuffer &query, const DeviceBuffer &key,
+    const DeviceBuffer &value, std::size_t query_tokens, std::size_t key_tokens,
+    std::size_t heads, std::size_t head_dim, DeviceBuffer *softmax_lse,
+    DeviceBuffer *softmax_lse_accum, DeviceBuffer *output_accum,
+    DeviceBuffer *output, const Stream &stream);
 
 // QKV input uses `layout`. Outputs are BF16 [tokens,heads,head_dim].
 [[nodiscard]] Status
@@ -108,6 +127,17 @@ bf16_split_qkv(const DeviceBuffer &qkv, std::size_t tokens, std::size_t heads,
                                                   const KvCache &cache,
                                                   DeviceBuffer *output,
                                                   const Stream &stream);
+
+// Exact Vortex cached-generation fallback when use_flash_attn=false:
+// BF16 K scaling, strided-batched QK GEMM, causal masked_fill, PyTorch's
+// persistent warp softmax, then BF16 probability/value GEMM.
+[[nodiscard]] Status
+bf16_cached_cross_attention(const DeviceBuffer &query, const DeviceBuffer &key,
+                            const DeviceBuffer &value, std::size_t query_tokens,
+                            std::size_t key_tokens, std::size_t heads,
+                            std::size_t head_dim, DeviceBuffer *scaled_key,
+                            DeviceBuffer *scores, DeviceBuffer *probabilities,
+                            DeviceBuffer *output, const Stream &stream);
 
 // Full MHA inner operation. It splits QKV, applies RoPE at cache.length,
 // appends K/V, and computes causal output for the newly appended chunk.

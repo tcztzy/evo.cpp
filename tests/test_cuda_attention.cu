@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
@@ -94,6 +95,30 @@ std::vector<float> download_bf16(const evo2c::cuda::DeviceBuffer &buffer,
           "download BF16");
   require(stream.synchronize(), "synchronize BF16 download");
   return to_float(raw);
+}
+
+std::vector<__nv_bfloat16>
+download_bf16_raw(const evo2c::cuda::DeviceBuffer &buffer,
+                  const std::size_t elements,
+                  const evo2c::cuda::Stream &stream) {
+  std::vector<__nv_bfloat16> output(elements);
+  require(buffer.copy_to_host(output.data(), output.size() * sizeof(output[0]),
+                              stream),
+          "download raw BF16");
+  require(stream.synchronize(), "synchronize raw BF16 download");
+  return output;
+}
+
+std::uint64_t fnv1a(const std::vector<__nv_bfloat16> &values) {
+  std::uint64_t hash = 0xcbf29ce484222325ULL;
+  const auto *const bytes =
+      reinterpret_cast<const unsigned char *>(values.data());
+  for (std::size_t index = 0; index < values.size() * sizeof(values[0]);
+       ++index) {
+    hash ^= bytes[index];
+    hash *= 0x100000001b3ULL;
+  }
+  return hash;
 }
 
 bool all_close(const std::vector<float> &actual,
@@ -313,16 +338,124 @@ void test_context(const int device, const evo2c::cuda::Stream &stream,
   check(cache.length == tokens + 1, "decode advances KV cache length");
 }
 
+void test_cached_cross_attention_exact(const int device,
+                                       const evo2c::cuda::Stream &stream) {
+  constexpr std::size_t query_tokens = 1;
+  constexpr std::size_t heads = 2;
+  constexpr std::size_t head_dim = 8;
+  constexpr std::size_t width = heads * head_dim;
+  struct Case final {
+    std::size_t key_tokens;
+    std::uint64_t probability_hash;
+    std::uint64_t output_hash;
+  };
+  // Oracles are raw BF16 bytes from Vortex CrossAttention on the pinned
+  // PyTorch 2.13.0a0+8145d630e8.nv26.06 / CUDA 13.3 stack.  The cases cross
+  // the persistent-warp, register, shared-memory, and general ILP kernels;
+  // 10241 also gives the second head an unaligned row start.
+  constexpr Case cases[]{
+      {2048, 0x52e601854383b2cfULL, 0xff9c638caf1e02e2ULL},
+      {2049, 0xe053c0d159dccce2ULL, 0x9320cc6a2915f573ULL},
+      {10240, 0x2b87d3e6e1df2d52ULL, 0x86b60a698be200aaULL},
+      {10241, 0xdb2b377d8f10d570ULL, 0x8793bdb099cc4911ULL},
+      {30000, 0xc4b04a98e602a7a7ULL, 0xe81c04dde0a94bffULL},
+  };
+  const auto query_values = values(query_tokens * width, 17, 31.0F);
+  auto query = upload_bf16(device, query_values, stream);
+  for (const auto &test_case : cases) {
+    auto key = upload_bf16(
+        device, values(test_case.key_tokens * width, 43, 37.0F), stream);
+    auto value = upload_bf16(
+        device, values(test_case.key_tokens * width, 79, 41.0F), stream);
+    evo2c::cuda::DeviceBuffer scaled_key;
+    evo2c::cuda::DeviceBuffer scores;
+    evo2c::cuda::DeviceBuffer probabilities;
+    evo2c::cuda::DeviceBuffer output;
+    require(
+        output.allocate(device, query_tokens * width * sizeof(__nv_bfloat16)),
+        "allocate exact cached-attention output");
+    require(evo2c::cuda::bf16_cached_cross_attention(
+                query, key, value, query_tokens, test_case.key_tokens, heads,
+                head_dim, &scaled_key, &scores, &probabilities, &output,
+                stream),
+            "exact cached cross-attention");
+    const auto probability_values = download_bf16_raw(
+        probabilities, heads * query_tokens * test_case.key_tokens, stream);
+    const auto output_values =
+        download_bf16_raw(output, query_tokens * width, stream);
+    check(fnv1a(probability_values) == test_case.probability_hash,
+          "cached softmax probabilities are bit exact to PyTorch");
+    check(fnv1a(output_values) == test_case.output_hash,
+          "cached cross-attention output is bit exact to PyTorch");
+  }
+}
+
+void test_tiled_context_boundary(const int device,
+                                 const evo2c::cuda::Stream &stream,
+                                 const std::size_t tokens) {
+  constexpr std::size_t heads = 2;
+  constexpr std::size_t head_dim = 128;
+  constexpr std::size_t width = heads * head_dim;
+  constexpr float position_scale = 128.0F;
+  const auto qkv_f32 =
+      quantize_bf16(values(tokens * width * 3, tokens + 701, 83.0F));
+  std::vector<float> inverse_frequency(head_dim / 2);
+  for (std::size_t index = 0; index < inverse_frequency.size(); ++index) {
+    inverse_frequency[index] =
+        std::pow(1.0e6F, -2.0F * static_cast<float>(index) /
+                             static_cast<float>(head_dim));
+  }
+  auto qkv = upload_bf16(device, qkv_f32, stream);
+  auto frequency = upload_f32(device, inverse_frequency, stream);
+  evo2c::cuda::KvCache cache;
+  evo2c::cuda::AttentionWorkspace workspace;
+  evo2c::cuda::DeviceBuffer output;
+  require(cache.allocate(device, tokens, heads, head_dim),
+          "allocate tiled-boundary KV cache");
+  require(workspace.allocate(device, tokens, heads, head_dim),
+          "allocate tiled-boundary attention workspace");
+  require(output.allocate(device, tokens * width * sizeof(__nv_bfloat16)),
+          "allocate tiled-boundary attention output");
+  require(evo2c::cuda::bf16_mha_prefill(qkv, frequency, tokens, heads, head_dim,
+                                        position_scale, &cache, &workspace,
+                                        &output, stream),
+          "tiled-boundary MHA prefill");
+
+  std::vector<float> query;
+  std::vector<float> key;
+  std::vector<float> value;
+  split_qkv_host(qkv_f32, tokens, width, &query, &key, &value);
+  rope_reference(&query, &key, tokens, heads, head_dim, inverse_frequency, 0,
+                 position_scale);
+  std::vector<float> expected;
+  require(evo2c::cpu::causal_attention(query, key, value, tokens, heads,
+                                       head_dim, &expected),
+          "CPU tiled-boundary attention reference");
+  const auto actual = download_bf16(output, tokens * width, stream);
+  const auto suffix = " at token boundary " + std::to_string(tokens);
+  check(all_close(actual, expected, 0.03F, 0.03F),
+        "tiled BF16 attention matches CPU reference" + suffix);
+  check(cosine(actual, expected) >= 0.999F,
+        "tiled BF16 attention cosine is at least 0.999" + suffix);
+  check(cache.length == tokens,
+        "tiled BF16 attention advances cache length" + suffix);
+}
+
 void test_chunked_prefill(const int device, const evo2c::cuda::Stream &stream) {
   constexpr std::size_t tokens = 7;
   constexpr std::size_t first = 3;
   constexpr std::size_t second = tokens - first;
   constexpr std::size_t heads = 2;
-  constexpr std::size_t head_dim = 8;
+  constexpr std::size_t head_dim = 128;
   constexpr std::size_t width = heads * head_dim;
   constexpr float position_scale = 128.0F;
   const auto qkv_f32 = quantize_bf16(values(tokens * width * 3, 211, 37.0F));
-  const std::vector<float> inverse_frequency{1.0F, 0.1F, 0.01F, 0.001F};
+  std::vector<float> inverse_frequency(head_dim / 2);
+  for (std::size_t index = 0; index < inverse_frequency.size(); ++index) {
+    inverse_frequency[index] =
+        std::pow(1.0e6F, -2.0F * static_cast<float>(index) /
+                             static_cast<float>(head_dim));
+  }
   const std::vector<float> first_qkv(
       qkv_f32.begin(),
       qkv_f32.begin() + static_cast<std::ptrdiff_t>(first * width * 3));
@@ -389,7 +522,7 @@ void test_rope_position_1m(const int device,
   for (std::size_t index = 0; index < inverse_frequency.size(); ++index) {
     inverse_frequency[index] =
         std::pow(1.0e6F, -2.0F * static_cast<float>(index) /
-                            static_cast<float>(head_dim));
+                             static_cast<float>(head_dim));
   }
   auto query_device = upload_bf16(device, query, stream);
   auto key_device = upload_bf16(device, key, stream);
@@ -407,8 +540,7 @@ void test_rope_position_1m(const int device,
         "RoPE position 1048575 matches the CPU reference");
 }
 
-void test_q8_paged_cache(const int device,
-                         const evo2c::cuda::Stream &stream) {
+void test_q8_paged_cache(const int device, const evo2c::cuda::Stream &stream) {
   constexpr std::size_t tokens = 6;
   constexpr std::size_t capacity = tokens + 1;
   constexpr std::size_t heads = 2;
@@ -416,13 +548,12 @@ void test_q8_paged_cache(const int device,
   constexpr std::size_t width = heads * head_dim;
   constexpr std::size_t page_tokens = 3;
   constexpr float position_scale = 128.0F;
-  const auto qkv_f32 =
-      quantize_bf16(values(tokens * width * 3, 271, 43.0F));
+  const auto qkv_f32 = quantize_bf16(values(tokens * width * 3, 271, 43.0F));
   std::vector<float> inverse_frequency(head_dim / 2);
   for (std::size_t index = 0; index < inverse_frequency.size(); ++index) {
     inverse_frequency[index] =
         std::pow(1.0e6F, -2.0F * static_cast<float>(index) /
-                            static_cast<float>(head_dim));
+                             static_cast<float>(head_dim));
   }
   auto qkv = upload_bf16(device, qkv_f32, stream);
   auto frequency = upload_f32(device, inverse_frequency, stream);
@@ -436,8 +567,7 @@ void test_q8_paged_cache(const int device,
                          [](const auto &page) { return page.key.valid(); }),
         "Q8 KV cache records three logical pages without eager payloads");
   const std::size_t empty_bytes = cache.allocated_bytes();
-  const std::size_t bf16_bytes =
-      capacity * width * sizeof(__nv_bfloat16) * 2;
+  const std::size_t bf16_bytes = capacity * width * sizeof(__nv_bfloat16) * 2;
   check(empty_bytes < bf16_bytes,
         "empty paged Q8 table is smaller than equivalent BF16 storage");
 
@@ -447,9 +577,9 @@ void test_q8_paged_cache(const int device,
           "allocate paged Q8 prefill workspace");
   require(output.allocate(device, tokens * width * sizeof(__nv_bfloat16)),
           "allocate paged Q8 prefill output");
-  require(evo2c::cuda::bf16_mha_prefill(
-              qkv, frequency, tokens, heads, head_dim, position_scale, &cache,
-              &workspace, &output, stream),
+  require(evo2c::cuda::bf16_mha_prefill(qkv, frequency, tokens, heads, head_dim,
+                                        position_scale, &cache, &workspace,
+                                        &output, stream),
           "paged Q8 MHA prefill");
   check(cache.q8_pages[0].key.valid() && cache.q8_pages[1].key.valid() &&
             !cache.q8_pages[2].key.valid() &&
@@ -485,15 +615,14 @@ void test_q8_paged_cache(const int device,
               next_qkv, frequency, heads, head_dim, position_scale, &cache,
               &decode_workspace, &decode_output, stream),
           "paged Q8 MHA decode across a page boundary");
-  check(cache.q8_pages[2].key.valid() &&
-            cache.allocated_bytes() < bf16_bytes,
+  check(cache.q8_pages[2].key.valid() && cache.allocated_bytes() < bf16_bytes,
         "paged Q8 decode allocates the newly touched third page");
   std::vector<float> next_query;
   std::vector<float> next_key;
   std::vector<float> next_value;
   split_qkv_host(next_qkv_f32, 1, width, &next_query, &next_key, &next_value);
-  rope_reference(&next_query, &next_key, 1, heads, head_dim,
-                 inverse_frequency, tokens, position_scale);
+  rope_reference(&next_query, &next_key, 1, heads, head_dim, inverse_frequency,
+                 tokens, position_scale);
   key.insert(key.end(), next_key.begin(), next_key.end());
   value.insert(value.end(), next_value.begin(), next_value.end());
   const auto expected_decode =
@@ -505,9 +634,9 @@ void test_q8_paged_cache(const int device,
         "paged Q8 decode cosine is at least 0.999");
   check(cache.length == capacity,
         "paged Q8 decode fills the logical cache capacity");
-  check(!evo2c::cuda::bf16_mha_decode(
-             next_qkv, frequency, heads, head_dim, position_scale, &cache,
-             &decode_workspace, &decode_output, stream)
+  check(!evo2c::cuda::bf16_mha_decode(next_qkv, frequency, heads, head_dim,
+                                      position_scale, &cache, &decode_workspace,
+                                      &decode_output, stream)
              .ok(),
         "paged Q8 cache rejects decode beyond logical capacity");
 }
@@ -626,6 +755,9 @@ int main() {
     test_head_major_split(device, stream);
     for (const std::size_t tokens : {1U, 2U, 7U, 128U})
       test_context(device, stream, tokens);
+    test_cached_cross_attention_exact(device, stream);
+    for (const std::size_t tokens : {3U, 4U, 7U, 8U, 9U, 127U, 128U, 129U})
+      test_tiled_context_boundary(device, stream, tokens);
     test_chunked_prefill(device, stream);
     test_rope_position_1m(device, stream);
     test_q8_paged_cache(device, stream);

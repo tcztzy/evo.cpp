@@ -2,56 +2,67 @@
 #include "evo2c/model_format.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cctype>
 #include <cstring>
 #include <iomanip>
+#include <iterator>
 #include <limits>
+#include <map>
 #include <set>
 #include <sstream>
-
-#include "evo2c/crc32.hpp"
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace evo2c {
 namespace {
 
-constexpr std::array<std::uint8_t, 8> kMagic{'E', 'V', 'O', '2', 'C', 0, 0, 0};
-constexpr std::array<std::uint8_t, 4> kMetadataMagic{'M', 'E', 'T', 'A'};
-constexpr std::uint32_t kEndianMarker = 0x01020304U;
-constexpr std::uint16_t kMetadataVersion = 1;
-constexpr std::uint64_t kMaxMetadataSize = 16U * 1024U * 1024U;
-constexpr std::uint32_t kMaxMetadataEntries = 4096;
-constexpr std::uint64_t kMaxTensorCount = 1'000'000;
-constexpr std::size_t kHeaderCrcOffset = 80;
-constexpr std::size_t kDescriptorCrcOffset = 196;
+constexpr std::size_t kSafetensorsPrefixSize = 8;
+constexpr std::size_t kMaximumMetadataEntries = 4096;
+constexpr std::size_t kMaximumTensorCount = 1'000'000;
+constexpr std::size_t kMaximumMetadataValueSize = 16U * 1024U * 1024U;
+constexpr std::size_t kMaximumIndexSize = 64U * 1024U * 1024U;
 
-Status format_error(const std::string& message) {
-  return {ErrorCode::kModelFormat, message};
+struct RawTensor final {
+  std::string name;
+  std::string dtype;
+  std::vector<std::uint64_t> shape;
+  std::uint64_t begin{0};
+  std::uint64_t end{0};
+};
+
+Status format_error(const std::string &message) {
+  return {ErrorCode::kModelFormat, "Safetensors: " + message};
 }
 
-std::uint16_t read_u16(const std::uint8_t* data) noexcept {
-  return static_cast<std::uint16_t>(static_cast<unsigned int>(data[0]) |
-                                    (static_cast<unsigned int>(data[1]) << 8U));
+Status index_error(const std::string &message) {
+  return {ErrorCode::kModelFormat, "Safetensors index: " + message};
 }
 
-std::uint32_t read_u32(const std::uint8_t* data) noexcept {
-  return static_cast<std::uint32_t>(data[0]) |
-         (static_cast<std::uint32_t>(data[1]) << 8U) |
-         (static_cast<std::uint32_t>(data[2]) << 16U) |
-         (static_cast<std::uint32_t>(data[3]) << 24U);
+bool has_suffix(const std::string_view value,
+                const std::string_view suffix) noexcept {
+  return value.size() >= suffix.size() &&
+         value.substr(value.size() - suffix.size()) == suffix;
 }
 
-std::uint64_t read_u64(const std::uint8_t* data) noexcept {
+std::uint64_t read_u64(const std::uint8_t *const data) noexcept {
   std::uint64_t value = 0;
   for (std::size_t byte = 0; byte < sizeof(value); ++byte) {
-    value |= static_cast<std::uint64_t>(data[byte]) << (8U * byte);
+    value |= static_cast<std::uint64_t>(data[byte]) << (byte * 8U);
   }
   return value;
 }
 
-bool checked_add(const std::uint64_t left,
-                 const std::uint64_t right,
-                 std::uint64_t* output) noexcept {
+void append_u64(std::vector<std::uint8_t> *const output,
+                const std::uint64_t value) {
+  for (std::size_t byte = 0; byte < sizeof(value); ++byte) {
+    output->push_back(
+        static_cast<std::uint8_t>((value >> (byte * 8U)) & 0xffU));
+  }
+}
+
+bool checked_add(const std::uint64_t left, const std::uint64_t right,
+                 std::uint64_t *const output) noexcept {
   if (right > std::numeric_limits<std::uint64_t>::max() - left) {
     return false;
   }
@@ -59,9 +70,8 @@ bool checked_add(const std::uint64_t left,
   return true;
 }
 
-bool checked_mul(const std::uint64_t left,
-                 const std::uint64_t right,
-                 std::uint64_t* output) noexcept {
+bool checked_mul(const std::uint64_t left, const std::uint64_t right,
+                 std::uint64_t *const output) noexcept {
   if (left != 0 && right > std::numeric_limits<std::uint64_t>::max() / left) {
     return false;
   }
@@ -69,85 +79,660 @@ bool checked_mul(const std::uint64_t left,
   return true;
 }
 
-bool align_up(const std::uint64_t value,
-              const std::uint64_t alignment,
-              std::uint64_t* output) noexcept {
-  const auto remainder = value % alignment;
-  if (remainder == 0) {
-    *output = value;
-    return true;
-  }
-  return checked_add(value, alignment - remainder, output);
-}
-
-bool zero_bytes(const std::uint8_t* data, const std::size_t size) noexcept {
-  return std::all_of(data, data + size, [](const std::uint8_t value) { return value == 0; });
-}
-
 bool valid_key_character(const char character) noexcept {
   const auto value = static_cast<unsigned char>(character);
-  return std::isalnum(value) != 0 || character == '.' || character == '_' || character == '-';
+  return std::isalnum(value) != 0 || character == '.' || character == '_' ||
+         character == '-';
 }
 
-bool valid_tensor_dtype(const std::uint8_t raw) noexcept {
-  return raw >= static_cast<std::uint8_t>(TensorDType::kF32) &&
-         raw <= static_cast<std::uint8_t>(TensorDType::kE4M3Software);
+bool valid_identifier(const std::string_view value,
+                      const std::size_t maximum) noexcept {
+  return !value.empty() && value.size() <= maximum &&
+         std::all_of(value.begin(), value.end(), valid_key_character);
 }
 
-bool valid_metadata_type(const std::uint8_t raw) noexcept {
-  return raw >= static_cast<std::uint8_t>(MetadataType::kString) &&
-         raw <= static_cast<std::uint8_t>(MetadataType::kBytes);
+bool parse_decimal_u64(const std::string_view text,
+                       std::uint64_t *const output) noexcept {
+  if (text.empty() || (text.size() > 1 && text.front() == '0')) {
+    return false;
+  }
+  std::uint64_t value = 0;
+  for (const char character : text) {
+    if (character < '0' || character > '9') {
+      return false;
+    }
+    const auto digit = static_cast<std::uint64_t>(character - '0');
+    if (value > (std::numeric_limits<std::uint64_t>::max() - digit) / 10U) {
+      return false;
+    }
+    value = value * 10U + digit;
+  }
+  *output = value;
+  return true;
 }
 
-bool expected_tensor_size(const TensorDType dtype,
-                          const std::uint64_t elements,
-                          std::uint64_t* bytes) noexcept {
-  switch (dtype) {
-    case TensorDType::kF32:
-      return checked_mul(elements, 4, bytes);
-    case TensorDType::kBF16:
-      return checked_mul(elements, 2, bytes);
-    case TensorDType::kE4M3Software:
-      *bytes = elements;
-      return true;
-    case TensorDType::kQ8_0:
-      if (elements % 32 != 0) {
+int hex_digit(const char character) noexcept {
+  if (character >= '0' && character <= '9') {
+    return character - '0';
+  }
+  if (character >= 'a' && character <= 'f') {
+    return 10 + character - 'a';
+  }
+  return -1;
+}
+
+bool parse_hex_u64(const std::string_view text,
+                   std::uint64_t *const output) noexcept {
+  if (text.size() != 16) {
+    return false;
+  }
+  std::uint64_t value = 0;
+  for (const char character : text) {
+    const int digit = hex_digit(character);
+    if (digit < 0) {
+      return false;
+    }
+    value = (value << 4U) | static_cast<std::uint64_t>(digit);
+  }
+  *output = value;
+  return true;
+}
+
+Status decode_metadata(const std::string &key, const std::string &encoded,
+                       MetadataEntry *const output) {
+  if (!valid_identifier(key, 255)) {
+    return format_error("invalid metadata key '" + key + "'");
+  }
+  if (encoded.size() < 2 || encoded[1] != ':') {
+    return format_error("metadata '" + key +
+                        "' is not typed by the Evo 2 profile");
+  }
+  MetadataEntry entry;
+  entry.key = key;
+  const std::string_view value{encoded.data() + 2, encoded.size() - 2};
+  switch (encoded[0]) {
+  case 's':
+    entry.type = MetadataType::kString;
+    entry.value.assign(value.begin(), value.end());
+    break;
+  case 'u': {
+    std::uint64_t parsed = 0;
+    if (!parse_decimal_u64(value, &parsed)) {
+      return format_error("metadata '" + key + "' has invalid u64");
+    }
+    entry.type = MetadataType::kU64;
+    append_u64(&entry.value, parsed);
+    break;
+  }
+  case 'f': {
+    std::uint64_t bits = 0;
+    if (!parse_hex_u64(value, &bits)) {
+      return format_error("metadata '" + key + "' has invalid f64 bits");
+    }
+    entry.type = MetadataType::kF64;
+    append_u64(&entry.value, bits);
+    break;
+  }
+  case 'b':
+    if (value != "0" && value != "1") {
+      return format_error("metadata '" + key + "' has invalid bool");
+    }
+    entry.type = MetadataType::kBool;
+    entry.value.push_back(static_cast<std::uint8_t>(value == "1"));
+    break;
+  case 'l': {
+    entry.type = MetadataType::kU64List;
+    std::size_t begin = 0;
+    while (begin < value.size()) {
+      const auto comma = value.find(',', begin);
+      const auto end = comma == std::string_view::npos ? value.size() : comma;
+      std::uint64_t item = 0;
+      if (!parse_decimal_u64(value.substr(begin, end - begin), &item)) {
+        return format_error("metadata '" + key + "' has invalid u64 list");
+      }
+      append_u64(&entry.value, item);
+      if (comma == std::string_view::npos) {
+        break;
+      }
+      begin = comma + 1;
+      if (begin == value.size()) {
+        return format_error("metadata '" + key + "' has invalid u64 list");
+      }
+    }
+    break;
+  }
+  case 'x':
+    if (value.size() % 2 != 0) {
+      return format_error("metadata '" + key + "' has invalid bytes");
+    }
+    entry.type = MetadataType::kBytes;
+    entry.value.reserve(value.size() / 2);
+    for (std::size_t offset = 0; offset < value.size(); offset += 2) {
+      const int high = hex_digit(value[offset]);
+      const int low = hex_digit(value[offset + 1]);
+      if (high < 0 || low < 0) {
+        return format_error("metadata '" + key + "' has invalid bytes");
+      }
+      entry.value.push_back(static_cast<std::uint8_t>((high << 4) | low));
+    }
+    break;
+  default:
+    return format_error("metadata '" + key + "' has unknown type prefix");
+  }
+  if (entry.value.size() > kMaximumMetadataValueSize) {
+    return format_error("metadata '" + key + "' exceeds 16 MiB");
+  }
+  *output = std::move(entry);
+  return Status::Ok();
+}
+
+class HeaderParser final {
+public:
+  HeaderParser(const std::uint8_t *const data, const std::size_t size)
+      : begin_(reinterpret_cast<const char *>(data)), cursor_(begin_),
+        end_(begin_ + size) {}
+
+  [[nodiscard]] Status
+  parse(std::vector<std::pair<std::string, std::string>> *const metadata,
+        std::vector<RawTensor> *const tensors) {
+    skip_whitespace();
+    if (!take('{')) {
+      return error("header must begin with a JSON object");
+    }
+    std::set<std::string> root_keys;
+    bool has_metadata = false;
+    skip_whitespace();
+    if (take('}')) {
+      return error("root object must not be empty");
+    }
+    while (true) {
+      std::string name;
+      if (!parse_string(&name) || !take_after_whitespace(':')) {
+        return error("invalid root object entry");
+      }
+      if (!root_keys.insert(name).second) {
+        return error("duplicate root key '" + name + "'");
+      }
+      if (name == "__metadata__") {
+        if (!parse_metadata(metadata)) {
+          return error("invalid __metadata__ object");
+        }
+        has_metadata = true;
+      } else {
+        RawTensor tensor;
+        tensor.name = std::move(name);
+        if (!parse_tensor(&tensor)) {
+          return error("invalid tensor descriptor");
+        }
+        tensors->push_back(std::move(tensor));
+      }
+      skip_whitespace();
+      if (take('}')) {
+        break;
+      }
+      if (!take(',')) {
+        return error("expected ',' or '}' in root object");
+      }
+    }
+    skip_whitespace();
+    if (cursor_ != end_) {
+      return error("header has non-whitespace trailing bytes");
+    }
+    if (!has_metadata) {
+      return error("missing __metadata__ object");
+    }
+    return Status::Ok();
+  }
+
+private:
+  void skip_whitespace() noexcept {
+    while (cursor_ != end_ && (*cursor_ == ' ' || *cursor_ == '\t' ||
+                               *cursor_ == '\n' || *cursor_ == '\r')) {
+      ++cursor_;
+    }
+  }
+
+  bool take(const char expected) noexcept {
+    if (cursor_ == end_ || *cursor_ != expected) {
+      return false;
+    }
+    ++cursor_;
+    return true;
+  }
+
+  bool take_after_whitespace(const char expected) noexcept {
+    skip_whitespace();
+    const bool found = take(expected);
+    skip_whitespace();
+    return found;
+  }
+
+  bool parse_string(std::string *const output) {
+    skip_whitespace();
+    if (!take('"')) {
+      return false;
+    }
+    output->clear();
+    while (cursor_ != end_) {
+      const auto character = static_cast<unsigned char>(*cursor_++);
+      if (character == '"') {
+        skip_whitespace();
+        return true;
+      }
+      if (character < 0x20U) {
         return false;
       }
-      return checked_mul(elements / 32, 34, bytes);
+      if (character != '\\') {
+        output->push_back(static_cast<char>(character));
+        continue;
+      }
+      if (cursor_ == end_) {
+        return false;
+      }
+      const char escaped = *cursor_++;
+      switch (escaped) {
+      case '"':
+      case '\\':
+      case '/':
+        output->push_back(escaped);
+        break;
+      case 'b':
+        output->push_back('\b');
+        break;
+      case 'f':
+        output->push_back('\f');
+        break;
+      case 'n':
+        output->push_back('\n');
+        break;
+      case 'r':
+        output->push_back('\r');
+        break;
+      case 't':
+        output->push_back('\t');
+        break;
+      default:
+        return false;
+      }
+    }
+    return false;
+  }
+
+  bool parse_u64(std::uint64_t *const output) {
+    skip_whitespace();
+    const char *const start = cursor_;
+    while (cursor_ != end_ && *cursor_ >= '0' && *cursor_ <= '9') {
+      ++cursor_;
+    }
+    if (cursor_ == start ||
+        !parse_decimal_u64({start, static_cast<std::size_t>(cursor_ - start)},
+                           output)) {
+      return false;
+    }
+    skip_whitespace();
+    return true;
+  }
+
+  bool parse_u64_array(std::vector<std::uint64_t> *const values) {
+    if (!take_after_whitespace('[')) {
+      return false;
+    }
+    values->clear();
+    if (take(']')) {
+      skip_whitespace();
+      return true;
+    }
+    while (true) {
+      std::uint64_t value = 0;
+      if (!parse_u64(&value)) {
+        return false;
+      }
+      values->push_back(value);
+      if (take(']')) {
+        skip_whitespace();
+        return true;
+      }
+      if (!take_after_whitespace(',')) {
+        return false;
+      }
+    }
+  }
+
+  bool parse_metadata(
+      std::vector<std::pair<std::string, std::string>> *const metadata) {
+    if (!take_after_whitespace('{')) {
+      return false;
+    }
+    std::set<std::string> keys;
+    if (take('}')) {
+      skip_whitespace();
+      return true;
+    }
+    while (true) {
+      std::string key;
+      std::string value;
+      if (!parse_string(&key) || !take_after_whitespace(':') ||
+          !parse_string(&value) || !keys.insert(key).second) {
+        return false;
+      }
+      metadata->emplace_back(std::move(key), std::move(value));
+      if (take('}')) {
+        skip_whitespace();
+        return true;
+      }
+      if (!take_after_whitespace(',')) {
+        return false;
+      }
+    }
+  }
+
+  bool parse_tensor(RawTensor *const tensor) {
+    if (!take_after_whitespace('{')) {
+      return false;
+    }
+    bool has_dtype = false;
+    bool has_shape = false;
+    bool has_offsets = false;
+    if (take('}')) {
+      return false;
+    }
+    while (true) {
+      std::string field;
+      if (!parse_string(&field) || !take_after_whitespace(':')) {
+        return false;
+      }
+      if (field == "dtype" && !has_dtype) {
+        if (!parse_string(&tensor->dtype)) {
+          return false;
+        }
+        has_dtype = true;
+      } else if (field == "shape" && !has_shape) {
+        if (!parse_u64_array(&tensor->shape)) {
+          return false;
+        }
+        has_shape = true;
+      } else if (field == "data_offsets" && !has_offsets) {
+        std::vector<std::uint64_t> offsets;
+        if (!parse_u64_array(&offsets) || offsets.size() != 2) {
+          return false;
+        }
+        tensor->begin = offsets[0];
+        tensor->end = offsets[1];
+        has_offsets = true;
+      } else {
+        return false;
+      }
+      if (take('}')) {
+        skip_whitespace();
+        return has_dtype && has_shape && has_offsets;
+      }
+      if (!take_after_whitespace(',')) {
+        return false;
+      }
+    }
+  }
+
+  Status error(const std::string &detail) const {
+    const auto offset = static_cast<std::size_t>(cursor_ - begin_);
+    return format_error(detail + " at header byte " + std::to_string(offset));
+  }
+
+  const char *begin_;
+  const char *cursor_;
+  const char *end_;
+};
+
+class IndexParser final {
+public:
+  IndexParser(const std::uint8_t *const data, const std::size_t size)
+      : begin_(reinterpret_cast<const char *>(data)), cursor_(begin_),
+        end_(begin_ + size) {}
+
+  [[nodiscard]] Status
+  parse(std::uint64_t *const total_size,
+        std::vector<std::pair<std::string, std::string>> *const weight_map) {
+    skip_whitespace();
+    if (!take('{')) {
+      return error("root must be a JSON object");
+    }
+    std::set<std::string> root_keys;
+    bool has_metadata = false;
+    bool has_weight_map = false;
+    skip_whitespace();
+    if (take('}')) {
+      return error("root object must not be empty");
+    }
+    while (true) {
+      std::string field;
+      if (!parse_string(&field) || !take_after_whitespace(':') ||
+          !root_keys.insert(field).second) {
+        return error("invalid or duplicate root field");
+      }
+      if (field == "metadata") {
+        if (has_metadata || !parse_metadata(total_size)) {
+          return error("invalid metadata object");
+        }
+        has_metadata = true;
+      } else if (field == "weight_map") {
+        if (has_weight_map || !parse_weight_map(weight_map)) {
+          return error("invalid weight_map object");
+        }
+        has_weight_map = true;
+      } else {
+        return error("unknown root field '" + field + "'");
+      }
+      if (take('}')) {
+        break;
+      }
+      if (!take_after_whitespace(',')) {
+        return error("expected ',' or '}' in root object");
+      }
+    }
+    skip_whitespace();
+    if (cursor_ != end_) {
+      return error("non-whitespace trailing bytes");
+    }
+    if (!has_metadata || !has_weight_map) {
+      return error("metadata and weight_map are required");
+    }
+    return Status::Ok();
+  }
+
+private:
+  void skip_whitespace() noexcept {
+    while (cursor_ != end_ && (*cursor_ == ' ' || *cursor_ == '\t' ||
+                               *cursor_ == '\n' || *cursor_ == '\r')) {
+      ++cursor_;
+    }
+  }
+
+  bool take(const char expected) noexcept {
+    if (cursor_ == end_ || *cursor_ != expected) {
+      return false;
+    }
+    ++cursor_;
+    return true;
+  }
+
+  bool take_after_whitespace(const char expected) noexcept {
+    skip_whitespace();
+    const bool found = take(expected);
+    skip_whitespace();
+    return found;
+  }
+
+  bool parse_string(std::string *const output) {
+    skip_whitespace();
+    if (!take('"')) {
+      return false;
+    }
+    output->clear();
+    while (cursor_ != end_) {
+      const auto character = static_cast<unsigned char>(*cursor_++);
+      if (character == '"') {
+        skip_whitespace();
+        return true;
+      }
+      if (character < 0x20U) {
+        return false;
+      }
+      if (character != '\\') {
+        output->push_back(static_cast<char>(character));
+        continue;
+      }
+      if (cursor_ == end_) {
+        return false;
+      }
+      const char escaped = *cursor_++;
+      if (escaped == '"' || escaped == '\\' || escaped == '/') {
+        output->push_back(escaped);
+      } else {
+        return false;
+      }
+    }
+    return false;
+  }
+
+  bool parse_u64(std::uint64_t *const output) {
+    skip_whitespace();
+    const char *const start = cursor_;
+    while (cursor_ != end_ && *cursor_ >= '0' && *cursor_ <= '9') {
+      ++cursor_;
+    }
+    if (cursor_ == start ||
+        !parse_decimal_u64({start, static_cast<std::size_t>(cursor_ - start)},
+                           output)) {
+      return false;
+    }
+    skip_whitespace();
+    return true;
+  }
+
+  bool parse_metadata(std::uint64_t *const total_size) {
+    if (!take_after_whitespace('{')) {
+      return false;
+    }
+    std::string field;
+    if (!parse_string(&field) || field != "total_size" ||
+        !take_after_whitespace(':') || !parse_u64(total_size) || !take('}')) {
+      return false;
+    }
+    skip_whitespace();
+    return true;
+  }
+
+  bool parse_weight_map(
+      std::vector<std::pair<std::string, std::string>> *const weight_map) {
+    if (!take_after_whitespace('{')) {
+      return false;
+    }
+    std::set<std::string> names;
+    if (take('}')) {
+      skip_whitespace();
+      return true;
+    }
+    while (true) {
+      std::string name;
+      std::string shard;
+      if (!parse_string(&name) || !take_after_whitespace(':') ||
+          !parse_string(&shard) || !names.insert(name).second) {
+        return false;
+      }
+      weight_map->emplace_back(std::move(name), std::move(shard));
+      if (take('}')) {
+        skip_whitespace();
+        return true;
+      }
+      if (!take_after_whitespace(',')) {
+        return false;
+      }
+    }
+  }
+
+  Status error(const std::string &detail) const {
+    const auto offset = static_cast<std::size_t>(cursor_ - begin_);
+    return index_error(detail + " at byte " + std::to_string(offset));
+  }
+
+  const char *begin_;
+  const char *cursor_;
+  const char *end_;
+};
+
+bool tensor_dtype(const std::string_view name, TensorDType *const dtype,
+                  std::uint64_t *const width) noexcept {
+  if (name == "F32") {
+    *dtype = TensorDType::kF32;
+    *width = 4;
+    return true;
+  }
+  if (name == "BF16") {
+    *dtype = TensorDType::kBF16;
+    *width = 2;
+    return true;
+  }
+  if (name == "F8_E4M3") {
+    *dtype = TensorDType::kE4M3Software;
+    *width = 1;
+    return true;
   }
   return false;
 }
 
-std::uint32_t crc_with_zeroed_field(const std::uint8_t* data,
-                                    const std::size_t size,
-                                    const std::size_t field_offset) {
-  std::array<std::uint8_t, kTensorDescriptorSize> scratch{};
-  if (size > scratch.size() || field_offset + sizeof(std::uint32_t) > size) {
-    return 0;
+bool metadata_equal(const std::vector<MetadataEntry> &left,
+                    const std::vector<MetadataEntry> &right) noexcept {
+  if (left.size() != right.size()) {
+    return false;
   }
-  std::copy(data, data + size, scratch.begin());
-  std::fill(scratch.begin() + static_cast<std::ptrdiff_t>(field_offset),
-            scratch.begin() + static_cast<std::ptrdiff_t>(field_offset + sizeof(std::uint32_t)),
-            0);
-  return crc32(scratch.data(), size);
+  for (std::size_t index = 0; index < left.size(); ++index) {
+    if (left[index].key != right[index].key ||
+        left[index].type != right[index].type ||
+        left[index].value != right[index].value) {
+      return false;
+    }
+  }
+  return true;
 }
 
-std::string tensor_context(const std::uint64_t index, const std::string& detail) {
-  std::ostringstream message;
-  message << "tensor descriptor " << index << ": " << detail;
-  return message.str();
+bool valid_shard_filename(const std::string_view name) {
+  if (name.empty() || !has_suffix(name, ".safetensors") ||
+      name.find('/') != std::string_view::npos ||
+      name.find('\\') != std::string_view::npos || name == "." ||
+      name == "..") {
+    return false;
+  }
+  return true;
 }
 
-}  // namespace
+std::string sibling_path(const std::string &path,
+                         const std::string_view filename) {
+  const auto separator = path.find_last_of("/\\");
+  if (separator == std::string::npos) {
+    return std::string{filename};
+  }
+  return path.substr(0, separator + 1) + std::string{filename};
+}
 
-Status ModelFile::open(const std::string& path) {
+} // namespace
+
+Status ModelFile::open(const std::string &path) {
   ModelFile candidate;
-  auto status = candidate.mapping_.open(path);
+  if (has_suffix(path, ".index.json")) {
+    auto status = candidate.open_index(path);
+    if (!status.ok()) {
+      return status;
+    }
+    *this = std::move(candidate);
+    return Status::Ok();
+  }
+
+  candidate.mappings_.emplace_back();
+  auto status = candidate.mappings_.back().open(path);
   if (!status.ok()) {
     return status;
   }
-  status = candidate.parse();
+  candidate.file_size_ = candidate.mappings_.back().size();
+  status = candidate.parse_shard(0);
   if (!status.ok()) {
     return status;
   }
@@ -155,397 +740,348 @@ Status ModelFile::open(const std::string& path) {
   return Status::Ok();
 }
 
-Status ModelFile::parse() {
-  if (mapping_.size() < kModelHeaderSize) {
-    return format_error("file shorter than 128-byte EVO2C header");
-  }
-  const auto* header = mapping_.data();
-  if (!std::equal(kMagic.begin(), kMagic.end(), header)) {
-    return format_error("bad magic; expected EVO2C v1 file");
-  }
-
-  version_ = read_u32(header + 8);
-  if (version_ != kModelFormatVersion) {
-    return format_error("unsupported model format version " + std::to_string(version_));
-  }
-  if (read_u32(header + 12) != kEndianMarker) {
-    return format_error("bad endian marker; only canonical little-endian files are supported");
-  }
-  if (read_u32(header + 16) != kModelHeaderSize) {
-    return format_error("header_size must be 128");
-  }
-  if (read_u32(header + 20) != 0) {
-    return format_error("unsupported nonzero header flags");
-  }
-  if (read_u64(header + 24) != mapping_.size()) {
-    return format_error("header file_size does not match mapped file size");
-  }
-  if (!zero_bytes(header + 84, 44)) {
-    return format_error("header reserved bytes must be zero");
-  }
-  const auto stored_header_crc = read_u32(header + kHeaderCrcOffset);
-  const auto computed_header_crc =
-      crc_with_zeroed_field(header, kModelHeaderSize, kHeaderCrcOffset);
-  if (stored_header_crc != computed_header_crc) {
-    return format_error("header CRC32 mismatch");
-  }
-
-  const auto metadata_offset = read_u64(header + 32);
-  const auto metadata_size = read_u64(header + 40);
-  const auto tensor_table_offset = read_u64(header + 48);
-  const auto tensor_count = read_u64(header + 56);
-  const auto descriptor_size = read_u32(header + 64);
-  const auto alignment = read_u32(header + 68);
-  const auto data_offset = read_u64(header + 72);
-
-  if (metadata_offset != kModelHeaderSize) {
-    return format_error("metadata_offset must immediately follow header at byte 128");
-  }
-  if (metadata_size < 16 || metadata_size > kMaxMetadataSize) {
-    return format_error("metadata_size must be in [16, 16777216]");
-  }
-  if (tensor_count == 0 || tensor_count > kMaxTensorCount) {
-    return format_error("tensor_count must be in [1, 1000000]");
-  }
-  if (descriptor_size != kTensorDescriptorSize) {
-    return format_error("tensor_descriptor_size must be 256");
-  }
-  if (alignment != kModelAlignment) {
-    return format_error("alignment must be 64");
-  }
-
-  std::uint64_t metadata_end = 0;
-  std::uint64_t expected_table_offset = 0;
-  if (!checked_add(metadata_offset, metadata_size, &metadata_end) ||
-      !align_up(metadata_end, kModelAlignment, &expected_table_offset)) {
-    return format_error("metadata range overflows uint64");
-  }
-  if (tensor_table_offset != expected_table_offset) {
-    return format_error("tensor_table_offset is not canonical 64-byte alignment after metadata");
-  }
-
-  std::uint64_t table_size = 0;
-  std::uint64_t table_end = 0;
-  std::uint64_t expected_data_offset = 0;
-  if (!checked_mul(tensor_count, kTensorDescriptorSize, &table_size) ||
-      !checked_add(tensor_table_offset, table_size, &table_end) ||
-      !align_up(table_end, kModelAlignment, &expected_data_offset)) {
-    return format_error("tensor table range overflows uint64");
-  }
-  if (data_offset != expected_data_offset) {
-    return format_error("data_offset is not canonical 64-byte alignment after tensor table");
-  }
-  if (data_offset > mapping_.size()) {
-    return format_error("data_offset lies beyond end of file");
-  }
-  if (!zero_bytes(mapping_.data() + metadata_end,
-                  static_cast<std::size_t>(tensor_table_offset - metadata_end)) ||
-      !zero_bytes(mapping_.data() + table_end,
-                  static_cast<std::size_t>(data_offset - table_end))) {
-    return format_error("section alignment padding must be zero");
-  }
-
-  auto status = parse_metadata(metadata_offset, metadata_size);
+Status ModelFile::open_index(const std::string &path) {
+  MappedFile index;
+  auto status = index.open(path);
   if (!status.ok()) {
     return status;
   }
-  return parse_tensors(tensor_table_offset, tensor_count, data_offset);
-}
-
-Status ModelFile::parse_metadata(const std::uint64_t offset, const std::uint64_t size) {
-  if (offset > mapping_.size() || size > mapping_.size() - offset) {
-    return format_error("metadata range lies beyond end of file");
-  }
-  const auto* section = mapping_.data() + offset;
-  const auto section_size = static_cast<std::size_t>(size);
-  if (!std::equal(kMetadataMagic.begin(), kMetadataMagic.end(), section)) {
-    return format_error("metadata bad magic");
-  }
-  if (read_u16(section + 4) != kMetadataVersion) {
-    return format_error("unsupported metadata version");
-  }
-  if (read_u16(section + 6) != 0) {
-    return format_error("metadata reserved field must be zero");
-  }
-  const auto entry_count = read_u32(section + 8);
-  if (entry_count > kMaxMetadataEntries) {
-    return format_error("metadata entry_count exceeds 4096");
-  }
-  const auto stored_crc = read_u32(section + 12);
-  const auto computed_crc = crc32(section + 16, section_size - 16);
-  if (stored_crc != computed_crc) {
-    return format_error("metadata CRC32 mismatch");
+  if (index.size() > kMaximumIndexSize) {
+    return index_error("file exceeds 64 MiB");
   }
 
-  std::set<std::string> keys;
-  std::size_t cursor = 16;
-  metadata_.reserve(entry_count);
-  for (std::uint32_t index = 0; index < entry_count; ++index) {
-    if (cursor > section_size || section_size - cursor < 8) {
-      return format_error("metadata entry " + std::to_string(index) + " header is truncated");
-    }
-    const auto key_length = read_u16(section + cursor);
-    const auto raw_type = section[cursor + 2];
-    const auto reserved = section[cursor + 3];
-    const auto value_length = read_u32(section + cursor + 4);
-    if (key_length == 0 || key_length > 255) {
-      return format_error("metadata entry " + std::to_string(index) + " key length is invalid");
-    }
-    if (!valid_metadata_type(raw_type)) {
-      return format_error("metadata entry " + std::to_string(index) + " type is invalid");
-    }
-    if (reserved != 0) {
-      return format_error("metadata entry " + std::to_string(index) + " reserved byte must be zero");
-    }
-
-    std::uint64_t content_end_u64 = 0;
-    const auto content_start = static_cast<std::uint64_t>(cursor) + 8U;
-    if (!checked_add(content_start, key_length, &content_end_u64) ||
-        !checked_add(content_end_u64, value_length, &content_end_u64) ||
-        content_end_u64 > section_size) {
-      return format_error("metadata entry " + std::to_string(index) + " content is truncated");
-    }
-    const auto key_start = cursor + 8;
-    const auto value_start = key_start + key_length;
-    std::string key(reinterpret_cast<const char*>(section + key_start), key_length);
-    if (!std::all_of(key.begin(), key.end(), valid_key_character)) {
-      return format_error("metadata entry " + std::to_string(index) + " key has invalid characters");
-    }
-    if (!keys.insert(key).second) {
-      return format_error("duplicate metadata key '" + key + "'");
-    }
-
-    const auto type = static_cast<MetadataType>(raw_type);
-    const bool valid_length =
-        (type == MetadataType::kString || type == MetadataType::kBytes) ||
-        (type == MetadataType::kU64 && value_length == 8) ||
-        (type == MetadataType::kF64 && value_length == 8) ||
-        (type == MetadataType::kBool && value_length == 1) ||
-        (type == MetadataType::kU64List && value_length % 8 == 0);
-    if (!valid_length) {
-      return format_error("metadata entry '" + key + "' has invalid value length for its type");
-    }
-    if (type == MetadataType::kBool && section[value_start] > 1) {
-      return format_error("metadata bool entry '" + key + "' must be 0 or 1");
-    }
-
-    MetadataEntry entry;
-    entry.key = std::move(key);
-    entry.type = type;
-    entry.value.assign(section + value_start, section + value_start + value_length);
-    metadata_.push_back(std::move(entry));
-
-    std::uint64_t aligned_end_u64 = 0;
-    if (!align_up(content_end_u64, 8, &aligned_end_u64) || aligned_end_u64 > section_size) {
-      return format_error("metadata entry " + std::to_string(index) + " padding is truncated");
-    }
-    const auto content_end = static_cast<std::size_t>(content_end_u64);
-    const auto aligned_end = static_cast<std::size_t>(aligned_end_u64);
-    if (!zero_bytes(section + content_end, aligned_end - content_end)) {
-      return format_error("metadata entry " + std::to_string(index) + " padding must be zero");
-    }
-    cursor = aligned_end;
+  std::uint64_t expected_payload_size = 0;
+  std::vector<std::pair<std::string, std::string>> weight_map;
+  IndexParser parser(index.data(), index.size());
+  status = parser.parse(&expected_payload_size, &weight_map);
+  if (!status.ok()) {
+    return status;
   }
-  if (cursor != section_size) {
-    return format_error("metadata section has unparsed trailing bytes");
+  if (expected_payload_size == 0 || weight_map.empty() ||
+      weight_map.size() > kMaximumTensorCount) {
+    return index_error("weight_map count and total_size must be positive");
+  }
+
+  std::vector<std::string> shard_names;
+  std::map<std::string, std::size_t> shard_indices;
+  for (const auto &[tensor_name, shard_name] : weight_map) {
+    if (!valid_identifier(tensor_name, kTensorNameCapacity - 1)) {
+      return index_error("invalid tensor name '" + tensor_name + "'");
+    }
+    if (!valid_shard_filename(shard_name)) {
+      return index_error("invalid shard filename '" + shard_name + "'");
+    }
+    if (shard_indices.find(shard_name) == shard_indices.end()) {
+      const auto shard_index = shard_names.size();
+      shard_indices.emplace(shard_name, shard_index);
+      shard_names.push_back(shard_name);
+    }
+  }
+
+  mappings_.reserve(shard_names.size());
+  if (index.size() > std::numeric_limits<std::size_t>::max() - file_size_) {
+    return index_error("artifact size overflows this process");
+  }
+  file_size_ += index.size();
+  for (const auto &shard_name : shard_names) {
+    mappings_.emplace_back();
+    status = mappings_.back().open(sibling_path(path, shard_name));
+    if (!status.ok()) {
+      return {status.code(), "open shard '" + shard_name +
+                                 "' from index: " + status.message()};
+    }
+    if (mappings_.back().size() >
+        std::numeric_limits<std::size_t>::max() - file_size_) {
+      return index_error("artifact size overflows this process");
+    }
+    file_size_ += mappings_.back().size();
+    status = parse_shard(mappings_.size() - 1);
+    if (!status.ok()) {
+      return {status.code(), "shard '" + shard_name + "': " + status.message()};
+    }
+  }
+
+  std::map<std::string, std::string> expected_shards;
+  for (const auto &[tensor_name, shard_name] : weight_map) {
+    if (!expected_shards.emplace(tensor_name, shard_name).second) {
+      return index_error("duplicate tensor name '" + tensor_name + "'");
+    }
+  }
+  if (expected_shards.size() != tensors_.size()) {
+    return index_error("weight_map does not match shard tensor count");
+  }
+  std::uint64_t actual_payload_size = 0;
+  for (const auto &tensor : tensors_) {
+    const auto expected = expected_shards.find(tensor.name);
+    if (expected == expected_shards.end() ||
+        expected->second != shard_names[tensor.shard_index]) {
+      return index_error("weight_map points tensor '" + tensor.name +
+                         "' to the wrong shard");
+    }
+    if (!checked_add(actual_payload_size, tensor.data_size,
+                     &actual_payload_size)) {
+      return index_error("tensor payload size overflows uint64");
+    }
+  }
+  if (actual_payload_size != expected_payload_size) {
+    return index_error("metadata.total_size does not match tensor payloads");
   }
   return Status::Ok();
 }
 
-Status ModelFile::parse_tensors(const std::uint64_t table_offset,
-                                const std::uint64_t tensor_count,
-                                const std::uint64_t data_offset) {
+Status ModelFile::parse_shard(const std::size_t shard_index) {
+  if (shard_index >= mappings_.size()) {
+    return format_error("internal shard index is out of range");
+  }
+  const auto &mapping = mappings_[shard_index];
+  if (mapping.size() < kSafetensorsPrefixSize + 2) {
+    return format_error("file is too short");
+  }
+  const std::uint64_t header_size = read_u64(mapping.data());
+  if (header_size == 0 || header_size > kMaximumSafetensorsHeaderSize ||
+      header_size % 8 != 0) {
+    return format_error("header size must be a nonzero 8-byte multiple at "
+                        "most 16 MiB");
+  }
+  std::uint64_t data_offset = 0;
+  if (!checked_add(kSafetensorsPrefixSize, header_size, &data_offset) ||
+      data_offset > mapping.size()) {
+    return format_error("header range lies beyond the file");
+  }
+
+  std::vector<std::pair<std::string, std::string>> raw_metadata;
+  std::vector<RawTensor> raw_tensors;
+  HeaderParser parser(mapping.data() + kSafetensorsPrefixSize,
+                      static_cast<std::size_t>(header_size));
+  auto status = parser.parse(&raw_metadata, &raw_tensors);
+  if (!status.ok()) {
+    return status;
+  }
+  if (raw_metadata.size() > kMaximumMetadataEntries) {
+    return format_error("metadata entry count exceeds 4096");
+  }
+  if (raw_tensors.empty() || raw_tensors.size() > kMaximumTensorCount) {
+    return format_error("tensor count must be in [1, 1000000]");
+  }
+
+  std::vector<MetadataEntry> shard_metadata;
+  shard_metadata.reserve(raw_metadata.size());
+  for (const auto &[key, value] : raw_metadata) {
+    MetadataEntry entry;
+    status = decode_metadata(key, value, &entry);
+    if (!status.ok()) {
+      return status;
+    }
+    shard_metadata.push_back(std::move(entry));
+  }
+  std::sort(shard_metadata.begin(), shard_metadata.end(),
+            [](const MetadataEntry &left, const MetadataEntry &right) {
+              return left.key < right.key;
+            });
+  const auto profile =
+      std::find_if(shard_metadata.begin(), shard_metadata.end(),
+                   [](const MetadataEntry &entry) {
+                     return entry.key == "evo2.profile";
+                   });
+  if (profile == shard_metadata.end() ||
+      profile->type != MetadataType::kString ||
+      std::string_view{reinterpret_cast<const char *>(profile->value.data()),
+                       profile->value.size()} != kModelProfile) {
+    return format_error("missing or unsupported evo2.profile metadata");
+  }
+  if (metadata_.empty()) {
+    metadata_ = std::move(shard_metadata);
+  } else if (!metadata_equal(metadata_, shard_metadata)) {
+    return format_error("metadata differs between shards");
+  }
+
+  const auto data_size =
+      static_cast<std::uint64_t>(mapping.size()) - data_offset;
   std::set<std::string> names;
-  tensors_.reserve(static_cast<std::size_t>(tensor_count));
-
-  for (std::uint64_t index = 0; index < tensor_count; ++index) {
-    const auto descriptor_offset = table_offset + index * kTensorDescriptorSize;
-    const auto* descriptor = mapping_.data() + descriptor_offset;
-    const auto stored_descriptor_crc = read_u32(descriptor + kDescriptorCrcOffset);
-    const auto computed_descriptor_crc =
-        crc_with_zeroed_field(descriptor, kTensorDescriptorSize, kDescriptorCrcOffset);
-    if (stored_descriptor_crc != computed_descriptor_crc) {
-      return format_error(tensor_context(index, "descriptor CRC32 mismatch"));
+  for (const auto &tensor : tensors_) {
+    names.insert(tensor.name);
+  }
+  std::vector<TensorInfo> shard_tensors;
+  shard_tensors.reserve(raw_tensors.size());
+  for (const auto &raw : raw_tensors) {
+    if (!valid_identifier(raw.name, kTensorNameCapacity - 1) ||
+        !names.insert(raw.name).second) {
+      return format_error("invalid or duplicate tensor name '" + raw.name +
+                          "'");
     }
-    if (read_u16(descriptor + 98) != 0 || read_u32(descriptor + 100) != 0 ||
-        !zero_bytes(descriptor + 200, 56)) {
-      return format_error(tensor_context(index, "flags and reserved bytes must be zero"));
+    if (raw.shape.size() > kTensorMaxRank || raw.end <= raw.begin ||
+        raw.end > data_size) {
+      return format_error("invalid shape or data range for '" + raw.name + "'");
     }
-
-    const auto* name_end = std::find(descriptor, descriptor + kTensorNameCapacity, 0);
-    if (name_end == descriptor || name_end == descriptor + kTensorNameCapacity) {
-      return format_error(tensor_context(index, "name must be nonempty and NUL-terminated"));
-    }
-    if (!zero_bytes(name_end, static_cast<std::size_t>(descriptor + kTensorNameCapacity - name_end))) {
-      return format_error(tensor_context(index, "bytes after name terminator must be zero"));
-    }
-    std::string name(reinterpret_cast<const char*>(descriptor),
-                     static_cast<std::size_t>(name_end - descriptor));
-    if (!std::all_of(name.begin(), name.end(), valid_key_character)) {
-      return format_error(tensor_context(index, "name has invalid characters"));
-    }
-    if (!names.insert(name).second) {
-      return format_error("duplicate tensor name '" + name + "'");
-    }
-
-    const auto raw_dtype = descriptor[96];
-    const auto rank = descriptor[97];
-    if (!valid_tensor_dtype(raw_dtype)) {
-      return format_error(tensor_context(index, "dtype is invalid"));
-    }
-    if (rank > kTensorMaxRank) {
-      return format_error(tensor_context(index, "rank exceeds 8"));
-    }
-
     TensorInfo tensor;
-    tensor.name = std::move(name);
-    tensor.dtype = static_cast<TensorDType>(raw_dtype);
-    tensor.rank = rank;
-    std::uint64_t computed_elements = 1;
-    for (std::size_t dimension = 0; dimension < kTensorMaxRank; ++dimension) {
-      tensor.dimensions[dimension] = read_u64(descriptor + 104 + dimension * 8);
-      if (dimension < rank) {
-        if (tensor.dimensions[dimension] == 0 ||
-            !checked_mul(computed_elements, tensor.dimensions[dimension], &computed_elements)) {
-          return format_error(tensor_context(index, "dimensions are zero or overflow uint64"));
-        }
-      } else if (tensor.dimensions[dimension] != 0) {
-        return format_error(tensor_context(index, "unused dimensions must be zero"));
-      }
+    tensor.name = raw.name;
+    tensor.rank = static_cast<std::uint8_t>(raw.shape.size());
+    tensor.shard_index = shard_index;
+    std::uint64_t width = 0;
+    if (!tensor_dtype(raw.dtype, &tensor.dtype, &width)) {
+      return format_error("unsupported dtype '" + raw.dtype + "' for '" +
+                          raw.name + "'");
     }
-
-    tensor.data_offset = read_u64(descriptor + 168);
-    tensor.data_size = read_u64(descriptor + 176);
-    tensor.element_count = read_u64(descriptor + 184);
-    tensor.data_crc32 = read_u32(descriptor + 192);
-    if (tensor.element_count != computed_elements) {
-      return format_error(tensor_context(index, "element_count does not match shape product"));
+    tensor.element_count = 1;
+    for (std::size_t index = 0; index < raw.shape.size(); ++index) {
+      const auto dimension = raw.shape[index];
+      if (dimension == 0 || !checked_mul(tensor.element_count, dimension,
+                                         &tensor.element_count)) {
+        return format_error("invalid dimensions for '" + raw.name + "'");
+      }
+      tensor.dimensions[index] = dimension;
     }
     std::uint64_t expected_size = 0;
-    if (!expected_tensor_size(tensor.dtype, tensor.element_count, &expected_size) ||
-        tensor.data_size != expected_size) {
-      return format_error(tensor_context(index, "data_size does not match dtype and element_count"));
+    if (!checked_mul(tensor.element_count, width, &expected_size) ||
+        expected_size != raw.end - raw.begin ||
+        !checked_add(data_offset, raw.begin, &tensor.data_offset)) {
+      return format_error("dtype/shape size mismatch for '" + raw.name + "'");
     }
-    if (tensor.data_size == 0 || tensor.data_offset < data_offset ||
-        tensor.data_offset % kModelAlignment != 0) {
-      return format_error(tensor_context(index, "payload offset/size/alignment is invalid"));
-    }
-    if (tensor.data_offset > mapping_.size() || tensor.data_size > mapping_.size() - tensor.data_offset) {
-      return format_error(tensor_context(index, "payload range lies beyond end of file"));
-    }
-    tensors_.push_back(std::move(tensor));
+    tensor.data_size = expected_size;
+    shard_tensors.push_back(std::move(tensor));
   }
 
-  std::vector<const TensorInfo*> by_offset;
-  by_offset.reserve(tensors_.size());
-  for (const auto& tensor : tensors_) {
-    by_offset.push_back(&tensor);
-  }
-  std::sort(by_offset.begin(), by_offset.end(), [](const TensorInfo* left, const TensorInfo* right) {
-    return left->data_offset < right->data_offset;
-  });
-  for (std::size_t index = 1; index < by_offset.size(); ++index) {
-    const auto previous_end = by_offset[index - 1]->data_offset + by_offset[index - 1]->data_size;
-    if (previous_end > by_offset[index]->data_offset) {
-      return format_error("tensor payloads overlap: '" + by_offset[index - 1]->name + "' and '" +
-                          by_offset[index]->name + "'");
+  std::sort(shard_tensors.begin(), shard_tensors.end(),
+            [](const TensorInfo &left, const TensorInfo &right) {
+              return left.data_offset < right.data_offset;
+            });
+  std::uint64_t cursor = data_offset;
+  for (const auto &tensor : shard_tensors) {
+    if (tensor.data_offset != cursor ||
+        !checked_add(cursor, tensor.data_size, &cursor)) {
+      return format_error("tensor data buffer contains a hole or overlap near "
+                          "'" +
+                          tensor.name + "'");
     }
   }
-
-  for (const auto& tensor : tensors_) {
-    const auto payload_size = static_cast<std::size_t>(tensor.data_size);
-    const auto computed_crc = crc32(mapping_.data() + tensor.data_offset, payload_size);
-    if (computed_crc != tensor.data_crc32) {
-      return format_error("tensor payload CRC32 mismatch for '" + tensor.name + "'");
-    }
+  if (cursor != mapping.size()) {
+    return format_error("tensor data does not cover the complete file");
   }
+  tensors_.insert(tensors_.end(),
+                  std::make_move_iterator(shard_tensors.begin()),
+                  std::make_move_iterator(shard_tensors.end()));
   return Status::Ok();
 }
 
-const MetadataEntry* ModelFile::find_metadata(const std::string_view key) const noexcept {
-  const auto found = std::find_if(metadata_.begin(), metadata_.end(), [key](const MetadataEntry& entry) {
-    return entry.key == key;
-  });
+const MetadataEntry *
+ModelFile::find_metadata(const std::string_view key) const noexcept {
+  const auto found = std::find_if(
+      metadata_.begin(), metadata_.end(),
+      [key](const MetadataEntry &entry) { return entry.key == key; });
   return found == metadata_.end() ? nullptr : &*found;
 }
 
-const TensorInfo* ModelFile::find_tensor(const std::string_view name) const noexcept {
-  const auto found = std::find_if(tensors_.begin(), tensors_.end(), [name](const TensorInfo& tensor) {
-    return tensor.name == name;
-  });
+const TensorInfo *
+ModelFile::find_tensor(const std::string_view name) const noexcept {
+  const auto found = std::find_if(
+      tensors_.begin(), tensors_.end(),
+      [name](const TensorInfo &tensor) { return tensor.name == name; });
   return found == tensors_.end() ? nullptr : &*found;
 }
 
-const std::uint8_t* ModelFile::tensor_data(const TensorInfo& tensor) const noexcept {
-  if (tensor.data_offset > mapping_.size() || tensor.data_size > mapping_.size() - tensor.data_offset) {
+const std::uint8_t *
+ModelFile::tensor_data(const TensorInfo &tensor) const noexcept {
+  if (tensor.shard_index >= mappings_.size()) {
     return nullptr;
   }
-  return mapping_.data() + tensor.data_offset;
+  const auto &mapping = mappings_[tensor.shard_index];
+  if (tensor.data_offset > mapping.size() ||
+      tensor.data_size > mapping.size() - tensor.data_offset) {
+    return nullptr;
+  }
+  return mapping.data() + tensor.data_offset;
 }
 
-const char* metadata_type_name(const MetadataType type) noexcept {
+Status ModelFile::read_tensor(const TensorInfo &tensor,
+                              const std::uint64_t offset,
+                              void *const destination,
+                              const std::size_t bytes) const {
+  const auto *const stored = find_tensor(tensor.name);
+  if (stored == nullptr || stored->dtype != tensor.dtype ||
+      stored->data_size != tensor.data_size ||
+      stored->shard_index != tensor.shard_index) {
+    return {ErrorCode::kInvalidArgument,
+            "tensor descriptor does not belong to this model: " + tensor.name};
+  }
+  if (destination == nullptr && bytes != 0) {
+    return {ErrorCode::kInvalidArgument, "tensor read destination is null"};
+  }
+  if (offset > stored->data_size || bytes > stored->data_size - offset) {
+    return {ErrorCode::kInvalidArgument,
+            "tensor read exceeds payload: " + tensor.name};
+  }
+  const auto *const data = tensor_data(*stored);
+  if (data == nullptr) {
+    return {ErrorCode::kModelFormat,
+            "tensor payload is unavailable: " + tensor.name};
+  }
+  if (bytes != 0) {
+    std::memcpy(destination, data + offset, bytes);
+  }
+  return Status::Ok();
+}
+
+const char *metadata_type_name(const MetadataType type) noexcept {
   switch (type) {
-    case MetadataType::kString:
-      return "string";
-    case MetadataType::kU64:
-      return "u64";
-    case MetadataType::kF64:
-      return "f64";
-    case MetadataType::kBool:
-      return "bool";
-    case MetadataType::kU64List:
-      return "u64[]";
-    case MetadataType::kBytes:
-      return "bytes";
+  case MetadataType::kString:
+    return "string";
+  case MetadataType::kU64:
+    return "u64";
+  case MetadataType::kF64:
+    return "f64";
+  case MetadataType::kBool:
+    return "bool";
+  case MetadataType::kU64List:
+    return "u64[]";
+  case MetadataType::kBytes:
+    return "bytes";
   }
   return "unknown";
 }
 
-const char* tensor_dtype_name(const TensorDType dtype) noexcept {
+const char *tensor_dtype_name(const TensorDType dtype) noexcept {
   switch (dtype) {
-    case TensorDType::kF32:
-      return "F32";
-    case TensorDType::kBF16:
-      return "BF16";
-    case TensorDType::kQ8_0:
-      return "Q8_0";
-    case TensorDType::kE4M3Software:
-      return "E4M3_SW";
+  case TensorDType::kF32:
+    return "F32";
+  case TensorDType::kBF16:
+    return "BF16";
+  case TensorDType::kE4M3Software:
+    return "F8_E4M3";
   }
   return "UNKNOWN";
 }
 
-std::string metadata_value_text(const MetadataEntry& entry) {
+std::string metadata_value_text(const MetadataEntry &entry) {
   std::ostringstream output;
   switch (entry.type) {
-    case MetadataType::kString:
-      return std::string(entry.value.begin(), entry.value.end());
-    case MetadataType::kU64:
-      return std::to_string(read_u64(entry.value.data()));
-    case MetadataType::kF64: {
-      const auto bits = read_u64(entry.value.data());
-      double value = 0.0;
-      std::memcpy(&value, &bits, sizeof(value));
-      output << std::setprecision(17) << value;
-      return output.str();
-    }
-    case MetadataType::kBool:
-      return entry.value[0] == 0 ? "false" : "true";
-    case MetadataType::kU64List:
-      output << '[';
-      for (std::size_t offset = 0; offset < entry.value.size(); offset += 8) {
-        if (offset != 0) {
-          output << ',';
-        }
-        output << read_u64(entry.value.data() + offset);
+  case MetadataType::kString:
+    return std::string(entry.value.begin(), entry.value.end());
+  case MetadataType::kU64:
+    return std::to_string(read_u64(entry.value.data()));
+  case MetadataType::kF64: {
+    const auto bits = read_u64(entry.value.data());
+    double value = 0.0;
+    std::memcpy(&value, &bits, sizeof(value));
+    output << std::setprecision(17) << value;
+    return output.str();
+  }
+  case MetadataType::kBool:
+    return entry.value[0] == 0 ? "false" : "true";
+  case MetadataType::kU64List:
+    output << '[';
+    for (std::size_t offset = 0; offset < entry.value.size(); offset += 8) {
+      if (offset != 0) {
+        output << ',';
       }
-      output << ']';
-      return output.str();
-    case MetadataType::kBytes:
-      output << '<' << entry.value.size() << " bytes>";
-      return output.str();
+      output << read_u64(entry.value.data() + offset);
+    }
+    output << ']';
+    return output.str();
+  case MetadataType::kBytes:
+    output << '<' << entry.value.size() << " bytes>";
+    return output.str();
   }
   return "<invalid>";
 }
 
-}  // namespace evo2c
+} // namespace evo2c

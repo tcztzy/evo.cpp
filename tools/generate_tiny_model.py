@@ -452,6 +452,7 @@ def main() -> int:
         )
     model = TinyModel(add_fp8_residue=args.add_fp8_residue)
     metadata = {
+        "runtime.abi": "evo2-safetensors-v1",
         "model.name": "tiny-evo2c-50l",
         "model.architecture": "StripedHyena2Test",
         "fixture.synthetic": True,

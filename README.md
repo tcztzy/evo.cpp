@@ -5,14 +5,45 @@
 `evo2c` is an independent C++17/CUDA inference runtime for every official
 Evo 2 size: 1B, 7B, 20B, and 40B, including the supported base and
 long-context variants. It runs batch-1 inference on one to four CUDA GPUs.
-The inference process does not depend on PyTorch, Vortex, Transformer Engine,
-or hardware FP8 instructions.
+The native forward process does not depend on PyTorch, Vortex, Transformer
+Engine, hardware FP8 instructions, or a Python runtime. Production inference
+reads standard Safetensors files or a standard sharded Safetensors index using
+the strict `evo2-runtime-v1` profile.
 
 The project follows the narrow-runtime philosophy of `llama.cpp` and `ds4.c`:
-one checked model container, one model architecture, purpose-built native
-kernels, offline weight conversion, and reproducible numerical tests. It is
-not a new biological model, and it does not retrain or modify a checkpoint. It
-solves the deployment problem of running Evo 2 on hardware without FP8.
+one model architecture, purpose-built native kernels, bounded checkpoint
+loading, and reproducible numerical tests. It is not a new biological model,
+and it does not retrain or modify a checkpoint. It solves the deployment
+problem of running Evo 2 on hardware without FP8.
+
+## Safetensors-first workflow
+
+Official Arc `.pt` checkpoints and BioNeMo DCP checkpoints are offline
+conversion inputs only. Install PyTorch in a separate conversion environment:
+
+```sh
+python3 -m venv .venv-convert
+. .venv-convert/bin/activate
+python3 -m pip install -r requirements-convert.txt
+
+scripts/convert_arc_checkpoint.sh \
+  evo2_7b /models/evo2_7b.pt /models/evo2-7b.safetensors
+
+cmake -S . -B build -DEVO2C_CUDA=ON
+cmake --build build -j
+
+build/evo2c-inspect /models/evo2-7b.safetensors.index.json
+build/evo2c -m /models/evo2-7b.safetensors.index.json \
+  -p ACGT -n 32 --ctx 8192 --gpu 0
+```
+
+The converter uses `weights_only=True`, `mmap=True`, and CPU mapping. It
+validates the registered source manifest, streams final BF16/F32/F8_E4M3
+payloads into size-based Safetensors shards (4 GiB payload per shard by
+default), then publishes a standard `model.safetensors.index.json`. The native
+executables do not link or embed libtorch, libpython, or a Safetensors library.
+See [the format profile](docs/model-format.md) and
+[conversion guide](docs/checkpoint-conversion.md).
 
 ## Support and validation matrix
 
@@ -24,13 +55,13 @@ Python/Vortex reference vector alone is not counted as native validation.
 | Model ID | Config | Projection semantics | Suggested starting hardware at ctx 8K | Real-checkpoint native status |
 |---|---|---|---|---|
 | `evo2_1b_base` | `evo2-1b-8k.yml` | fixed TE 2.3 software E4M3; BF16 source weight | 1×16 GB | Not yet run (checkpoint/GPU unavailable locally) |
-| `evo2_7b` | `evo2-7b-1m.yml` | BF16 | 1×24 GB | Not yet run; existing 7B vectors are reference evidence only |
+| `evo2_7b` | `evo2-7b-1m.yml` | BF16 | 1×24 GB | Real 345-tensor checkpoint converted to four size-only shards, benchmarked against official Evo 2, and logit-aligned at ctx 8K on 1×A800 |
 | `evo2_7b_base` | `evo2-7b-8k.yml` | BF16 | 1×24 GB | Not yet run |
 | `evo2_7b_262k` | `evo2-7b-262k.yml` | BF16 | 1×24 GB | Not yet run |
 | `evo2_20b` | `evo2-20b-1m.yml` | fixed TE 2.3 software E4M3; F32 source weight | 2×40–48 GB | Not yet run |
-| `evo2_40b` | `evo2-40b-1m.yml` | fixed TE 2.3 software E4M3 | 2×80 GB | Validated on 4×A800 80 GB |
+| `evo2_40b` | `evo2-40b-1m.yml` | fixed TE 2.3 software E4M3 | 2×80 GB | Legacy image validated on 4×A800; Safetensors rerun pending |
 | `evo2_40b_base` | `evo2-40b-8k.yml` | fixed TE 2.3 software E4M3 | 2×80 GB | Not yet run |
-| `evo2_40b_bionemo_bf16` | `evo2-40b-1m-bionemo-bf16.yml` | BF16 | 2×80 GB | Validated/aligned on 2×A800 80 GB |
+| `evo2_40b_bionemo_bf16` | `evo2-40b-1m-bionemo-bf16.yml` | BF16 | 2×80 GB | Legacy image validated/aligned on 2×A800; Safetensors rerun pending |
 
 These are conservative starting points, not hard-coded requirements. Pipeline
 boundaries are chosen from layer payload bytes; context length, KV format,
@@ -39,11 +70,29 @@ Allocation failures remain explicit errors.
 
 ## Conclusions for researchers
 
+- **Historical 7B prefill baseline, measured before the bit-exact audit:** on
+  the same A800 and checkpoint, steady native throughput for 16/128/1,024
+  tokens was
+  `1,406`/`7,644`/`9,965 tok/s`, versus
+  `595`/`4,776`/`9,412 tok/s` for the warmed official Python/Vortex runtime.
+  Model load includes a one-time 128-token backend warmup; the first scored
+  prefill for a previously unseen length can still pay a plan-creation cost.
+  These values are the regression baseline, not a claim about the current
+  exact kernels; the post-audit run must use a committed binary and record its
+  binary hash and artifact directory before drawing a performance conclusion.
+- **The BF16 7B path is now bit-exact to the fixed Vortex/PyTorch reference:**
+  raw equality holds for every logit and all 32 block outputs at the audited
+  prefill lengths, for 16-step cached generation, across the 2048-key softmax
+  boundary, and through the official 3000-token prompt-forcing transition.
+  This is element-wise equality, not a cosine or top-1 claim; the exact scope,
+  first-divergence analysis, and CUDA 12.8/13.3 checks are recorded in
+  [`docs/vortex-7b-bit-exactness.md`](docs/vortex-7b-bit-exactness.md).
 - **BioNeMo alignment:** with the same NVIDIA
   `evo2/40b-1m-fp8-bf16:1.0` checkpoint, every value in the 16×512 logit
   matrix is finite, top-1 agrees on all 16 rows, and the 8-token greedy
   continuation is byte-identical.
-- **The numerical differences are small and explainable:** the minimum
+- **In the separate 40B BioNeMo comparison, the numerical differences are
+  small and explainable:** the minimum
   row-wise cosine similarity is `0.999998748`; 2,723 of the 8,192 logits are
   exactly equal, and the mean absolute difference is `0.112738` while the
   largest absolute logit is `23.625`. Across the 15 actual target tokens, the
@@ -107,7 +156,7 @@ The two supported paths must therefore remain distinct:
 
 | Item | BioNeMo oracle | evo2c |
 |---|---|---|
-| Checkpoint | `evo2/40b-1m-fp8-bf16:1.0` | The same checkpoint converted to a read-only `.evo2` file |
+| Checkpoint | `evo2/40b-1m-fp8-bf16:1.0` | The same checkpoint in the historically validated legacy `.evo2` image |
 | GPU | 2×A800 80GB | 2×A800 80GB on the same gpu02 server |
 | Numerical path | BF16 | BF16 |
 | Parallelism | Megatron tensor parallelism, TP=2 | 25+25 layer pipeline, PP=2 |
@@ -146,7 +195,7 @@ useful for understanding the deployment's practical scale, but it should not
 be extrapolated as a fixed `6.76×` advantage for every sequence length, GPU,
 or batch size.
 
-## Logit difference tables
+## BioNeMo 40B logit difference tables
 
 ### Aggregate differences
 
@@ -236,7 +285,7 @@ An independent generation check uses the prompt `ACGTACGTACGTACGT`.
 BioNeMo and evo2c both greedily generate `ACGTACGT`, with all eight bytes
 identical.
 
-## Why the cosine similarity is not exactly 1
+## Why the BioNeMo 40B cosine similarity is not exactly 1
 
 Cosine similarity equals 1 only when two vectors have exactly the same
 direction. The minimum observed value, `0.999998748028`, has
@@ -338,7 +387,13 @@ Run from this repository on the client:
 ```sh
 scripts/gpu02_build.sh
 scripts/gpu02_test.sh
+EVO2C_7B_GPU=3 scripts/gpu02_benchmark_7b.sh
 ```
+
+The 7B benchmark refuses to run on a busy GPU, checks official logits and
+generated bytes, then applies deterministic model-load and repeated-prefill
+thresholds. Its JSON report and all input/output hashes are retained in the
+reported artifact directory.
 
 ### Prepare BioNeMo BF16 40B (recommended)
 
@@ -355,11 +410,11 @@ The NGC archive uses a separate cache:
 The script creates and validates:
 
 ```text
-$HOME/evo2c-models/evo2-40b-bionemo-bf16.evo2
+$HOME/evo2c-models/evo2-40b-bionemo-bf16.safetensors.index.json
 ```
 
-The file is `82,254,509,184` bytes, with SHA256
-`3fb2ec7ed2c89c4f88dcb9c4c6f675e46c2b37722ee82778ce0ff84794dfa5c8`.
+The script validates the standard Safetensors profile, computes the converted
+artifact SHA256, and records it in an external `.sha256` receipt.
 
 Reproduce the BioNeMo alignment gate on any two idle GPUs:
 
@@ -381,19 +436,19 @@ It pins the official revision, resumes interrupted transfers, validates both
 parts and the merged file, and then creates:
 
 ```text
-$HOME/evo2c-models/evo2-40b-e4m3sw.evo2
+$HOME/evo2c-models/evo2-40b-e4m3sw.safetensors.index.json
 ```
 
-The file is `82,252,717,056` bytes, with SHA256
-`d1619e3b2eef0fba7c5838bb61982e891cf63d55385ced865af06693222d6687`.
+The script validates the standard Safetensors profile, computes the converted
+artifact SHA256, and records it in an external `.sha256` receipt.
 `HF_ENDPOINT` applies only to the Arc/Hugging Face path and is not used for the
 NGC download.
 
-### Manual offline conversion
+### Offline conversion
 
 The gpu02 preparation scripts already wrap download, resume, hashing, and
 conversion. If the checkpoint is available locally, the converters can also
-be called directly. PyTorch is required only for this offline step:
+be called directly. PyTorch is isolated to this offline environment:
 
 ```sh
 python3 -m venv .venv-convert
@@ -401,18 +456,17 @@ python3 -m venv .venv-convert
 python3 -m pip install -r requirements-convert.txt
 
 scripts/convert_arc_checkpoint.sh \
-  evo2_7b evo2_7b.pt evo2-7b.evo2
+  evo2_7b evo2_7b.pt evo2-7b.safetensors
 
 python3 tools/convert_checkpoint.py \
   --input evo2_40b.pt \
   --config configs/evo2-40b-1m.yml \
-  --output evo2-40b-e4m3sw.evo2 \
-  --dtype bf16
+  --output evo2-40b-e4m3sw.safetensors
 
 python3 tools/convert_bionemo_checkpoint.py \
   --input /path/to/nemo2/weights \
   --config configs/evo2-40b-1m-bionemo-bf16.yml \
-  --output evo2-40b-bionemo-bf16.evo2 \
+  --output evo2-40b-bionemo-bf16.safetensors \
   --source-sha256 544b47e033d1fb0261b686a53f7c4fe240cd290253187d31e8c99dea9e35a680
 ```
 
@@ -428,7 +482,7 @@ On gpu02:
 image="$HOME/evo2c-cuda12.8-rocky8.sif"
 nix_root="$HOME/.local/share/nix-root"
 binary="$HOME/evo2c/build-gpu/evo2c"
-model="$HOME/evo2c-models/evo2-40b-bionemo-bf16.evo2"
+model="$HOME/evo2c-models/evo2-40b-bionemo-bf16.safetensors.index.json"
 
 apptainer exec --nv -B "$nix_root:/nix:ro" "$image" \
   "$binary" -m "$model" -p ACGTACGTACGTACGT -n 8 --ctx 8192 \
@@ -462,9 +516,10 @@ The task survives SSH reconnects. Its consolidated report is written to
 
 ## Long-context support and limitations
 
-The following 32K, 131K, and 1M results come from the original Arc `.evo2`
-checkpoint on 4×A800. The same long-context capacity gate has not yet been
-extended to the two-GPU BioNeMo BF16 path.
+The following 32K, 131K, and 1M results come from the historically validated
+legacy Arc `.evo2` image on 4×A800. The Safetensors image must rerun this gate;
+the same long-context capacity gate has not yet been extended to the two-GPU
+BioNeMo BF16 path.
 
 - The quality-gated production target is batch 1 with `--ctx 8192`.
 - A real 8,193-token prompt has crossed the 8,192-token activation arena under
@@ -479,14 +534,14 @@ extended to the two-GPU BioNeMo BF16 path.
   per GPU. Including weights, state, and activations, the four stages are
   projected at 52.37–53.74 GiB each and fit on otherwise idle A800 80GB cards.
 - **A complete 1M-token prefill has not been performance-validated.** The
-  current attention prefill remains quadratic and does not reuse K/V tiles
-  across queries. The 1M capacity is useful for sequences that grow
-  incrementally; it does not make a complete 1M-token prefix practical.
+  long-context Q8 attention path remains quadratic and does not reuse K/V
+  tiles across queries. The BF16 7B path now shares each K/V tile across eight
+  queries, but that does not make a complete 1M-token prefix practical.
 
 Example:
 
 ```sh
-arc_model="$HOME/evo2c-models/evo2-40b-e4m3sw.evo2"
+arc_model="$HOME/evo2c-models/evo2-40b-e4m3sw.safetensors.index.json"
 
 apptainer exec --nv -B "$nix_root:/nix:ro" "$image" \
   "$binary" -m "$arc_model" -p ACGTACGTACGTACGT -n 2 --ctx 131072 \
@@ -507,8 +562,8 @@ apptainer exec --nv -B "$nix_root:/nix:ro" "$image" \
 - Fixed 8,192-token activation arena with state-preserving chunked prefill.
 - Fixed-page Q8 KV for 131K+ contexts with F32 dequantization inside online
   softmax.
-- `EVO2C` v1 mmap container validates header, tensors, shapes, dtypes, offsets,
-  checksums, and model metadata before any CUDA allocation.
+- The strict Safetensors reader validates profile metadata, tensors, shapes,
+  dtypes, and dense byte ranges before any CUDA allocation.
 - `--dump-tokens`, `--dump-logits`, and `--dump-layer` support external
   numerical auditing.
 
@@ -522,22 +577,26 @@ multiple activation chunks, `--dump-layer` fails with an explicit diagnostic
 because one NPY file cannot represent multiple independent stage-local
 invocations.
 
-## Reproducibility and artifacts
+## Historical reproducibility artifacts
+
+The following output hashes belong to the previously validated private
+`.evo2` container and are retained only to identify the historical benchmark
+inputs. They are not hashes of the new Safetensors runtime images.
 
 | Artifact | Size (bytes) | SHA256 |
 |---|---:|---|
 | Merged Arc checkpoint | 82,253,491,694 | `dd299612b1c1cdded0dfdcaf4d16f98fc97458261d80f4d662429f0ccb316bc3` |
-| Arc `.evo2` | 82,252,717,056 | `d1619e3b2eef0fba7c5838bb61982e891cf63d55385ced865af06693222d6687` |
+| Arc legacy `.evo2` | 82,252,717,056 | `d1619e3b2eef0fba7c5838bb61982e891cf63d55385ced865af06693222d6687` |
 | BioNeMo NGC archive | 63,680,606,710 | `544b47e033d1fb0261b686a53f7c4fe240cd290253187d31e8c99dea9e35a680` |
-| BioNeMo BF16 `.evo2` | 82,254,509,184 | `3fb2ec7ed2c89c4f88dcb9c4c6f675e46c2b37722ee82778ce0ff84794dfa5c8` |
+| BioNeMo BF16 legacy `.evo2` | 82,254,509,184 | `3fb2ec7ed2c89c4f88dcb9c4c6f675e46c2b37722ee82778ce0ff84794dfa5c8` |
 | Official BioNeMo logits NPY | 32,896 | `9e16b0de532e57350b0b0ffdb9c48728b339c584925070ede75ea38d308d51d6` |
 | evo2c logits NPY | 32,896 | `99c2c6de5291a7b9e525921f1c4fa9a089b94b96eab39320a4d87a738cda2244` |
 | Logit comparison report | 3,110 | `864f8f64ffaf18de005c770412c9ab31a1775c98556dd1da67ff49e0b984e44c` |
 
-The Arc checkpoint is pinned to Hugging Face revision
-`d529aa57c30771814217ad89baaeaf6e2315c7d7`. Every preparation script verifies
-the fixed size and SHA256 before publishing its final file. An existing
-artifact with a mismatched hash is never silently reused.
+The Arc checkpoint remains pinned to Hugging Face revision
+`d529aa57c30771814217ad89baaeaf6e2315c7d7`. Preparation scripts verify source
+size/SHA before conversion and pin each new Safetensors result with its own
+external SHA receipt.
 
 The BioNeMo DCP manifest contains 506 BF16 data tensors and 210 metadata
 entries, which are converted to 537 runtime tensors. Ordinary BF16 payloads
@@ -575,26 +634,44 @@ EVO2C_SANITIZE=ON scripts/local_test.sh build-sanitize
 
 Current status:
 
-- Local Release: 21/21 passed.
-- ASan/UBSan: 21/21 passed.
-- Last pre-multi-size gpu02 baseline: 28/28 passed, including nine CUDA tests
-  and two multi-GPU tests. This multi-size change has not been rebuilt or run
-  on gpu02 because the current host has no CUDA compiler/GPU.
+- Local CPU Release: 22/22 CTest entries completed with zero failures; four
+  optional PyTorch/Triton/Vortex integrations reported their declared skips.
+- Local ASan/UBSan: 22/22 CTest entries completed with zero failures; the same
+  four external integrations reported their declared skips.
+- Remaining real-checkpoint conversion and CUDA Safetensors loading still
+  require the corresponding external checkpoint and CUDA host.
+- Final gpu02 build: 30/30 CTest entries completed with zero failures,
+  including nine CUDA tests and the one-/two-GPU pipeline paths; five optional
+  external oracles reported their declared skips.
+- Fresh CUDA 12.8 strict build: every target compiled for `sm_80` with
+  project warnings treated as errors; the six single-GPU CUDA smoke,
+  ops, Hyena, attention, model, and CLI regressions passed on GPU1.
+- Real `evo2_7b` Safetensors: the fixed Vortex/PyTorch audit on idle GPU1 has
+  zero unequal raw elements for all 32 block outputs and logits at the audited
+  prefill/decode cases, including the 2048-key softmax and 3000-token forcing
+  boundaries. CUDA 12.8 native outputs also equal the CUDA 13.3 reference.
+  The older performance artifact
+  `$HOME/evo2c-artifacts/t19-evo2-7b-prefill-805e81208609-gpu1` measured
+  9,727.5 tok/s for repeated 1,024-token prefill; its cosine-based quality
+  result is retained only as historical performance evidence, not as the
+  exactness gate.
 - Real PyTorch DCP converter integration: 5/5 passed.
 
-PyTorch is used only for offline checkpoint conversion and optional oracle
-tests. The production binary does not link PyTorch, Vortex, or Transformer
-Engine.
+PyTorch is used only by offline conversion and optional oracle tests. The
+production binary does not link or embed PyTorch, Vortex, Transformer Engine,
+libtorch, or libpython.
 
 ## Design and audit documentation
 
 - [`SPEC.md`](SPEC.md): executable invariants, validation gates, and task
   ledger.
-- [`docs/model-format.md`](docs/model-format.md): checked `.evo2` container.
+- [`docs/model-format.md`](docs/model-format.md): strict Evo 2 Safetensors profile.
 - [`docs/checkpoint-conversion.md`](docs/checkpoint-conversion.md): strict Arc
   and BioNeMo checkpoint conversion rules.
 - [`docs/math-semantics.md`](docs/math-semantics.md): Vortex-compatible layer
   semantics.
+- [`docs/vortex-7b-bit-exactness.md`](docs/vortex-7b-bit-exactness.md):
+  white-box first-divergence audit and raw bit-equality evidence for BF16 7B.
 - [`docs/software-fp8.md`](docs/software-fp8.md): why the original
   1B/20B/40B checkpoints cannot simply switch to BF16, and how Ampere
   emulates the required FP8 semantics.

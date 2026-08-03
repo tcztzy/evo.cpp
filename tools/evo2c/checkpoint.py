@@ -24,7 +24,9 @@ class TorchTensorSource:
     nbytes: int
     tensor: Any
 
-    def iter_chunks(self, chunk_size: int) -> Iterator[memoryview]:
+    def read_range(self, offset: int, length: int) -> memoryview:
+        if offset < 0 or length < 0 or offset > self.nbytes - length:
+            raise CheckpointError(f"tensor {self.name!r} read is out of range")
         torch = importlib.import_module("torch")
         raw = self.tensor.detach().view(torch.uint8).reshape(-1).numpy()
         view = memoryview(raw).cast("B")
@@ -32,8 +34,11 @@ class TorchTensorSource:
             raise CheckpointError(
                 f"tensor {self.name!r} exposed {len(view)} bytes, expected {self.nbytes}"
             )
-        for offset in range(0, len(view), chunk_size):
-            yield view[offset : offset + chunk_size]
+        return view[offset : offset + length]
+
+    def iter_chunks(self, chunk_size: int) -> Iterator[memoryview]:
+        for offset in range(0, self.nbytes, chunk_size):
+            yield self.read_range(offset, min(chunk_size, self.nbytes - offset))
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -46,7 +51,9 @@ class TorchWidenF32Source:
     nbytes: int
     tensor: Any
 
-    def iter_chunks(self, chunk_size: int) -> Iterator[memoryview]:
+    def read_range(self, offset: int, length: int) -> memoryview:
+        if offset < 0 or length < 0 or offset > self.nbytes - length:
+            raise CheckpointError(f"tensor {self.name!r} read is out of range")
         torch = importlib.import_module("torch")
         widened = self.tensor.detach().float().contiguous()
         raw = widened.view(torch.uint8).reshape(-1).numpy()
@@ -55,8 +62,47 @@ class TorchWidenF32Source:
             raise CheckpointError(
                 f"tensor {self.name!r} widened to {len(view)} bytes, expected {self.nbytes}"
             )
-        for offset in range(0, len(view), chunk_size):
-            yield view[offset : offset + chunk_size]
+        return view[offset : offset + length]
+
+    def iter_chunks(self, chunk_size: int) -> Iterator[memoryview]:
+        for offset in range(0, self.nbytes, chunk_size):
+            yield self.read_range(offset, min(chunk_size, self.nbytes - offset))
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class TorchE4M3Source:
+    """Stream final scaled E4M3FN codes from a BF16 or F32 weight tensor."""
+
+    name: str
+    dtype: str
+    shape: tuple[int, ...]
+    nbytes: int
+    tensor: Any
+    scale: float
+
+    def iter_chunks(self, chunk_size: int) -> Iterator[memoryview]:
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be positive")
+        torch = importlib.import_module("torch")
+        float8 = getattr(torch, "float8_e4m3fn", None)
+        if float8 is None:
+            raise CheckpointError(
+                "this PyTorch build cannot encode float8_e4m3fn; "
+                "upgrade the conversion environment"
+            )
+        flat = self.tensor.detach().reshape(-1)
+        if flat.numel() != self.nbytes:
+            raise CheckpointError(
+                f"tensor {self.name!r} element count does not match E4M3 output size"
+            )
+        for offset in range(0, self.nbytes, chunk_size):
+            count = min(chunk_size, self.nbytes - offset)
+            scaled = flat[offset : offset + count].to(
+                dtype=torch.float32, copy=True
+            )
+            scaled.mul_(self.scale).clamp_(min=-448.0, max=448.0)
+            encoded = scaled.to(float8).view(torch.uint8).contiguous().numpy()
+            yield memoryview(encoded).cast("B")
 
 
 def _torch_dtype_name(torch: Any, tensor: Any) -> str | None:
@@ -180,7 +226,8 @@ def load_checkpoint(
         torch = importlib.import_module("torch")
     except ModuleNotFoundError as error:
         raise CheckpointError(
-            "PyTorch is required only for conversion; install requirements-convert.txt"
+            "PyTorch is required for offline .pt conversion; "
+            "install requirements-convert.txt"
         ) from error
     torch.serialization.add_safe_globals([io.BytesIO])
     try:
@@ -222,7 +269,6 @@ def load_checkpoint(
         if extra:
             details.append("unknown tensors: " + ", ".join(extra[:10]))
         raise CheckpointError("; ".join(details))
-
     validated: dict[str, TorchTensorSource] = {}
     for spec in all_manifest:
         tensor = tensors[spec.name]
@@ -238,8 +284,8 @@ def load_checkpoint(
             )
         if tensor.device.type != "cpu":
             raise CheckpointError(f"tensor {spec.name!r} was not mapped to CPU")
-        if tensor.layout != torch.strided or not tensor.is_contiguous() or tensor.storage_offset() != 0:
-            raise CheckpointError(f"tensor {spec.name!r} must be dense contiguous with storage_offset=0")
+        if tensor.layout != torch.strided or not tensor.is_contiguous():
+            raise CheckpointError(f"tensor {spec.name!r} must be dense contiguous")
         nbytes = tensor.numel() * tensor.element_size()
         if nbytes != spec.nbytes:
             raise CheckpointError(
@@ -289,3 +335,91 @@ def prepare_runtime_sources(
                 f"unsafe runtime conversion for {spec.name}: {source.dtype} to {spec.dtype}"
             )
     return converted
+
+
+def prepare_runtime_image_sources(
+    sources: Sequence[TorchTensorSource | TorchWidenF32Source],
+    fp8_sources: Sequence[TorchTensorSource],
+    fp8_projection_layers: Sequence[int],
+) -> list[TorchTensorSource | TorchWidenF32Source | TorchE4M3Source]:
+    """Produce final Safetensors payloads in global-then-layer load order."""
+    torch = importlib.import_module("torch")
+    by_name = {source.name: source for source in sources}
+    if len(by_name) != len(sources):
+        raise CheckpointError("runtime source list contains duplicate tensor names")
+    fp8_by_name = {source.name: source for source in fp8_sources}
+    if len(fp8_by_name) != len(fp8_sources):
+        raise CheckpointError("FP8 source list contains duplicate tensor names")
+
+    projection_layers = set(fp8_projection_layers)
+    expected_fp8_names: set[str] = set()
+    converted: list[
+        TorchTensorSource | TorchWidenF32Source | TorchE4M3Source
+    ] = []
+    for source in sources:
+        layer = next(
+            (
+                index
+                for index in projection_layers
+                if source.name == f"blocks.{index}.projections.weight"
+            ),
+            None,
+        )
+        if layer is None:
+            converted.append(source)
+            continue
+
+        prefix = f"blocks.{layer}.projections"
+        scale_name = f"{prefix}.fp8_scale_fwd"
+        inverse_name = f"{prefix}.fp8_scale_inv_fwd"
+        history_name = f"{prefix}.fp8_amax_history_fwd"
+        expected_fp8_names.update({scale_name, inverse_name, history_name})
+        scale_source = fp8_by_name.get(scale_name)
+        inverse_source = fp8_by_name.get(inverse_name)
+        history_source = fp8_by_name.get(history_name)
+        if scale_source is None or inverse_source is None or history_source is None:
+            raise CheckpointError(f"incomplete FP8 state for {prefix}")
+
+        scale = scale_source.tensor
+        inverse = inverse_source.tensor
+        output_scale = inverse[0] * inverse[1]
+        runtime_scales = torch.stack((scale[0], output_scale)).contiguous()
+        converted.append(
+            TorchTensorSource(
+                name=f"{prefix}.fp8_runtime_scales",
+                dtype="F32",
+                shape=(2,),
+                nbytes=2 * runtime_scales.element_size(),
+                tensor=runtime_scales,
+            )
+        )
+        converted.append(
+            TorchE4M3Source(
+                name=source.name,
+                dtype="E4M3_SW",
+                shape=source.shape,
+                nbytes=source.nbytes // (4 if source.dtype == "F32" else 2),
+                tensor=source.tensor,
+                scale=float(scale[1].item()),
+            )
+        )
+
+    if set(fp8_by_name) != expected_fp8_names:
+        unknown = sorted(set(fp8_by_name) - expected_fp8_names)
+        missing = sorted(expected_fp8_names - set(fp8_by_name))
+        details: list[str] = []
+        if unknown:
+            details.append("unexpected FP8 state: " + ", ".join(unknown[:10]))
+        if missing:
+            details.append("missing FP8 state: " + ", ".join(missing[:10]))
+        raise CheckpointError("; ".join(details))
+
+    globals_by_name = {source.name: source for source in converted}
+    ordered = [
+        globals_by_name[name]
+        for name in ("embedding_layer.weight", "unembed.weight", "norm.scale")
+        if name in globals_by_name
+    ]
+    global_names = {source.name for source in ordered}
+    ordered.extend(source for source in converted if source.name not in global_names)
+    return ordered

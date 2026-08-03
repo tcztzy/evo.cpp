@@ -13,12 +13,11 @@
 
 namespace evo2c {
 
-inline constexpr std::uint32_t kModelFormatVersion = 1;
-inline constexpr std::size_t kModelHeaderSize = 128;
-inline constexpr std::size_t kTensorDescriptorSize = 256;
+inline constexpr std::string_view kModelProfile = "evo2-runtime-v1";
+inline constexpr std::size_t kMaximumSafetensorsHeaderSize =
+    16U * 1024U * 1024U;
 inline constexpr std::size_t kTensorNameCapacity = 96;
 inline constexpr std::size_t kTensorMaxRank = 8;
-inline constexpr std::uint32_t kModelAlignment = 64;
 
 enum class MetadataType : std::uint8_t {
   kString = 1,
@@ -32,8 +31,7 @@ enum class MetadataType : std::uint8_t {
 enum class TensorDType : std::uint8_t {
   kF32 = 1,
   kBF16 = 2,
-  kQ8_0 = 3,
-  kE4M3Software = 4,
+  kE4M3Software = 3,
 };
 
 struct MetadataEntry final {
@@ -47,49 +45,66 @@ struct TensorInfo final {
   TensorDType dtype{TensorDType::kF32};
   std::uint8_t rank{0};
   std::array<std::uint64_t, kTensorMaxRank> dimensions{};
+  std::size_t shard_index{0};
   std::uint64_t data_offset{0};
   std::uint64_t data_size{0};
   std::uint64_t element_count{0};
-  std::uint32_t data_crc32{0};
 };
 
 class ModelFile final {
- public:
+public:
   ModelFile() = default;
   ~ModelFile() = default;
 
-  ModelFile(const ModelFile&) = delete;
-  ModelFile& operator=(const ModelFile&) = delete;
-  ModelFile(ModelFile&&) noexcept = default;
-  ModelFile& operator=(ModelFile&&) noexcept = default;
+  ModelFile(const ModelFile &) = delete;
+  ModelFile &operator=(const ModelFile &) = delete;
+  ModelFile(ModelFile &&) noexcept = default;
+  ModelFile &operator=(ModelFile &&) noexcept = default;
 
-  // Opens and validates the complete file, including every tensor payload CRC.
-  [[nodiscard]] Status open(const std::string& path);
+  // Opens the strict Evo 2 Safetensors runtime profile. Payload authenticity
+  // is established by the external artifact SHA256, not by a startup rescan.
+  [[nodiscard]] Status open(const std::string &path);
 
-  [[nodiscard]] std::uint32_t version() const noexcept { return version_; }
-  [[nodiscard]] std::size_t file_size() const noexcept { return mapping_.size(); }
-  [[nodiscard]] const std::vector<MetadataEntry>& metadata() const noexcept { return metadata_; }
-  [[nodiscard]] const std::vector<TensorInfo>& tensors() const noexcept { return tensors_; }
-  [[nodiscard]] const MetadataEntry* find_metadata(std::string_view key) const noexcept;
-  [[nodiscard]] const TensorInfo* find_tensor(std::string_view name) const noexcept;
-  [[nodiscard]] const std::uint8_t* tensor_data(const TensorInfo& tensor) const noexcept;
+  [[nodiscard]] std::string_view format_name() const noexcept {
+    return "SAFETENSORS";
+  }
+  [[nodiscard]] std::string_view profile() const noexcept {
+    return kModelProfile;
+  }
+  [[nodiscard]] std::size_t file_size() const noexcept {
+    return file_size_;
+  }
+  [[nodiscard]] std::size_t shard_count() const noexcept {
+    return mappings_.size();
+  }
+  [[nodiscard]] const std::vector<MetadataEntry> &metadata() const noexcept {
+    return metadata_;
+  }
+  [[nodiscard]] const std::vector<TensorInfo> &tensors() const noexcept {
+    return tensors_;
+  }
+  [[nodiscard]] const MetadataEntry *
+  find_metadata(std::string_view key) const noexcept;
+  [[nodiscard]] const TensorInfo *
+  find_tensor(std::string_view name) const noexcept;
+  [[nodiscard]] const std::uint8_t *
+  tensor_data(const TensorInfo &tensor) const noexcept;
+  [[nodiscard]] Status read_tensor(const TensorInfo &tensor,
+                                   std::uint64_t offset, void *destination,
+                                   std::size_t bytes) const;
 
- private:
-  [[nodiscard]] Status parse();
-  [[nodiscard]] Status parse_metadata(std::uint64_t offset, std::uint64_t size);
-  [[nodiscard]] Status parse_tensors(std::uint64_t table_offset,
-                                     std::uint64_t tensor_count,
-                                     std::uint64_t data_offset);
+private:
+  [[nodiscard]] Status open_index(const std::string &path);
+  [[nodiscard]] Status parse_shard(std::size_t shard_index);
 
-  MappedFile mapping_;
-  std::uint32_t version_{0};
+  std::vector<MappedFile> mappings_;
   std::vector<MetadataEntry> metadata_;
   std::vector<TensorInfo> tensors_;
+  std::size_t file_size_{0};
 };
 
-[[nodiscard]] const char* metadata_type_name(MetadataType type) noexcept;
-[[nodiscard]] const char* tensor_dtype_name(TensorDType dtype) noexcept;
-[[nodiscard]] std::string metadata_value_text(const MetadataEntry& entry);
+[[nodiscard]] const char *metadata_type_name(MetadataType type) noexcept;
+[[nodiscard]] const char *tensor_dtype_name(TensorDType dtype) noexcept;
+[[nodiscard]] std::string metadata_value_text(const MetadataEntry &entry);
 
-}  // namespace evo2c
-
+} // namespace evo2c

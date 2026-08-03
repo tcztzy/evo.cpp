@@ -45,7 +45,6 @@ add_library(
   evo2c_core STATIC
   src/cli.cpp
   src/cpu_reference.cpp
-  src/crc32.cpp
   src/fp8.cpp
   src/mapped_file.cpp
   src/model_format.cpp
@@ -75,18 +74,59 @@ if(EVO2C_CUDA)
       "EVO2C_CUDA=ON but no CUDA compiler was found. Install CUDA 12.x or configure with -DEVO2C_CUDA=OFF for CPU-only tests.")
   endif()
   enable_language(CUDA)
-  find_package(Threads REQUIRED)
   set(CMAKE_CUDA_STANDARD 17)
   set(CMAKE_CUDA_STANDARD_REQUIRED ON)
   set(CMAKE_CUDA_EXTENSIONS OFF)
   if(NOT CMAKE_CUDA_ARCHITECTURES)
     set(CMAKE_CUDA_ARCHITECTURES 80)
   endif()
+  find_package(Threads REQUIRED)
   find_package(CUDAToolkit 12 REQUIRED)
+
+  set(EVO2C_FLASH_ATTENTION_SOURCE_DIR "" CACHE PATH
+      "Existing FlashAttention source tree (optional offline override)")
+  set(EVO2C_CUTLASS_SOURCE_DIR "" CACHE PATH
+      "Existing CUTLASS source tree (optional offline override)")
+  include(FetchContent)
+  if(NOT EVO2C_FLASH_ATTENTION_SOURCE_DIR)
+    FetchContent_Declare(
+      evo2c_flash_attention
+      URL https://github.com/Dao-AILab/flash-attention/archive/628452c73a4fab560189a7caa8702642c6a38235.tar.gz
+      URL_HASH SHA256=352bee729ad09f21362ed23c22dd4826deeea5acf0a00fb4a86af2863a666958
+      DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    FetchContent_GetProperties(evo2c_flash_attention)
+    if(NOT evo2c_flash_attention_POPULATED)
+      FetchContent_Populate(evo2c_flash_attention)
+    endif()
+    set(EVO2C_FLASH_ATTENTION_SOURCE_DIR
+        "${evo2c_flash_attention_SOURCE_DIR}")
+  endif()
+  if(NOT EVO2C_CUTLASS_SOURCE_DIR)
+    FetchContent_Declare(
+      evo2c_cutlass
+      URL https://github.com/NVIDIA/cutlass/archive/7127592069c2fe01b041e174ba4345ef9b279671.tar.gz
+      URL_HASH SHA256=12baa9c2bf22eaca065b5e55387c21bb4ac742992a6ecd2dd1d3b016dfd25a0a
+      DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    FetchContent_GetProperties(evo2c_cutlass)
+    if(NOT evo2c_cutlass_POPULATED)
+      FetchContent_Populate(evo2c_cutlass)
+    endif()
+    set(EVO2C_CUTLASS_SOURCE_DIR "${evo2c_cutlass_SOURCE_DIR}")
+  endif()
+  if(NOT EXISTS
+      "${EVO2C_FLASH_ATTENTION_SOURCE_DIR}/csrc/flash_attn/src/flash_fwd_kernel.h")
+    message(FATAL_ERROR
+      "EVO2C_FLASH_ATTENTION_SOURCE_DIR does not contain FlashAttention sources")
+  endif()
+  if(NOT EXISTS "${EVO2C_CUTLASS_SOURCE_DIR}/include/cute/tensor.hpp")
+    message(FATAL_ERROR
+      "EVO2C_CUTLASS_SOURCE_DIR does not contain CUTLASS headers")
+  endif()
 
   add_library(
     evo2c_cuda STATIC
     src/cuda/attention.cu
+    src/cuda/flash_attention.cu
     src/cuda/hyena.cu
     src/cuda/model.cu
     src/cuda/ops.cu
@@ -94,6 +134,14 @@ if(EVO2C_CUDA)
   target_include_directories(
     evo2c_cuda
     PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+  # Pinned FlashAttention/CUTLASS headers intentionally trigger host-compiler
+  # warnings. Mark only those include roots as system headers, so the evo2c
+  # wrapper itself remains under the normal -Werror policy.
+  target_include_directories(
+    evo2c_cuda SYSTEM PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/third_party/flash-attention-shim
+      ${EVO2C_FLASH_ATTENTION_SOURCE_DIR}/csrc/flash_attn/src
+      ${EVO2C_CUTLASS_SOURCE_DIR}/include)
   target_link_libraries(
     evo2c_cuda
     PUBLIC
@@ -284,7 +332,7 @@ if(BUILD_TESTING)
     COMMAND ${CMAKE_COMMAND}
       -DEVO2C_FIXTURE_WRITER=$<TARGET_FILE:evo2c-model-format-tests>
       -DEVO2C_INSPECT_BINARY=$<TARGET_FILE:evo2c-inspect>
-      -DEVO2C_FIXTURE_PATH=${CMAKE_CURRENT_BINARY_DIR}/Testing/tiny.evo2
+      -DEVO2C_FIXTURE_PATH=${CMAKE_CURRENT_BINARY_DIR}/Testing/tiny.safetensors
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/model_inspect_contract.cmake)
 
   add_test(
@@ -317,6 +365,12 @@ if(BUILD_TESTING)
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_logit_comparator.py
       --tool ${CMAKE_CURRENT_SOURCE_DIR}/tools/compare_logits.py
       --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/logit-comparator)
+  add_test(
+    NAME prefill_benchmark_gate
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_prefill_benchmark_gate.py
+      --tool ${CMAKE_CURRENT_SOURCE_DIR}/tools/evo2c/prefill_benchmark_gate.py
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/prefill-benchmark-gate)
   add_test(
     NAME source_hygiene
     COMMAND ${Python3_EXECUTABLE}

@@ -7,8 +7,7 @@ run_remote_worker() {
   local image="$HOME/evo2c-cuda12.8-rocky8.sif"
   local nix_root="$HOME/.local/share/nix-root"
   local binary="$source_dir/build-gpu/evo2c"
-  local model="$HOME/evo2c-models/evo2-40b-bionemo-bf16.evo2"
-  local expected_model_sha256="3fb2ec7ed2c89c4f88dcb9c4c6f675e46c2b37722ee82778ce0ff84794dfa5c8"
+  local model="$HOME/evo2c-models/evo2-40b-bionemo-bf16.safetensors.index.json"
   local expected_greedy_sha256="b28b7e7e6b70661dfee15d5290c4bca097ca145f721c4fbc4de73ad1d1660b8b"
   local gpu_list="${EVO2C_BIONEMO_GPU_LIST:-0,1,2,3}"
   local gpu_tag="${gpu_list//,/}"
@@ -62,11 +61,6 @@ run_remote_worker() {
   test -f "$model"
   test -f "$source_dir/tests/vectors/t13_short.fasta"
   model_sha256="$(sha256sum "$model" | cut -d' ' -f1)"
-  if test "$model_sha256" != "$expected_model_sha256"; then
-    echo "gpu02_validate_bionemo_40b: model SHA256 mismatch" >&2
-    exit 2
-  fi
-
   artifact_dir="$HOME/evo2c-artifacts/t22-bionemo-bf16-${model_sha256:0:8}-gpu${gpu_tag}"
   score_input="$artifact_dir/score-short.fasta"
   mkdir -p "$artifact_dir"

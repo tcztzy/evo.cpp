@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stream a BioNeMo Evo 2 40B BF16 DCP checkpoint into EVO2C v1."""
+"""Stream a BioNeMo Evo 2 40B BF16 DCP into runtime Safetensors."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Stream a BioNeMo NeMo2/MBridge Evo 2 40B BF16 distributed "
-            "checkpoint into an mmap-friendly EVO2C file."
+            "checkpoint into the runtime-ready Evo2 Safetensors profile."
         )
     )
     parser.add_argument(
@@ -37,11 +37,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config", required=True, type=Path, help="Evo 2 40B BF16 YAML config"
     )
-    parser.add_argument("--output", required=True, type=Path, help="output .evo2 file")
+    parser.add_argument(
+        "--output",
+        required=True,
+        type=Path,
+        help=(
+            "output model.safetensors base name; large outputs use standard "
+            "model-00001-of-000NN.safetensors shards and an index"
+        ),
+    )
     parser.add_argument(
         "--source-sha256", help="64-hex NGC archive or checkpoint provenance SHA256"
     )
     parser.add_argument("--chunk-mib", type=int, default=16)
+    parser.add_argument(
+        "--max-shard-mib",
+        type=int,
+        default=4096,
+        help="maximum tensor payload per shard (default: 4096)",
+    )
     parser.add_argument("--force", action="store_true")
     parser.add_argument(
         "--dry-run",
@@ -67,6 +81,8 @@ def main() -> int:
             raise CheckpointError(f"config not found: {args.config}")
         if args.chunk_mib <= 0:
             raise CheckpointError("--chunk-mib must be positive")
+        if args.max_shard_mib <= 0:
+            raise CheckpointError("--max-shard-mib must be positive")
         source_sha256 = validate_source_sha256(args.source_sha256)
         config = load_config(args.config)
         if config.use_fp8_input_projections:
@@ -81,7 +97,7 @@ def main() -> int:
         print(
             f"validated {len(reader.tensor_metadata)} {checkpoint_kind} DCP tensors "
             f"({payload_size / (1024**3):.3f} GiB logical), mapped to "
-            f"{len(sources)} EVO2C tensors; skipping "
+            f"{len(sources)} runtime tensors; skipping "
             f"{len(reader.bytes_entries)} DCP byte entries",
             file=sys.stderr,
         )
@@ -110,15 +126,16 @@ def main() -> int:
         )
         if source_sha256 is not None:
             metadata["checkpoint.sha256"] = source_sha256
-        write_model(
+        load_path = write_model(
             args.output,
             metadata,
             sources,
             force=args.force,
             chunk_size=args.chunk_mib * 1024 * 1024,
+            max_shard_size=args.max_shard_mib * 1024 * 1024,
             progress=progress,
         )
-        print(f"wrote {args.output}", file=sys.stderr)
+        print(f"wrote {load_path}", file=sys.stderr)
         return 0
     except (CheckpointError, FormatError, OSError, ValueError) as error:
         print(f"convert_bionemo_checkpoint: error: {error}", file=sys.stderr)

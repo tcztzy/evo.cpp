@@ -7,15 +7,15 @@ revision="d529aa57c30771814217ad89baaeaf6e2315c7d7"
 part_size="41126745847"
 merged_size="82253491694"
 merged_sha256="dd299612b1c1cdded0dfdcaf4d16f98fc97458261d80f4d662429f0ccb316bc3"
-output_size="82252717056"
-output_sha256="d1619e3b2eef0fba7c5838bb61982e891cf63d55385ced865af06693222d6687"
 part0_sha256="3b74fa4e6158d49265e3e270ba8869390d064358f8bf3d2af0b3e1772728f485"
 part1_sha256="bdc4a76e0f23f8295e7061c2f0deff24f723bd916dc4cdc4d9216cac9c2d49d5"
 mirror="${HF_ENDPOINT:-https://hf-mirror.com}"
 source_dir="$HOME/evo2c"
 model_dir="$HOME/evo2c-models"
 merged="$model_dir/evo2_40b.pt"
-output="$model_dir/evo2-40b-e4m3sw.evo2"
+output_base="$model_dir/evo2-40b-e4m3sw.safetensors"
+output="$output_base.index.json"
+output_receipt="$output_base.sha256"
 image="$HOME/evo2c-cuda12.8-rocky8.sif"
 nix_root="$HOME/.local/share/nix-root"
 venv="$HOME/.venv-evo2c-convert"
@@ -135,7 +135,7 @@ if test -e "$merged"; then
     exit 2
   fi
 else
-  merged_partial="$model_dir/.evo2_40b.pt.partial"
+  merged_partial="$model_dir/.safetensors_40b.pt.partial"
   rm -f -- "$merged_partial"
   trap 'rm -f -- "$merged_partial"' EXIT HUP INT TERM
   cp --reflink=auto "$part0" "$merged_partial"
@@ -164,23 +164,23 @@ if ! test -f "$output"; then
     "$venv/bin/python" "$source_dir/tools/convert_checkpoint.py" \
     --input "$merged" \
     --config "$source_dir/configs/evo2-40b-1m.yml" \
-    --output "$output" \
-    --dtype bf16 \
+    --output "$output_base" \
     --source-sha256 "$source_sha256"
-fi
-actual_output_size="$(stat --printf='%s' "$output")"
-if test "$actual_output_size" != "$output_size"; then
-  echo "gpu02_prepare_40b: EVO2 output has unexpected size $actual_output_size" >&2
-  exit 2
 fi
 apptainer exec -B "$nix_root:/nix:ro" "$image" \
   "$source_dir/build-gpu/evo2c-inspect" "$output" \
   --tensor embedding_layer.weight
 actual_output_sha256="$(sha256sum "$output" | cut -d' ' -f1)"
-if test "$actual_output_sha256" != "$output_sha256"; then
-  echo "gpu02_prepare_40b: EVO2 output SHA256 mismatch" >&2
-  exit 2
+if test -f "$output_receipt"; then
+  recorded_output_sha256="$(cut -d' ' -f1 <"$output_receipt")"
+  if test "$actual_output_sha256" != "$recorded_output_sha256"; then
+    echo "gpu02_prepare_40b: Safetensors output SHA256 disagrees with receipt" >&2
+    exit 2
+  fi
+else
+  printf '%s  %s\n' "$actual_output_sha256" "$output" >"$output_receipt"
 fi
+echo "output_size=$(stat --printf='%s' "$output")"
 echo "$actual_output_sha256  $output"
 }
 

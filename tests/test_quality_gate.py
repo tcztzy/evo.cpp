@@ -47,7 +47,7 @@ def main() -> int:
             "--binary",
             str(binary_path),
             "--model",
-            "unused-model.evo2",
+            "unused-model.safetensors",
             "--model-sha256",
             "a" * 64,
             "--prompts",

@@ -44,8 +44,10 @@ class TensorSpec:
 
     @property
     def nbytes(self) -> int:
-        if self.dtype not in {"BF16", "F32"}:
+        if self.dtype not in {"BF16", "F32", "E4M3_SW"}:
             raise AssertionError(f"unsupported manifest dtype {self.dtype}")
+        if self.dtype == "E4M3_SW":
+            return self.elements
         return self.elements * (2 if self.dtype == "BF16" else 4)
 
 
@@ -457,6 +459,8 @@ def _validate_manifest(
         "bytes": sum(spec.nbytes for spec in specs),
     }
     expected = config.registry[registry_key]
+    if "e4m3" in expected:
+        actual["e4m3"] = sum(spec.dtype == "E4M3_SW" for spec in specs)
     if actual != expected:
         raise AssertionError(
             f"{config.model_id} {registry_key} drift: {actual}; expected {expected}"
@@ -483,28 +487,47 @@ def ignored_checkpoint_manifest(config: ModelConfig) -> list[TensorSpec]:
 
 
 def runtime_manifest(config: ModelConfig) -> list[TensorSpec]:
-    """Tensor entries written to EVO2C after exact small-vector widening."""
+    """Tensor entries after exact small-vector widening, before FP8 encoding."""
     if config.model_id == "evo2_40b_bionemo_bf16":
         return bionemo_checkpoint_manifest(config)
     return _validate_manifest(config, _base_manifest(config, runtime=True), "runtime_manifest")
 
 
 def container_manifest(config: ModelConfig) -> list[TensorSpec]:
-    """Exact tensor table written to a production EVO2C container."""
-    specs = runtime_manifest(config)
-    if config.use_fp8_input_projections:
-        for layer in sorted(
-            config.hcs_layer_idxs + config.hcm_layer_idxs + config.hcl_layer_idxs
-        ):
+    """Exact runtime-ready tensor set written to Safetensors."""
+    runtime = runtime_manifest(config)
+    projection_layers = set(
+        config.hcs_layer_idxs + config.hcm_layer_idxs + config.hcl_layer_idxs
+    )
+    specs: list[TensorSpec] = []
+    for spec in runtime:
+        layer = next(
+            (
+                index
+                for index in projection_layers
+                if spec.name == f"blocks.{index}.projections.weight"
+            ),
+            None,
+        )
+        if config.use_fp8_input_projections and layer is not None:
             prefix = f"blocks.{layer}.projections"
             specs.extend(
                 [
-                    TensorSpec(f"{prefix}.fp8_scale_fwd", "F32", (2,)),
-                    TensorSpec(f"{prefix}.fp8_scale_inv_fwd", "F32", (2,)),
-                    TensorSpec(f"{prefix}.fp8_amax_history_fwd", "F32", (16, 2)),
+                    TensorSpec(f"{prefix}.fp8_runtime_scales", "F32", (2,)),
+                    dataclasses.replace(spec, dtype="E4M3_SW"),
                 ]
             )
-    return _validate_manifest(config, specs, "container_manifest")
+        else:
+            specs.append(spec)
+
+    by_name = {spec.name: spec for spec in specs}
+    ordered = [
+        by_name[name]
+        for name in ("embedding_layer.weight", "unembed.weight", "norm.scale")
+    ]
+    global_names = {spec.name for spec in ordered}
+    ordered.extend(spec for spec in specs if spec.name not in global_names)
+    return _validate_manifest(config, ordered, "container_manifest")
 
 
 def bionemo_checkpoint_manifest(config: ModelConfig) -> list[TensorSpec]:
@@ -527,6 +550,7 @@ def config_metadata(
     entry = config.registry
     metadata = {
         "format.producer": "evo2c",
+        "runtime.abi": "evo2-safetensors-v1",
         "model.id": config.model_id,
         "model.name": config.model_name,
         "model.architecture": "StripedHyena2",
@@ -544,7 +568,6 @@ def config_metadata(
         "conversion.exact_widen_norm_to_f32": entry["source_norm_dtype"] == "BF16",
         "conversion.exact_widen_rope_to_f32": entry["source_rope_dtype"] == "BF16",
         "hyena_projection_dtype": entry["projection_runtime_dtype"],
-        "hyena_projection_weight_dtype": entry["source_projection_dtype"],
         **{
             f"config.{field.name}": (
                 list(value) if isinstance(value := getattr(config, field.name), tuple) else value
@@ -553,22 +576,4 @@ def config_metadata(
             if field.name not in {"model_id", "model_name"}
         },
     }
-    if config.model_id in {"evo2_40b", "evo2_40b_bionemo_bf16"}:
-        # Preserve the published v1 40B artifact bytes and SHA256. The native
-        # loader recognizes these two legacy profiles by their complete,
-        # unambiguous metadata signature.
-        for key in (
-            "model.id",
-            "model.source_revision",
-            "model.registry_schema",
-            "model.architecture_revision",
-            "model.runtime_layout_revision",
-            "checkpoint.source_projection_dtype",
-            "checkpoint.source_norm_dtype",
-            "checkpoint.source_rope_dtype",
-            "conversion.exact_widen_norm_to_f32",
-            "conversion.exact_widen_rope_to_f32",
-            "hyena_projection_weight_dtype",
-        ):
-            del metadata[key]
     return metadata

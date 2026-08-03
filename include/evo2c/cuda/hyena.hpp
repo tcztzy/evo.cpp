@@ -14,6 +14,27 @@ enum class FirOrientation { kCrossCorrelation, kCausalConvolution };
 enum class FirBiasMode { kAdd, kMultiplyInput };
 enum class FirWeightType { kBF16, kF32 };
 enum class HclPrefillMode { kRecurrence, kFft, kRecurrenceContinue };
+enum class FftInputMode { kRealCompact, kRealFullSpectrum };
+
+[[nodiscard]] inline constexpr bool
+hcm_prefill_uses_fft(const std::size_t tokens) noexcept {
+  return tokens != 0;
+}
+
+// Vortex's dense HCM reference always uses fft_size=2*sequence_length and
+// truncates its 128-tap filter to the sequence length before transforming it.
+[[nodiscard]] inline constexpr std::size_t
+hcm_fft_size(const std::size_t tokens) noexcept {
+  return tokens <= static_cast<std::size_t>(-1) / 2 ? tokens * 2 : 0;
+}
+
+// Vortex's HCL reference also fixes n=2*sequence_length for the filter R2C,
+// real-input full-spectrum FFT, and inverse C2R operations. It does not round
+// the transform length up to a power of two.
+[[nodiscard]] inline constexpr std::size_t
+hcl_fft_size(const std::size_t tokens) noexcept {
+  return tokens <= static_cast<std::size_t>(-1) / 2 ? tokens * 2 : 0;
+}
 
 // F32 chronological state [channels,kernel_size-1]. Short sequences are
 // left-zero-padded, so the newest value is always in the final column.
@@ -49,20 +70,29 @@ public:
   FftWorkspace(FftWorkspace &&other) noexcept;
   FftWorkspace &operator=(FftWorkspace &&other) noexcept;
 
-  [[nodiscard]] Status allocate(int device, std::size_t channels,
-                                std::size_t filter_groups,
-                                std::size_t fft_size);
+  [[nodiscard]] Status
+  allocate(int device, std::size_t channels, std::size_t filter_groups,
+           std::size_t fft_size,
+           FftInputMode input_mode = FftInputMode::kRealCompact);
   void reset() noexcept;
 
-  [[nodiscard]] bool matches(int device, std::size_t channels,
-                             std::size_t filter_groups,
-                             std::size_t fft_size) const noexcept;
+  [[nodiscard]] bool
+  matches(int device, std::size_t channels, std::size_t filter_groups,
+          std::size_t fft_size,
+          FftInputMode input_mode = FftInputMode::kRealCompact) const noexcept;
   [[nodiscard]] int device() const noexcept { return device_; }
   [[nodiscard]] std::size_t channels() const noexcept { return channels_; }
   [[nodiscard]] std::size_t filter_groups() const noexcept {
     return filter_groups_;
   }
   [[nodiscard]] std::size_t fft_size() const noexcept { return fft_size_; }
+  [[nodiscard]] std::size_t generation() const noexcept { return generation_; }
+  [[nodiscard]] const DeviceBuffer &filter_time() const noexcept {
+    return filter_time_;
+  }
+  [[nodiscard]] const DeviceBuffer &output_time() const noexcept {
+    return output_time_;
+  }
 
 private:
   friend Status bf16_fir_prefill_fft(const DeviceBuffer &, const DeviceBuffer &,
@@ -80,19 +110,36 @@ private:
                                  const Stream &);
 
   [[nodiscard]] Status execute(const Stream &stream);
+  [[nodiscard]] Status ensure_hcl_state(std::size_t state_size);
+  [[nodiscard]] Status execute_hcl_state(const DeviceBuffer &gated,
+                                         const DeviceBuffer &log_poles,
+                                         std::size_t length,
+                                         std::size_t state_size,
+                                         IirCache *cache, const Stream &stream);
+  void reset_hcl_state() noexcept;
 
   DeviceBuffer input_time_;
   DeviceBuffer filter_time_;
   DeviceBuffer output_time_;
   DeviceBuffer input_frequency_;
   DeviceBuffer filter_frequency_;
+  DeviceBuffer work_area_;
+  DeviceBuffer state_input_;
+  DeviceBuffer state_modes_;
+  DeviceBuffer state_output_;
+  DeviceBuffer state_work_area_;
   cufftHandle input_forward_{0};
   cufftHandle filter_forward_{0};
   cufftHandle inverse_{0};
+  cufftHandle state_input_forward_{0};
+  cufftHandle state_transform_{0};
   int device_{-1};
   std::size_t channels_{0};
   std::size_t filter_groups_{0};
   std::size_t fft_size_{0};
+  std::size_t state_size_{0};
+  FftInputMode input_mode_{FftInputMode::kRealCompact};
+  std::size_t generation_{0};
 };
 
 [[nodiscard]] std::size_t fir_fft_size(std::size_t length,
@@ -174,6 +221,13 @@ bf16_hcs_decode(const DeviceBuffer &x2, const DeviceBuffer &x1,
     FftWorkspace *workspace, const Stream &stream,
     FirWeightType weight_type = FirWeightType::kBF16);
 
+[[nodiscard]] Status bf16_hcm_prefill_direct(
+    const DeviceBuffer &x2, const DeviceBuffer &x1, const DeviceBuffer &value,
+    const DeviceBuffer &weight, const DeviceBuffer &direct, std::size_t length,
+    std::size_t width, std::size_t filter_groups, std::size_t kernel_size,
+    FirCache *cache, DeviceBuffer *scratch, DeviceBuffer *output,
+    const Stream &stream, FirWeightType weight_type = FirWeightType::kBF16);
+
 [[nodiscard]] Status bf16_hcm_decode(
     const DeviceBuffer &x2, const DeviceBuffer &x1, const DeviceBuffer &value,
     const DeviceBuffer &weight, const DeviceBuffer &direct, std::size_t width,
@@ -186,8 +240,7 @@ bf16_hcs_decode(const DeviceBuffer &x2, const DeviceBuffer &x1,
     const DeviceBuffer &weight, const DeviceBuffer &direct, std::size_t length,
     std::size_t width, std::size_t filter_groups, std::size_t kernel_size,
     FirCache *cache, DeviceBuffer *scratch, DeviceBuffer *output,
-    const Stream &stream,
-    FirWeightType weight_type = FirWeightType::kBF16);
+    const Stream &stream, FirWeightType weight_type = FirWeightType::kBF16);
 
 // HCL tensors: x2/x1/value and direct are BF16; log_poles/residues and cache
 // are F32. scratch is BF16 [length,width]. FFT mode requires an exact matching
@@ -206,6 +259,7 @@ bf16_hcl_decode(const DeviceBuffer &x2, const DeviceBuffer &x1,
                 const DeviceBuffer &value, const DeviceBuffer &direct,
                 const DeviceBuffer &log_poles, const DeviceBuffer &residues,
                 std::size_t width, std::size_t state_size, IirCache *cache,
-                DeviceBuffer *output, const Stream &stream);
+                DeviceBuffer *gated, DeviceBuffer *output,
+                const Stream &stream);
 
 } // namespace evo2c::cuda

@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "evo2c/cuda/attention.hpp"
 
+#include <climits>
 #include <cmath>
 #include <cstdint>
 #include <limits>
 #include <string>
 #include <utility>
 
+#include <cublas_v2.h>
 #include <cuda_bf16.h>
 #include <math_constants.h>
 
@@ -63,6 +65,23 @@ Status buffer_size(const DeviceBuffer &buffer, const std::size_t bytes,
   return Status::Ok();
 }
 
+Status ensure_capacity(DeviceBuffer *const buffer, const int device,
+                       const std::size_t bytes, const char *const name) {
+  if (buffer == nullptr || bytes == 0)
+    return {ErrorCode::kInvalidArgument,
+            std::string{name} + " has invalid storage requirements"};
+  if (buffer->valid() && buffer->device() == device &&
+      buffer->bytes() >= bytes) {
+    return Status::Ok();
+  }
+  buffer->reset();
+  auto status = buffer->allocate(device, bytes);
+  if (!status.ok())
+    return {status.code(),
+            std::string{"allocate "} + name + ": " + status.message()};
+  return Status::Ok();
+}
+
 Status launch_status(const char *const operation) {
   return cuda_status(cudaPeekAtLastError(), operation);
 }
@@ -80,8 +99,7 @@ Status validate_cache(const KvCache &cache, const int device) {
       cache.length > cache.capacity || cache.device_id != device) {
     return {ErrorCode::kInvalidArgument, "KV cache metadata is invalid"};
   }
-  if (cache.type != KvCacheType::kBF16 &&
-      cache.type != KvCacheType::kQ8Paged) {
+  if (cache.type != KvCacheType::kBF16 && cache.type != KvCacheType::kQ8Paged) {
     return {ErrorCode::kInvalidArgument, "KV cache type is invalid"};
   }
   if (cache.type == KvCacheType::kQ8Paged) {
@@ -89,8 +107,7 @@ Status validate_cache(const KvCache &cache, const int device) {
       return {ErrorCode::kInvalidArgument,
               "paged Q8 KV cache metadata is invalid"};
     }
-    const std::size_t page_count =
-        1 + (cache.capacity - 1) / cache.page_tokens;
+    const std::size_t page_count = 1 + (cache.capacity - 1) / cache.page_tokens;
     if (cache.q8_pages.size() != page_count ||
         cache.host_key_pages.size() != page_count ||
         cache.host_value_pages.size() != page_count ||
@@ -117,11 +134,9 @@ Status validate_cache(const KvCache &cache, const int device) {
     for (std::size_t index = 0; index < page_count; ++index) {
       const auto &page = cache.q8_pages[index];
       const bool any_valid = page.key.valid() || page.value.valid() ||
-                             page.key_scale.valid() ||
-                             page.value_scale.valid();
+                             page.key_scale.valid() || page.value_scale.valid();
       const bool all_valid = page.key.valid() && page.value.valid() &&
-                             page.key_scale.valid() &&
-                             page.value_scale.valid();
+                             page.key_scale.valid() && page.value_scale.valid();
       if (any_valid != all_valid || (index < populated_pages && !all_valid)) {
         return {ErrorCode::kInvalidArgument,
                 "paged Q8 KV physical page metadata is invalid"};
@@ -137,14 +152,14 @@ Status validate_cache(const KvCache &cache, const int device) {
         continue;
       }
       for (const auto *const buffer : {&page.key, &page.value}) {
-        auto status = buffer_size(*buffer, page_bytes, device,
-                                  "paged Q8 KV payload");
+        auto status =
+            buffer_size(*buffer, page_bytes, device, "paged Q8 KV payload");
         if (!status.ok())
           return status;
       }
       for (const auto *const buffer : {&page.key_scale, &page.value_scale}) {
-        auto status = buffer_size(*buffer, scale_bytes, device,
-                                  "paged Q8 KV scale");
+        auto status =
+            buffer_size(*buffer, scale_bytes, device, "paged Q8 KV scale");
         if (!status.ok())
           return status;
       }
@@ -234,6 +249,12 @@ rope_kernel(__nv_bfloat16 *const query, __nv_bfloat16 *const key,
     float sine = 0.0F;
     float cosine = 0.0F;
     sincosf(angle, &sine, &cosine);
+    // Vortex materializes its RoPE cosine and sine caches in the QKV dtype
+    // before the Triton rotation kernel reloads them as F32. Preserve that
+    // BF16 rounding boundary instead of multiplying by the raw F32 trig
+    // results.
+    sine = __bfloat162float(__float2bfloat16_rn(sine));
+    cosine = __bfloat162float(__float2bfloat16_rn(cosine));
 
     const float query_first = __bfloat162float(query[base + pair]);
     const float query_second = __bfloat162float(query[base + half + pair]);
@@ -251,6 +272,509 @@ rope_kernel(__nv_bfloat16 *const query, __nv_bfloat16 *const key,
   }
 }
 
+__global__ void cached_scale_key_kernel(const __nv_bfloat16 *const key,
+                                        __nv_bfloat16 *const scaled_key,
+                                        const std::size_t elements,
+                                        const float scale) {
+  for (std::size_t index =
+           static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+       index < elements;
+       index += static_cast<std::size_t>(blockDim.x) * gridDim.x) {
+    scaled_key[index] =
+        __float2bfloat16_rn(__bfloat162float(key[index]) * scale);
+  }
+}
+
+__global__ void cached_causal_mask_kernel(__nv_bfloat16 *const scores,
+                                          const std::size_t query_tokens,
+                                          const std::size_t key_tokens,
+                                          const std::size_t heads) {
+  const std::size_t elements = heads * query_tokens * key_tokens;
+  for (std::size_t index =
+           static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+       index < elements;
+       index += static_cast<std::size_t>(blockDim.x) * gridDim.x) {
+    const std::size_t within_head = index % (query_tokens * key_tokens);
+    const std::size_t query = within_head / key_tokens;
+    const std::size_t key = within_head % key_tokens;
+    if (key > query + key_tokens - query_tokens)
+      scores[index] = __float2bfloat16_rn(-10000.0F);
+  }
+}
+
+template <int WarpBatch, int WarpSize>
+__device__ __forceinline__ void cached_warp_max(float (&values)[WarpBatch]) {
+#pragma unroll
+  for (int offset = WarpSize / 2; offset > 0; offset /= 2) {
+#pragma unroll
+    for (int batch = 0; batch < WarpBatch; ++batch) {
+      const float other =
+          __shfl_xor_sync(0xffffffffU, values[batch], offset, WarpSize);
+      values[batch] = values[batch] < other ? other : values[batch];
+    }
+  }
+}
+
+template <int WarpBatch, int WarpSize>
+__device__ __forceinline__ void cached_warp_sum(float (&values)[WarpBatch]) {
+#pragma unroll
+  for (int offset = WarpSize / 2; offset > 0; offset /= 2) {
+#pragma unroll
+    for (int batch = 0; batch < WarpBatch; ++batch) {
+      values[batch] +=
+          __shfl_xor_sync(0xffffffffU, values[batch], offset, WarpSize);
+    }
+  }
+}
+
+template <int Log2Elements>
+__global__ void cached_softmax_warp_kernel(__nv_bfloat16 *const output,
+                                           const __nv_bfloat16 *const input,
+                                           const int batch_size,
+                                           const int stride,
+                                           const int element_count) {
+  constexpr int next_power_of_two = 1 << Log2Elements;
+  constexpr int warp_size = next_power_of_two < 32 ? next_power_of_two : 32;
+  constexpr int warp_iterations = next_power_of_two / warp_size;
+  constexpr int warp_batch = next_power_of_two <= 128 ? 2 : 1;
+
+  const int first_batch =
+      (static_cast<int>(blockDim.y) * static_cast<int>(blockIdx.x) +
+       static_cast<int>(threadIdx.y)) *
+      warp_batch;
+  int local_batches = batch_size - first_batch;
+  if (local_batches > warp_batch)
+    local_batches = warp_batch;
+  const int local_index = static_cast<int>(threadIdx.x);
+  const int base = first_batch * stride + local_index;
+
+  float elements[warp_batch][warp_iterations];
+#pragma unroll
+  for (int batch = 0; batch < warp_batch; ++batch) {
+    const int batch_elements = batch >= local_batches ? 0 : element_count;
+#pragma unroll
+    for (int iteration = 0; iteration < warp_iterations; ++iteration) {
+      const int element = local_index + iteration * warp_size;
+      elements[batch][iteration] =
+          element < batch_elements
+              ? __bfloat162float(
+                    input[base + batch * element_count + iteration * warp_size])
+              : -CUDART_INF_F;
+    }
+  }
+
+  float maximum[warp_batch];
+#pragma unroll
+  for (int batch = 0; batch < warp_batch; ++batch) {
+    maximum[batch] = elements[batch][0];
+#pragma unroll
+    for (int iteration = 0; iteration < warp_iterations; ++iteration) {
+      maximum[batch] = maximum[batch] > elements[batch][iteration]
+                           ? maximum[batch]
+                           : elements[batch][iteration];
+    }
+  }
+  cached_warp_max<warp_batch, warp_size>(maximum);
+
+  float sum[warp_batch]{};
+#pragma unroll
+  for (int batch = 0; batch < warp_batch; ++batch) {
+#pragma unroll
+    for (int iteration = 0; iteration < warp_iterations; ++iteration) {
+      elements[batch][iteration] =
+          expf(elements[batch][iteration] - maximum[batch]);
+      sum[batch] += elements[batch][iteration];
+    }
+  }
+  cached_warp_sum<warp_batch, warp_size>(sum);
+
+#pragma unroll
+  for (int batch = 0; batch < warp_batch; ++batch) {
+    if (batch >= local_batches)
+      break;
+#pragma unroll
+    for (int iteration = 0; iteration < warp_iterations; ++iteration) {
+      const int element = local_index + iteration * warp_size;
+      if (element < element_count) {
+        const float result = sum[batch] == 0.0F
+                                 ? CUDART_NAN_F
+                                 : elements[batch][iteration] / sum[batch];
+        output[base + batch * element_count + iteration * warp_size] =
+            __float2bfloat16_rn(result);
+      }
+    }
+  }
+}
+
+template <int Log2Elements>
+void launch_cached_softmax(__nv_bfloat16 *const output,
+                           const __nv_bfloat16 *const input,
+                           const int batch_size, const int element_count,
+                           const cudaStream_t stream) {
+  constexpr int next_power_of_two = 1 << Log2Elements;
+  constexpr int warp_size = next_power_of_two < 32 ? next_power_of_two : 32;
+  constexpr int batches_per_warp = next_power_of_two <= 128 ? 2 : 1;
+  constexpr int threads_per_block = 128;
+  constexpr int warps_per_block = threads_per_block / warp_size;
+  constexpr int batches_per_block = warps_per_block * batches_per_warp;
+  const int blocks = (batch_size + batches_per_block - 1) / batches_per_block;
+  const dim3 threads(warp_size, warps_per_block, 1);
+  cached_softmax_warp_kernel<Log2Elements><<<blocks, threads, 0, stream>>>(
+      output, input, batch_size, element_count, element_count);
+}
+
+// PyTorch leaves its persistent warp softmax above 2048 elements.  The
+// following kernels preserve the pinned SoftMax.cu launch geometry, per-thread
+// accumulation order, vector alignment handling, and two-level warp reduction
+// used by that larger contiguous-last-dimension path.
+__device__ __forceinline__ float cached_block_max(const float left,
+                                                  const float right) {
+  return left < right ? right : left;
+}
+
+template <bool Maximum>
+__device__ __forceinline__ float cached_block_reduce(float value,
+                                                     float *const shared) {
+#pragma unroll
+  for (int offset = 16; offset > 0; offset /= 2) {
+    const float other = __shfl_down_sync(0xffffffffU, value, offset, 32);
+    if constexpr (Maximum)
+      value = cached_block_max(value, other);
+    else
+      value += other;
+  }
+  __syncthreads();
+  const int lane = static_cast<int>(threadIdx.x) % 32;
+  const int warp = static_cast<int>(threadIdx.x) / 32;
+  if (lane == 0)
+    shared[warp] = value;
+  __syncthreads();
+  value = static_cast<int>(threadIdx.x) < static_cast<int>(blockDim.x) / 32
+              ? shared[lane]
+              : (Maximum ? -CUDART_INF_F : 0.0F);
+  if (warp == 0) {
+#pragma unroll
+    for (int offset = 16; offset > 0; offset /= 2) {
+      const float other = __shfl_down_sync(0xffffffffU, value, offset, 32);
+      if constexpr (Maximum)
+        value = cached_block_max(value, other);
+      else
+        value += other;
+    }
+  }
+  if (threadIdx.x == 0)
+    shared[0] = value;
+  __syncthreads();
+  return shared[0];
+}
+
+template <int RegisterCount>
+__global__ void cached_softmax_register_kernel(__nv_bfloat16 *const output,
+                                               const __nv_bfloat16 *const input,
+                                               const int columns) {
+  extern __shared__ float reduction[];
+  const auto *const row_input =
+      input + static_cast<std::int64_t>(blockIdx.x) * columns;
+  auto *const row_output =
+      output + static_cast<std::int64_t>(blockIdx.x) * columns;
+  __nv_bfloat16 values[RegisterCount];
+  float thread_max = -CUDART_INF_F;
+#pragma unroll
+  for (int item = 0; item < RegisterCount; ++item) {
+    const int column = static_cast<int>(threadIdx.x) + item * blockDim.x;
+    if (column < columns) {
+      values[item] = row_input[column];
+      thread_max = cached_block_max(thread_max, __bfloat162float(values[item]));
+    }
+  }
+  const float maximum = cached_block_reduce<true>(thread_max, reduction);
+  float thread_sum = 0.0F;
+#pragma unroll
+  for (int item = 0; item < RegisterCount; ++item) {
+    const int column = static_cast<int>(threadIdx.x) + item * blockDim.x;
+    if (column < columns)
+      thread_sum += expf(__bfloat162float(values[item]) - maximum);
+  }
+  const float sum = cached_block_reduce<false>(thread_sum, reduction);
+#pragma unroll
+  for (int item = 0; item < RegisterCount; ++item) {
+    const int column = static_cast<int>(threadIdx.x) + item * blockDim.x;
+    if (column < columns) {
+      row_output[column] = __float2bfloat16_rn(
+          expf(__bfloat162float(values[item]) - maximum) / sum);
+    }
+  }
+}
+
+struct alignas(16) CachedBf16Vector final {
+  __nv_bfloat16 values[8];
+};
+
+__global__ void cached_softmax_shared_kernel(__nv_bfloat16 *const output,
+                                             const __nv_bfloat16 *const input,
+                                             const int columns) {
+  extern __shared__ unsigned char storage[];
+  auto *const cached = reinterpret_cast<__nv_bfloat16 *>(storage);
+  auto *const reduction =
+      reinterpret_cast<float *>(storage + columns * sizeof(__nv_bfloat16));
+  const auto *const row_input =
+      input + static_cast<std::int64_t>(blockIdx.x) * columns;
+  auto *const row_output =
+      output + static_cast<std::int64_t>(blockIdx.x) * columns;
+  const auto *const vector_input =
+      reinterpret_cast<const CachedBf16Vector *>(row_input);
+  auto *const vector_cache = reinterpret_cast<CachedBf16Vector *>(cached);
+  float thread_max = -CUDART_INF_F;
+  for (int offset = static_cast<int>(threadIdx.x); offset * 8 < columns;
+       offset += static_cast<int>(blockDim.x)) {
+    const CachedBf16Vector current = vector_input[offset];
+    vector_cache[offset] = current;
+#pragma unroll
+    for (int item = 0; item < 8; ++item) {
+      thread_max =
+          cached_block_max(thread_max, __bfloat162float(current.values[item]));
+    }
+  }
+  const float maximum = cached_block_reduce<true>(thread_max, reduction);
+  float thread_sum = 0.0F;
+  for (int offset = static_cast<int>(threadIdx.x); offset * 8 < columns;
+       offset += static_cast<int>(blockDim.x)) {
+    const CachedBf16Vector current = vector_cache[offset];
+#pragma unroll
+    for (int item = 0; item < 8; ++item) {
+      thread_sum += expf(__bfloat162float(current.values[item]) - maximum);
+    }
+  }
+  const float sum = cached_block_reduce<false>(thread_sum, reduction);
+  auto *const vector_output = reinterpret_cast<CachedBf16Vector *>(row_output);
+  for (int offset = static_cast<int>(threadIdx.x); offset * 8 < columns;
+       offset += static_cast<int>(blockDim.x)) {
+    const CachedBf16Vector current = vector_cache[offset];
+    CachedBf16Vector result{};
+#pragma unroll
+    for (int item = 0; item < 8; ++item) {
+      result.values[item] = __float2bfloat16_rn(
+          expf(__bfloat162float(current.values[item]) - maximum) / sum);
+    }
+    vector_output[offset] = result;
+  }
+}
+
+template <bool Maximum>
+__device__ __forceinline__ float cached_ilp_reduce(const __nv_bfloat16 *input,
+                                                   int columns,
+                                                   const float maximum) {
+  constexpr int kAlignmentBytes = 16;
+  constexpr int kItems = 8;
+  const int shift = static_cast<int>(reinterpret_cast<std::uintptr_t>(input) %
+                                     kAlignmentBytes) /
+                    static_cast<int>(sizeof(__nv_bfloat16));
+  int offset = static_cast<int>(threadIdx.x);
+  float result = Maximum ? -CUDART_INF_F : 0.0F;
+  const auto accumulate = [&](const __nv_bfloat16 item) {
+    const float value = __bfloat162float(item);
+    if constexpr (Maximum)
+      result = cached_block_max(result, value);
+    else
+      result += expf(value - maximum);
+  };
+  if (shift > 0) {
+    input -= shift;
+    columns += shift;
+    if (offset >= shift && offset < columns)
+      accumulate(input[offset]);
+    columns -= blockDim.x > columns ? columns : static_cast<int>(blockDim.x);
+    input += blockDim.x;
+  }
+  const int last = columns % (kItems * static_cast<int>(blockDim.x));
+  const auto *const vectors = reinterpret_cast<const CachedBf16Vector *>(input);
+  for (; offset * kItems < columns - last;
+       offset += static_cast<int>(blockDim.x)) {
+    const CachedBf16Vector current = vectors[offset];
+#pragma unroll
+    for (int item = 0; item < kItems; ++item)
+      accumulate(current.values[item]);
+  }
+  offset = columns - last + static_cast<int>(threadIdx.x);
+  for (; offset < columns; offset += static_cast<int>(blockDim.x))
+    accumulate(input[offset]);
+  return result;
+}
+
+__global__ void cached_softmax_general_kernel(__nv_bfloat16 *const output,
+                                              const __nv_bfloat16 *const input,
+                                              const int columns) {
+  extern __shared__ float reduction[];
+  const auto *const row_input =
+      input + static_cast<std::int64_t>(blockIdx.x) * columns;
+  auto *const row_output =
+      output + static_cast<std::int64_t>(blockIdx.x) * columns;
+  const float thread_max = cached_ilp_reduce<true>(row_input, columns, 0.0F);
+  const float maximum = cached_block_reduce<true>(thread_max, reduction);
+  const float thread_sum =
+      cached_ilp_reduce<false>(row_input, columns, maximum);
+  const float sum = cached_block_reduce<false>(thread_sum, reduction);
+
+  constexpr int kAlignmentBytes = 16;
+  constexpr int kItems = 8;
+  const int input_shift =
+      static_cast<int>(reinterpret_cast<std::uintptr_t>(row_input) %
+                       kAlignmentBytes) /
+      static_cast<int>(sizeof(__nv_bfloat16));
+  const int output_shift =
+      static_cast<int>(reinterpret_cast<std::uintptr_t>(row_output) %
+                       kAlignmentBytes) /
+      static_cast<int>(sizeof(__nv_bfloat16));
+  if (input_shift != output_shift) {
+    for (int column = static_cast<int>(threadIdx.x); column < columns;
+         column += static_cast<int>(blockDim.x)) {
+      row_output[column] = __float2bfloat16_rn(
+          expf(__bfloat162float(row_input[column]) - maximum) / sum);
+    }
+    return;
+  }
+
+  const auto evaluate = [maximum, sum](const __nv_bfloat16 item) {
+    return __float2bfloat16_rn(expf(__bfloat162float(item) - maximum) / sum);
+  };
+  auto *write_output = row_output;
+  const auto *read_input = row_input;
+  int size = columns;
+  int offset = static_cast<int>(threadIdx.x);
+  if (input_shift > 0) {
+    read_input -= input_shift;
+    write_output -= output_shift;
+    size += input_shift;
+    if (offset >= input_shift && offset < size)
+      write_output[offset] = evaluate(read_input[offset]);
+    size -= blockDim.x > size ? size : static_cast<int>(blockDim.x);
+    read_input += blockDim.x;
+    write_output += blockDim.x;
+  }
+  const int last = size % (kItems * static_cast<int>(blockDim.x));
+  const auto *const vector_input =
+      reinterpret_cast<const CachedBf16Vector *>(read_input);
+  auto *const vector_output =
+      reinterpret_cast<CachedBf16Vector *>(write_output);
+  for (; offset * kItems < size - last;
+       offset += static_cast<int>(blockDim.x)) {
+    const CachedBf16Vector current = vector_input[offset];
+    CachedBf16Vector result{};
+#pragma unroll
+    for (int item = 0; item < kItems; ++item)
+      result.values[item] = evaluate(current.values[item]);
+    vector_output[offset] = result;
+  }
+  offset = size - last + static_cast<int>(threadIdx.x);
+  for (; offset < size; offset += static_cast<int>(blockDim.x))
+    write_output[offset] = evaluate(read_input[offset]);
+}
+
+Status launch_cached_large_softmax(__nv_bfloat16 *const output,
+                                   const __nv_bfloat16 *const input,
+                                   const int rows, const int columns,
+                                   const int device,
+                                   const cudaStream_t stream) {
+  constexpr int kThreads = 1024;
+  constexpr int kItems = 8;
+  const int register_count = (columns + kThreads - 1) / kThreads;
+  const std::size_t reduction_bytes = (kThreads / 32) * sizeof(float);
+  if (register_count < 10) {
+#define EVO2C_REGISTER_SOFTMAX_CASE(value)                                     \
+  case value:                                                                  \
+    cached_softmax_register_kernel<value>                                      \
+        <<<rows, kThreads, reduction_bytes, stream>>>(output, input, columns); \
+    break
+    switch (register_count) {
+      EVO2C_REGISTER_SOFTMAX_CASE(3);
+      EVO2C_REGISTER_SOFTMAX_CASE(4);
+      EVO2C_REGISTER_SOFTMAX_CASE(5);
+      EVO2C_REGISTER_SOFTMAX_CASE(6);
+      EVO2C_REGISTER_SOFTMAX_CASE(7);
+      EVO2C_REGISTER_SOFTMAX_CASE(8);
+      EVO2C_REGISTER_SOFTMAX_CASE(9);
+    default:
+      return {ErrorCode::kUnsupported,
+              "cached register softmax dispatch is unavailable"};
+    }
+#undef EVO2C_REGISTER_SOFTMAX_CASE
+    return launch_status("PyTorch-compatible cached register softmax");
+  }
+
+  cudaDeviceProp properties{};
+  auto status = cuda_status(cudaGetDeviceProperties(&properties, device),
+                            "cudaGetDeviceProperties cached softmax");
+  if (!status.ok())
+    return status;
+  const auto input_address = reinterpret_cast<std::uintptr_t>(input);
+  const auto output_address = reinterpret_cast<std::uintptr_t>(output);
+  const std::size_t shared_capacity_bytes =
+      static_cast<std::size_t>(properties.sharedMemPerBlock);
+  const std::size_t maximum_shared_elements =
+      shared_capacity_bytes > reduction_bytes
+          ? (shared_capacity_bytes - reduction_bytes) / sizeof(__nv_bfloat16)
+          : 0;
+  const bool use_shared =
+      static_cast<std::size_t>(columns) < maximum_shared_elements &&
+      input_address % 16 == 0 && output_address % 16 == 0 &&
+      columns % kItems == 0;
+  if (use_shared) {
+    const std::size_t shared_bytes =
+        static_cast<std::size_t>(columns) * sizeof(__nv_bfloat16) +
+        reduction_bytes;
+    cached_softmax_shared_kernel<<<rows, kThreads, shared_bytes, stream>>>(
+        output, input, columns);
+    return launch_status("PyTorch-compatible cached shared softmax");
+  }
+  cached_softmax_general_kernel<<<rows, kThreads, reduction_bytes, stream>>>(
+      output, input, columns);
+  return launch_status("PyTorch-compatible cached general softmax");
+}
+
+Status dispatch_cached_softmax(DeviceBuffer *const output,
+                               const DeviceBuffer &input,
+                               const std::size_t rows,
+                               const std::size_t columns,
+                               const Stream &stream) {
+  if (columns == 0 || columns > static_cast<std::size_t>(INT_MAX) ||
+      rows > static_cast<std::size_t>(INT_MAX))
+    return {ErrorCode::kUnsupported,
+            "cached PyTorch softmax dimensions exceed CUDA indexing"};
+  auto *const destination = static_cast<__nv_bfloat16 *>(output->data());
+  const auto *const source = static_cast<const __nv_bfloat16 *>(input.data());
+  if (columns > 2048) {
+    return launch_cached_large_softmax(
+        destination, source, static_cast<int>(rows), static_cast<int>(columns),
+        input.device(), stream.get());
+  }
+  int log2_elements = 0;
+  while ((1ULL << log2_elements) < columns)
+    ++log2_elements;
+#define EVO2C_SOFTMAX_CASE(value)                                              \
+  case value:                                                                  \
+    launch_cached_softmax<value>(destination, source, static_cast<int>(rows),  \
+                                 static_cast<int>(columns), stream.get());     \
+    break
+  switch (log2_elements) {
+    EVO2C_SOFTMAX_CASE(0);
+    EVO2C_SOFTMAX_CASE(1);
+    EVO2C_SOFTMAX_CASE(2);
+    EVO2C_SOFTMAX_CASE(3);
+    EVO2C_SOFTMAX_CASE(4);
+    EVO2C_SOFTMAX_CASE(5);
+    EVO2C_SOFTMAX_CASE(6);
+    EVO2C_SOFTMAX_CASE(7);
+    EVO2C_SOFTMAX_CASE(8);
+    EVO2C_SOFTMAX_CASE(9);
+    EVO2C_SOFTMAX_CASE(10);
+    EVO2C_SOFTMAX_CASE(11);
+  default:
+    return {ErrorCode::kUnsupported, "cached softmax dispatch is unavailable"};
+  }
+#undef EVO2C_SOFTMAX_CASE
+  return launch_status("PyTorch-compatible cached softmax kernel");
+}
+
 __inline__ __device__ float warp_sum(float value) {
   for (int offset = 16; offset > 0; offset /= 2)
     value += __shfl_down_sync(0xffffffffU, value, offset);
@@ -265,11 +789,11 @@ __inline__ __device__ float warp_max(float value) {
 
 __global__ void q8_kv_append_kernel(
     const __nv_bfloat16 *const key, const __nv_bfloat16 *const value,
-    std::int8_t *const *const key_pages,
-    std::int8_t *const *const value_pages, float *const *const key_scale_pages,
-    float *const *const value_scale_pages, const std::size_t token_offset,
-    const std::size_t tokens, const std::size_t heads,
-    const std::size_t head_dim, const std::size_t page_tokens) {
+    std::int8_t *const *const key_pages, std::int8_t *const *const value_pages,
+    float *const *const key_scale_pages, float *const *const value_scale_pages,
+    const std::size_t token_offset, const std::size_t tokens,
+    const std::size_t heads, const std::size_t head_dim,
+    const std::size_t page_tokens) {
   const std::size_t token_head = blockIdx.x;
   const std::size_t token = token_head / heads;
   const std::size_t head = token_head % heads;
@@ -278,9 +802,9 @@ __global__ void q8_kv_append_kernel(
 
   const std::size_t dimension = threadIdx.x;
   const std::size_t input_base = token_head * head_dim;
-  const float key_value =
-      dimension < head_dim ? __bfloat162float(key[input_base + dimension])
-                           : 0.0F;
+  const float key_value = dimension < head_dim
+                              ? __bfloat162float(key[input_base + dimension])
+                              : 0.0F;
   const float value_value =
       dimension < head_dim ? __bfloat162float(value[input_base + dimension])
                            : 0.0F;
@@ -334,9 +858,8 @@ __global__ void q8_kv_append_kernel(
 __global__ void set_q8_page_kernel(
     std::int8_t **const key_pages, std::int8_t **const value_pages,
     float **const key_scale_pages, float **const value_scale_pages,
-    const std::size_t index, std::int8_t *const key,
-    std::int8_t *const value, float *const key_scale,
-    float *const value_scale) {
+    const std::size_t index, std::int8_t *const key, std::int8_t *const value,
+    float *const key_scale, float *const value_scale) {
   if (blockIdx.x == 0 && threadIdx.x == 0) {
     key_pages[index] = key;
     value_pages[index] = value;
@@ -356,68 +879,196 @@ __global__ void online_attention_kernel(
   if (query_token >= query_tokens)
     return;
 
-  const std::size_t dimension = threadIdx.x;
   const std::size_t query_base = (query_token * heads + head) * head_dim;
-  const float query_value =
-      dimension < head_dim ? __bfloat162float(query[query_base + dimension])
-                           : 0.0F;
+  const std::size_t dimension = threadIdx.x;
+  constexpr int source_warps = kAttentionThreads / 32;
+  __shared__ float shared_query[256];
+  __shared__ float shared_scores[source_warps];
+  __shared__ float shared_weights[source_warps];
+  __shared__ float shared_maximum;
+  __shared__ float shared_normalizer;
+  __shared__ float shared_old_scale;
+  if (dimension < head_dim)
+    shared_query[dimension] = __bfloat162float(query[query_base + dimension]);
+  if (dimension == 0) {
+    shared_maximum = -CUDART_INF_F;
+    shared_normalizer = 0.0F;
+  }
+  __syncthreads();
+
   float accumulator = 0.0F;
-  float maximum = -CUDART_INF_F;
-  float normalizer = 0.0F;
   const float scale = rsqrtf(static_cast<float>(head_dim));
-  __shared__ float partial[32];
-  __shared__ float shared_score;
   const int lane = threadIdx.x % 32;
   const int warp = threadIdx.x / 32;
-  const int warp_count = (blockDim.x + 31) / 32;
   const std::size_t sources = prefix_tokens + query_token + 1;
 
-  for (std::size_t source = 0; source < sources; ++source) {
-    const std::size_t cache_base = (source * heads + head) * head_dim;
-    float dot =
-        dimension < head_dim
-            ? query_value * __bfloat162float(key_cache[cache_base + dimension])
-            : 0.0F;
+  for (std::size_t source_base = 0; source_base < sources;
+       source_base += source_warps) {
+    const std::size_t source = source_base + static_cast<std::size_t>(warp);
+    float dot = 0.0F;
+    if (source < sources) {
+      const std::size_t cache_base = (source * heads + head) * head_dim;
+      for (std::size_t component = static_cast<std::size_t>(lane);
+           component < head_dim; component += 32) {
+        dot += shared_query[component] *
+               __bfloat162float(key_cache[cache_base + component]);
+      }
+    }
     dot = warp_sum(dot);
     if (lane == 0)
-      partial[warp] = dot;
+      shared_scores[warp] = source < sources ? dot * scale : -CUDART_INF_F;
     __syncthreads();
-    if (warp == 0) {
-      float total = lane < warp_count ? partial[lane] : 0.0F;
-      total = warp_sum(total);
-      if (lane == 0)
-        shared_score = total * scale;
+
+    const std::size_t valid_sources =
+        min(static_cast<std::size_t>(source_warps), sources - source_base);
+    if (dimension == 0) {
+      float next_maximum = shared_maximum;
+      for (std::size_t offset = 0; offset < valid_sources; ++offset)
+        next_maximum = fmaxf(next_maximum, shared_scores[offset]);
+      shared_old_scale = shared_normalizer == 0.0F
+                             ? 0.0F
+                             : expf(shared_maximum - next_maximum);
+      float next_normalizer = shared_normalizer * shared_old_scale;
+      for (std::size_t offset = 0; offset < valid_sources; ++offset) {
+        const float weight = expf(shared_scores[offset] - next_maximum);
+        shared_weights[offset] = weight;
+        next_normalizer += weight;
+      }
+      shared_maximum = next_maximum;
+      shared_normalizer = next_normalizer;
     }
     __syncthreads();
 
-    const float score = shared_score;
-    const float next_maximum = fmaxf(maximum, score);
-    const float old_weight =
-        normalizer == 0.0F ? 0.0F : expf(maximum - next_maximum);
-    const float new_weight = expf(score - next_maximum);
     if (dimension < head_dim) {
-      accumulator =
-          accumulator * old_weight +
-          new_weight * __bfloat162float(value_cache[cache_base + dimension]);
+      accumulator *= shared_old_scale;
+      for (std::size_t offset = 0; offset < valid_sources; ++offset) {
+        const std::size_t value_base =
+            ((source_base + offset) * heads + head) * head_dim;
+        accumulator += shared_weights[offset] *
+                       __bfloat162float(value_cache[value_base + dimension]);
+      }
     }
-    normalizer = normalizer * old_weight + new_weight;
-    maximum = next_maximum;
+    __syncthreads();
   }
   if (dimension < head_dim) {
     output[query_base + dimension] =
-        __float2bfloat16_rn(accumulator / normalizer);
+        __float2bfloat16_rn(accumulator / shared_normalizer);
+  }
+}
+
+// One warp owns one query while all eight warps reuse the same K/V tile. This
+// keeps online-softmax storage linear in sequence length without materializing
+// an attention matrix.
+__global__ void bf16_causal_prefill_kernel(
+    const __nv_bfloat16 *const query, const __nv_bfloat16 *const key_cache,
+    const __nv_bfloat16 *const value_cache, __nv_bfloat16 *const output,
+    const std::size_t query_tokens, const std::size_t prefix_tokens,
+    const std::size_t heads) {
+  constexpr std::size_t head_dim = 128;
+  constexpr std::size_t queries_per_block = kAttentionThreads / 32;
+  constexpr std::size_t sources_per_tile = 8;
+  __shared__ float shared_key[sources_per_tile * head_dim];
+  __shared__ float shared_value[sources_per_tile * head_dim];
+
+  const int warp = threadIdx.x / 32;
+  const int lane = threadIdx.x % 32;
+  const std::size_t query_tile = blockIdx.x / heads;
+  const std::size_t head = blockIdx.x % heads;
+  const std::size_t query_token =
+      query_tile * queries_per_block + static_cast<std::size_t>(warp);
+  const bool active_query = query_token < query_tokens;
+  const std::size_t query_base =
+      active_query ? (query_token * heads + head) * head_dim : 0;
+  float query_values[4]{};
+  float accumulators[4]{};
+  float maximum = -CUDART_INF_F;
+  float normalizer = 0.0F;
+  if (active_query) {
+#pragma unroll
+    for (int component = 0; component < 4; ++component) {
+      const std::size_t dimension =
+          static_cast<std::size_t>(lane + component * 32);
+      query_values[component] = __bfloat162float(query[query_base + dimension]);
+    }
+  }
+  constexpr float scale = 0.08838834764831845F;
+  const std::size_t tile_query_end =
+      min((query_tile + 1) * queries_per_block, query_tokens);
+  const std::size_t maximum_sources = prefix_tokens + tile_query_end;
+
+  for (std::size_t source_base = 0; source_base < maximum_sources;
+       source_base += sources_per_tile) {
+    const std::size_t valid_sources =
+        min(sources_per_tile, maximum_sources - source_base);
+    const std::size_t tile_elements = valid_sources * head_dim;
+    for (std::size_t index = threadIdx.x; index < tile_elements;
+         index += blockDim.x) {
+      const std::size_t source_offset = index / head_dim;
+      const std::size_t dimension = index % head_dim;
+      const std::size_t cache_base =
+          ((source_base + source_offset) * heads + head) * head_dim;
+      shared_key[index] = __bfloat162float(key_cache[cache_base + dimension]);
+      shared_value[index] =
+          __bfloat162float(value_cache[cache_base + dimension]);
+    }
+    __syncthreads();
+
+    if (active_query) {
+      const std::size_t query_sources = prefix_tokens + query_token + 1;
+      const std::size_t usable_sources =
+          source_base >= query_sources
+              ? 0
+              : min(valid_sources, query_sources - source_base);
+      for (std::size_t source_offset = 0; source_offset < usable_sources;
+           ++source_offset) {
+        const std::size_t shared_base = source_offset * head_dim;
+        float dot = 0.0F;
+#pragma unroll
+        for (int component = 0; component < 4; ++component) {
+          const std::size_t dimension =
+              static_cast<std::size_t>(lane + component * 32);
+          dot += query_values[component] * shared_key[shared_base + dimension];
+        }
+        dot = warp_sum(dot);
+        const float score = __shfl_sync(0xffffffffU, dot * scale, 0);
+        const float next_maximum = fmaxf(maximum, score);
+        const float old_weight =
+            normalizer == 0.0F ? 0.0F : expf(maximum - next_maximum);
+        const float new_weight = expf(score - next_maximum);
+#pragma unroll
+        for (int component = 0; component < 4; ++component) {
+          const std::size_t dimension =
+              static_cast<std::size_t>(lane + component * 32);
+          accumulators[component] =
+              accumulators[component] * old_weight +
+              new_weight * shared_value[shared_base + dimension];
+        }
+        normalizer = normalizer * old_weight + new_weight;
+        maximum = next_maximum;
+      }
+    }
+    __syncthreads();
+  }
+
+  if (active_query) {
+#pragma unroll
+    for (int component = 0; component < 4; ++component) {
+      const std::size_t dimension =
+          static_cast<std::size_t>(lane + component * 32);
+      output[query_base + dimension] =
+          __float2bfloat16_rn(accumulators[component] / normalizer);
+    }
   }
 }
 
 __global__ void q8_online_attention_kernel(
-    const __nv_bfloat16 *const query,
-    const std::int8_t *const *const key_pages,
+    const __nv_bfloat16 *const query, const std::int8_t *const *const key_pages,
     const std::int8_t *const *const value_pages,
     const float *const *const key_scale_pages,
-    const float *const *const value_scale_pages,
-    __nv_bfloat16 *const output, const std::size_t query_tokens,
-    const std::size_t prefix_tokens, const std::size_t heads,
-    const std::size_t head_dim, const std::size_t page_tokens) {
+    const float *const *const value_scale_pages, __nv_bfloat16 *const output,
+    const std::size_t query_tokens, const std::size_t prefix_tokens,
+    const std::size_t heads, const std::size_t head_dim,
+    const std::size_t page_tokens) {
   const std::size_t query_head = blockIdx.x;
   const std::size_t query_token = query_head / heads;
   const std::size_t head = query_head % heads;
@@ -520,10 +1171,12 @@ Status KvCache::allocate(const int device, const std::size_t token_capacity,
   return Status::Ok();
 }
 
-Status KvCache::allocate_q8_paged(
-    const int device, const std::size_t token_capacity,
-    const std::size_t head_count, const std::size_t dimensions_per_head,
-    const std::size_t tokens_per_page, const Stream &stream) {
+Status KvCache::allocate_q8_paged(const int device,
+                                  const std::size_t token_capacity,
+                                  const std::size_t head_count,
+                                  const std::size_t dimensions_per_head,
+                                  const std::size_t tokens_per_page,
+                                  const Stream &stream) {
   if (key.valid() || value.valid() || !q8_pages.empty() || !stream.valid() ||
       stream.device() != device || tokens_per_page == 0) {
     return {ErrorCode::kInvalidArgument,
@@ -533,9 +1186,8 @@ Status KvCache::allocate_q8_paged(
   std::size_t scale_elements = 0;
   std::size_t page_bytes = 0;
   std::size_t scale_bytes = 0;
-  auto status =
-      tensor_elements(tokens_per_page, head_count, dimensions_per_head,
-                      &page_elements);
+  auto status = tensor_elements(tokens_per_page, head_count,
+                                dimensions_per_head, &page_elements);
   if (!status.ok())
     return status;
   if (!multiply(tokens_per_page, head_count, &scale_elements)) {
@@ -551,11 +1203,9 @@ Status KvCache::allocate_q8_paged(
   if (!status.ok())
     return status;
   if (token_capacity == 0) {
-    return {ErrorCode::kInvalidArgument,
-            "paged Q8 KV token capacity is zero"};
+    return {ErrorCode::kInvalidArgument, "paged Q8 KV token capacity is zero"};
   }
-  const std::size_t page_count =
-      1 + (token_capacity - 1) / tokens_per_page;
+  const std::size_t page_count = 1 + (token_capacity - 1) / tokens_per_page;
   std::size_t table_bytes = 0;
   if (!multiply(page_count, sizeof(void *), &table_bytes)) {
     return {ErrorCode::kInvalidArgument,
@@ -567,9 +1217,8 @@ Status KvCache::allocate_q8_paged(
   host_value_pages.assign(page_count, nullptr);
   host_key_scale_pages.assign(page_count, nullptr);
   host_value_scale_pages.assign(page_count, nullptr);
-  for (auto *const table :
-       {&key_page_table, &value_page_table, &key_scale_page_table,
-        &value_scale_page_table}) {
+  for (auto *const table : {&key_page_table, &value_page_table,
+                            &key_scale_page_table, &value_scale_page_table}) {
     status = table->allocate(device, table_bytes);
     if (!status.ok())
       return status;
@@ -607,8 +1256,7 @@ Status ensure_q8_pages(KvCache *const cache, const std::size_t token_end,
     return {ErrorCode::kInvalidArgument,
             "paged Q8 KV physical page dimensions overflow"};
   }
-  const std::size_t required_pages =
-      1 + (token_end - 1) / cache->page_tokens;
+  const std::size_t required_pages = 1 + (token_end - 1) / cache->page_tokens;
   for (std::size_t index = 0; index < required_pages; ++index) {
     if (cache->q8_pages[index].key.valid())
       continue;
@@ -650,8 +1298,7 @@ Status ensure_q8_pages(KvCache *const cache, const std::size_t token_end,
 
 std::size_t KvCache::allocated_bytes() const noexcept {
   std::size_t total = key.bytes() + value.bytes() + key_page_table.bytes() +
-                      value_page_table.bytes() +
-                      key_scale_page_table.bytes() +
+                      value_page_table.bytes() + key_scale_page_table.bytes() +
                       value_scale_page_table.bytes();
   for (const auto &page : q8_pages) {
     total += page.key.bytes() + page.value.bytes() + page.key_scale.bytes() +
@@ -664,7 +1311,9 @@ Status AttentionWorkspace::allocate(const int device,
                                     const std::size_t token_count,
                                     const std::size_t head_count,
                                     const std::size_t dimensions_per_head) {
-  if (query.valid() || key.valid() || value.valid()) {
+  if (query.valid() || key.valid() || value.valid() || softmax_lse.valid() ||
+      softmax_lse_accum.valid() || output_accum.valid() || scaled_key.valid() ||
+      scores.valid() || probabilities.valid()) {
     return {ErrorCode::kInvalidArgument,
             "attention workspace is already allocated"};
   }
@@ -688,6 +1337,23 @@ Status AttentionWorkspace::allocate(const int device,
   }
   status = value.allocate(device, bytes);
   if (!status.ok()) {
+    key.reset();
+    query.reset();
+    return status;
+  }
+  std::size_t lse_elements = 0;
+  std::size_t lse_bytes = 0;
+  if (!multiply(token_count, head_count, &lse_elements) ||
+      !multiply(lse_elements, sizeof(float), &lse_bytes)) {
+    value.reset();
+    key.reset();
+    query.reset();
+    return {ErrorCode::kInvalidArgument,
+            "attention softmax workspace dimensions overflow"};
+  }
+  status = softmax_lse.allocate(device, lse_bytes);
+  if (!status.ok()) {
+    value.reset();
     key.reset();
     query.reset();
     return status;
@@ -859,14 +1525,13 @@ Status bf16_kv_append(const DeviceBuffer &key, const DeviceBuffer &value,
       return status;
     std::size_t blocks = 0;
     if (!multiply(tokens, cache->heads, &blocks) ||
-        blocks >
-            static_cast<std::size_t>(
-                std::numeric_limits<unsigned int>::max())) {
+        blocks > static_cast<std::size_t>(
+                     std::numeric_limits<unsigned int>::max())) {
       return {ErrorCode::kInvalidArgument,
               "paged Q8 KV append grid dimensions overflow"};
     }
-    q8_kv_append_kernel<<<static_cast<unsigned int>(blocks),
-                          kAttentionThreads, 0, stream.get()>>>(
+    q8_kv_append_kernel<<<static_cast<unsigned int>(blocks), kAttentionThreads,
+                          0, stream.get()>>>(
         static_cast<const __nv_bfloat16 *>(key.data()),
         static_cast<const __nv_bfloat16 *>(value.data()),
         static_cast<std::int8_t *const *>(cache->key_page_table.data()),
@@ -955,15 +1620,33 @@ Status bf16_online_causal_attention(const DeviceBuffer &query,
     q8_online_attention_kernel<<<static_cast<unsigned int>(blocks),
                                  kAttentionThreads, 0, stream.get()>>>(
         static_cast<const __nv_bfloat16 *>(query.data()),
-        static_cast<const std::int8_t *const *>(
-            cache.key_page_table.data()),
-        static_cast<const std::int8_t *const *>(
-            cache.value_page_table.data()),
+        static_cast<const std::int8_t *const *>(cache.key_page_table.data()),
+        static_cast<const std::int8_t *const *>(cache.value_page_table.data()),
         static_cast<const float *const *>(cache.key_scale_page_table.data()),
         static_cast<const float *const *>(cache.value_scale_page_table.data()),
         static_cast<__nv_bfloat16 *>(output->data()), query_tokens,
         prefix_tokens, cache.heads, cache.head_dim, cache.page_tokens);
     return launch_status("paged Q8 online causal attention kernel");
+  }
+  if (cache.head_dim == 128 && query_tokens >= 4) {
+    constexpr std::size_t queries_per_block = 8;
+    const std::size_t query_tiles =
+        (query_tokens + queries_per_block - 1) / queries_per_block;
+    std::size_t tiled_blocks = 0;
+    if (!multiply(query_tiles, cache.heads, &tiled_blocks) ||
+        tiled_blocks > static_cast<std::size_t>(
+                           std::numeric_limits<unsigned int>::max())) {
+      return {ErrorCode::kInvalidArgument,
+              "tiled attention grid dimensions overflow"};
+    }
+    bf16_causal_prefill_kernel<<<static_cast<unsigned int>(tiled_blocks),
+                                 kAttentionThreads, 0, stream.get()>>>(
+        static_cast<const __nv_bfloat16 *>(query.data()),
+        static_cast<const __nv_bfloat16 *>(cache.key.data()),
+        static_cast<const __nv_bfloat16 *>(cache.value.data()),
+        static_cast<__nv_bfloat16 *>(output->data()), query_tokens,
+        prefix_tokens, cache.heads);
+    return launch_status("tiled BF16 causal prefill attention kernel");
   }
   online_attention_kernel<<<static_cast<unsigned int>(blocks),
                             kAttentionThreads, 0, stream.get()>>>(
@@ -973,6 +1656,153 @@ Status bf16_online_causal_attention(const DeviceBuffer &query,
       static_cast<__nv_bfloat16 *>(output->data()), query_tokens, prefix_tokens,
       cache.heads, cache.head_dim);
   return launch_status("online causal attention kernel");
+}
+
+Status bf16_cached_cross_attention(
+    const DeviceBuffer &query, const DeviceBuffer &key,
+    const DeviceBuffer &value, const std::size_t query_tokens,
+    const std::size_t key_tokens, const std::size_t heads,
+    const std::size_t head_dim, DeviceBuffer *const scaled_key,
+    DeviceBuffer *const scores, DeviceBuffer *const probabilities,
+    DeviceBuffer *const output, const Stream &stream) {
+  if (scaled_key == nullptr || scores == nullptr || probabilities == nullptr ||
+      output == nullptr || !stream.valid() || query_tokens == 0 ||
+      key_tokens < query_tokens || heads == 0 || head_dim == 0 ||
+      query_tokens > static_cast<std::size_t>(INT_MAX) ||
+      key_tokens > static_cast<std::size_t>(INT_MAX) ||
+      heads > static_cast<std::size_t>(INT_MAX) ||
+      head_dim > static_cast<std::size_t>(INT_MAX) ||
+      heads > static_cast<std::size_t>(INT_MAX) / query_tokens ||
+      heads > static_cast<std::size_t>(INT_MAX) / head_dim) {
+    return {ErrorCode::kInvalidArgument,
+            "cached cross-attention arguments are invalid"};
+  }
+  std::size_t query_elements = 0;
+  std::size_t key_elements = 0;
+  std::size_t score_elements = 0;
+  std::size_t query_bytes = 0;
+  std::size_t key_bytes = 0;
+  std::size_t score_bytes = 0;
+  if (!multiply(query_tokens, heads, &query_elements) ||
+      !multiply(query_elements, head_dim, &query_elements) ||
+      !multiply(key_tokens, heads, &key_elements) ||
+      !multiply(key_elements, head_dim, &key_elements) ||
+      !multiply(heads, query_tokens, &score_elements) ||
+      !multiply(score_elements, key_tokens, &score_elements) ||
+      !multiply(query_elements, sizeof(__nv_bfloat16), &query_bytes) ||
+      !multiply(key_elements, sizeof(__nv_bfloat16), &key_bytes) ||
+      !multiply(score_elements, sizeof(__nv_bfloat16), &score_bytes)) {
+    return {ErrorCode::kInvalidArgument,
+            "cached cross-attention dimensions overflow"};
+  }
+  const int device = query.device();
+  if (key.device() != device || value.device() != device ||
+      stream.device() != device) {
+    return {ErrorCode::kInvalidArgument,
+            "cached cross-attention buffers span CUDA devices"};
+  }
+  auto status = buffer_size(query, query_bytes, device, "cached query");
+  if (!status.ok())
+    return status;
+  status = buffer_size(key, key_bytes, device, "cached key");
+  if (!status.ok())
+    return status;
+  status = buffer_size(value, key_bytes, device, "cached value");
+  if (!status.ok())
+    return status;
+  status = buffer_size(*output, query_bytes, device, "cached output");
+  if (!status.ok())
+    return status;
+  status = select_device(device);
+  if (!status.ok())
+    return status;
+  status = ensure_capacity(scaled_key, device, key_bytes,
+                           "cached scaled-key workspace");
+  if (!status.ok())
+    return status;
+  status =
+      ensure_capacity(scores, device, score_bytes, "cached score workspace");
+  if (!status.ok())
+    return status;
+  status = ensure_capacity(probabilities, device, score_bytes,
+                           "cached probability workspace");
+  if (!status.ok())
+    return status;
+
+  const float scale =
+      static_cast<float>(1.0 / std::sqrt(static_cast<double>(head_dim)));
+  cached_scale_key_kernel<<<grid_for(key_elements), kElementwiseThreads, 0,
+                            stream.get()>>>(
+      static_cast<const __nv_bfloat16 *>(key.data()),
+      static_cast<__nv_bfloat16 *>(scaled_key->data()), key_elements, scale);
+  status = launch_status("cached BF16 key scale kernel");
+  if (!status.ok())
+    return status;
+
+  cublasHandle_t handle = nullptr;
+  status =
+      cublas_status(cublasCreate(&handle), "cublasCreate cached attention");
+  if (!status.ok())
+    return status;
+  const auto destroy_handle = [&handle]() {
+    if (handle != nullptr)
+      static_cast<void>(cublasDestroy(handle));
+  };
+  status = cublas_status(cublasSetStream(handle, stream.get()),
+                         "cublasSetStream cached attention");
+  if (!status.ok()) {
+    destroy_handle();
+    return status;
+  }
+  const float alpha = 1.0F;
+  const float beta = 0.0F;
+  const int token_stride = static_cast<int>(heads * head_dim);
+  const long long head_stride = static_cast<long long>(head_dim);
+  const long long score_stride =
+      static_cast<long long>(query_tokens * key_tokens);
+  status = cublas_status(
+      cublasGemmStridedBatchedEx(
+          handle, CUBLAS_OP_T, CUBLAS_OP_N, static_cast<int>(key_tokens),
+          static_cast<int>(query_tokens), static_cast<int>(head_dim), &alpha,
+          scaled_key->data(), CUDA_R_16BF, token_stride, head_stride,
+          query.data(), CUDA_R_16BF, token_stride, head_stride, &beta,
+          scores->data(), CUDA_R_16BF, static_cast<int>(key_tokens),
+          score_stride, static_cast<int>(heads), CUBLAS_COMPUTE_32F,
+          CUBLAS_GEMM_DEFAULT_TENSOR_OP),
+      "cached attention QK bmm");
+  if (!status.ok()) {
+    destroy_handle();
+    return status;
+  }
+
+  cached_causal_mask_kernel<<<grid_for(score_elements), kElementwiseThreads, 0,
+                              stream.get()>>>(
+      static_cast<__nv_bfloat16 *>(scores->data()), query_tokens, key_tokens,
+      heads);
+  status = launch_status("cached causal masked-fill kernel");
+  if (!status.ok()) {
+    destroy_handle();
+    return status;
+  }
+  status = dispatch_cached_softmax(probabilities, *scores, heads * query_tokens,
+                                   key_tokens, stream);
+  if (!status.ok()) {
+    destroy_handle();
+    return status;
+  }
+
+  status = cublas_status(
+      cublasGemmStridedBatchedEx(
+          handle, CUBLAS_OP_N, CUBLAS_OP_N, static_cast<int>(head_dim),
+          static_cast<int>(query_tokens), static_cast<int>(key_tokens), &alpha,
+          value.data(), CUDA_R_16BF, token_stride, head_stride,
+          probabilities->data(), CUDA_R_16BF, static_cast<int>(key_tokens),
+          score_stride, &beta, output->data(), CUDA_R_16BF, token_stride,
+          head_stride, static_cast<int>(heads), CUBLAS_COMPUTE_32F,
+          CUBLAS_GEMM_DEFAULT_TENSOR_OP),
+      "cached attention probability/value bmm");
+  destroy_handle();
+  return status;
 }
 
 Status bf16_mha_prefill(const DeviceBuffer &qkv,
@@ -1003,8 +1833,14 @@ Status bf16_mha_prefill(const DeviceBuffer &qkv,
       bf16_kv_append(workspace->key, workspace->value, tokens, cache, stream);
   if (!status.ok())
     return status;
-  status = bf16_online_causal_attention(workspace->query, tokens, prefix,
-                                        *cache, output, stream);
+  status = cache->type == KvCacheType::kBF16 && head_dim == 128
+               ? bf16_flash_causal_attention(
+                     workspace->query, cache->key, cache->value, tokens,
+                     cache->length, heads, head_dim, &workspace->softmax_lse,
+                     &workspace->softmax_lse_accum, &workspace->output_accum,
+                     output, stream)
+               : bf16_online_causal_attention(workspace->query, tokens, prefix,
+                                              *cache, output, stream);
   if (!status.ok())
     cache->length = prefix;
   return status;
