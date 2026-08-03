@@ -280,13 +280,13 @@ void print_score_record(const SequenceRecord &record,
   std::cout << "]}\n";
 }
 
-Status prefill_in_chunks(const std::vector<TokenId> &tokens,
-                         const std::size_t token_count,
-                         const std::optional<LayerDump> &dump,
-                         const bool collect_all_logits,
-                         const bool cached_initial, PipelineModel *const model,
-                         std::vector<float> *const logits,
-                         Metrics *const metrics) {
+Status
+prefill_in_chunks(const std::vector<TokenId> &tokens,
+                  const std::size_t token_count,
+                  const std::optional<LayerDump> &dump,
+                  const bool collect_all_logits, const bool cached_initial,
+                  const bool stateless_initial, PipelineModel *const model,
+                  std::vector<float> *const logits, Metrics *const metrics) {
   if (model == nullptr || logits == nullptr || metrics == nullptr ||
       token_count == 0 || token_count > tokens.size() ||
       model->activation_capacity() == 0) {
@@ -299,6 +299,12 @@ Status prefill_in_chunks(const std::vector<TokenId> &tokens,
             "exact cached prefill must fit one activation chunk; lower "
             "--force-prompt-threshold to at most " +
                 std::to_string(chunk_capacity)};
+  }
+  if (stateless_initial &&
+      (cached_initial || dump.has_value() || token_count > chunk_capacity)) {
+    return {ErrorCode::kInvalidArgument,
+            "stateless prefill requires one non-cached chunk without a layer "
+            "dump"};
   }
   if (dump.has_value() && token_count > chunk_capacity) {
     return {ErrorCode::kInvalidArgument,
@@ -333,6 +339,8 @@ Status prefill_in_chunks(const std::vector<TokenId> &tokens,
                                       chunk, &chunk_logits, {*dump})
                                 : model->prefill_cached(chunk, &chunk_logits);
       }
+      if (first && stateless_initial)
+        return model->prefill_stateless(chunk, &chunk_logits);
       return first ? model->prefill(chunk, &chunk_logits, dump)
                    : model->prefill_chunk(chunk, &chunk_logits);
     }();
@@ -370,7 +378,7 @@ Status run_generate(const CliOptions &options, PipelineModel *const model,
   std::vector<float> logits;
   auto status =
       prefill_in_chunks(prompt, prefill_tokens, make_layer_dump(options), false,
-                        true, model, &logits, metrics);
+                        true, false, model, &logits, metrics);
   if (!status.ok()) {
     return {status.code(), "prompt prefill: " + status.message()};
   }
@@ -490,8 +498,11 @@ Status run_score(const CliOptions &options, PipelineModel *const model,
                   "' must contain at least two bytes"};
     }
     std::vector<float> logits;
-    status = prefill_in_chunks(tokens, tokens.size(), make_layer_dump(options),
-                               true, false, model, &logits, metrics);
+    const auto dump = make_layer_dump(options);
+    const bool stateless =
+        !dump.has_value() && tokens.size() <= model->activation_capacity();
+    status = prefill_in_chunks(tokens, tokens.size(), dump, true, false,
+                               stateless, model, &logits, metrics);
     if (!status.ok()) {
       return {status.code(),
               "score prefill for '" + record.name + "': " + status.message()};

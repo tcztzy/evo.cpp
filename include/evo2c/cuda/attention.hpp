@@ -131,13 +131,12 @@ bf16_split_qkv(const DeviceBuffer &qkv, std::size_t tokens, std::size_t heads,
 // Exact Vortex cached-generation fallback when use_flash_attn=false:
 // BF16 K scaling, strided-batched QK GEMM, causal masked_fill, PyTorch's
 // persistent warp softmax, then BF16 probability/value GEMM.
-[[nodiscard]] Status
-bf16_cached_cross_attention(const DeviceBuffer &query, const DeviceBuffer &key,
-                            const DeviceBuffer &value, std::size_t query_tokens,
-                            std::size_t key_tokens, std::size_t heads,
-                            std::size_t head_dim, DeviceBuffer *scaled_key,
-                            DeviceBuffer *scores, DeviceBuffer *probabilities,
-                            DeviceBuffer *output, const Stream &stream);
+[[nodiscard]] Status bf16_cached_cross_attention(
+    const Blas &blas, const DeviceBuffer &query, const DeviceBuffer &key,
+    const DeviceBuffer &value, std::size_t query_tokens, std::size_t key_tokens,
+    std::size_t heads, std::size_t head_dim, DeviceBuffer *scaled_key,
+    DeviceBuffer *scores, DeviceBuffer *probabilities, DeviceBuffer *output,
+    const Stream &stream);
 
 // Full MHA inner operation. It splits QKV, applies RoPE at cache.length,
 // appends K/V, and computes causal output for the newly appended chunk.

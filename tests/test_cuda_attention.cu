@@ -349,6 +349,8 @@ void test_cached_cross_attention_exact(const int device,
     std::uint64_t probability_hash;
     std::uint64_t output_hash;
   };
+  evo2c::cuda::Blas blas;
+  require(blas.create(), "create cached-attention cuBLAS handle");
   // Oracles are raw BF16 bytes from Vortex CrossAttention on the pinned
   // PyTorch 2.13.0a0+8145d630e8.nv26.06 / CUDA 13.3 stack.  The cases cross
   // the persistent-warp, register, shared-memory, and general ILP kernels;
@@ -375,8 +377,8 @@ void test_cached_cross_attention_exact(const int device,
         output.allocate(device, query_tokens * width * sizeof(__nv_bfloat16)),
         "allocate exact cached-attention output");
     require(evo2c::cuda::bf16_cached_cross_attention(
-                query, key, value, query_tokens, test_case.key_tokens, heads,
-                head_dim, &scaled_key, &scores, &probabilities, &output,
+                blas, query, key, value, query_tokens, test_case.key_tokens,
+                heads, head_dim, &scaled_key, &scores, &probabilities, &output,
                 stream),
             "exact cached cross-attention");
     const auto probability_values = download_bf16_raw(

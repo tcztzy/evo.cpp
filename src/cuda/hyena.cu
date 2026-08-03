@@ -1951,6 +1951,7 @@ Status bf16_hcl_prefill(const DeviceBuffer &x2, const DeviceBuffer &x1,
                         FftWorkspace *const workspace, const Stream &stream) {
   if (scratch == nullptr ||
       (mode != HclPrefillMode::kRecurrence && mode != HclPrefillMode::kFft &&
+       mode != HclPrefillMode::kFftStateless &&
        mode != HclPrefillMode::kRecurrenceContinue)) {
     return {ErrorCode::kInvalidArgument,
             "HCL prefill scratch or mode is invalid"};
@@ -1975,7 +1976,8 @@ Status bf16_hcl_prefill(const DeviceBuffer &x2, const DeviceBuffer &x1,
   status = select_device(x2.device());
   if (!status.ok())
     return status;
-  if (mode != HclPrefillMode::kRecurrenceContinue) {
+  if (mode != HclPrefillMode::kRecurrenceContinue &&
+      mode != HclPrefillMode::kFftStateless) {
     status = cache->state.zero(stream);
     if (!status.ok())
       return status;
@@ -1988,7 +1990,7 @@ Status bf16_hcl_prefill(const DeviceBuffer &x2, const DeviceBuffer &x1,
   if (!status.ok())
     return status;
 
-  if (mode != HclPrefillMode::kFft) {
+  if (mode != HclPrefillMode::kFft && mode != HclPrefillMode::kFftStateless) {
     hcl_recurrence_prefill_kernel<<<grid_for(width), kThreads, 0,
                                     stream.get()>>>(
         static_cast<const __nv_bfloat16 *>(x2.data()),
@@ -2065,10 +2067,8 @@ Status bf16_hcl_prefill(const DeviceBuffer &x2, const DeviceBuffer &x1,
   status = launch_status("HCL postgate kernel");
   if (!status.ok())
     return status;
-  std::size_t state_elements = 0;
-  if (!multiply(width, state_size, &state_elements)) {
-    return {ErrorCode::kInvalidArgument, "HCL state dimensions overflow"};
-  }
+  if (mode == HclPrefillMode::kFftStateless)
+    return Status::Ok();
   return workspace->execute_hcl_state(*scratch, log_poles, length, state_size,
                                       cache, stream);
 }

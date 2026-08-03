@@ -13,7 +13,12 @@ namespace evo2c::cuda {
 enum class FirOrientation { kCrossCorrelation, kCausalConvolution };
 enum class FirBiasMode { kAdd, kMultiplyInput };
 enum class FirWeightType { kBF16, kF32 };
-enum class HclPrefillMode { kRecurrence, kFft, kRecurrenceContinue };
+enum class HclPrefillMode {
+  kRecurrence,
+  kFft,
+  kFftStateless,
+  kRecurrenceContinue
+};
 enum class FftInputMode { kRealCompact, kRealFullSpectrum };
 
 [[nodiscard]] inline constexpr bool
@@ -243,8 +248,9 @@ bf16_hcs_decode(const DeviceBuffer &x2, const DeviceBuffer &x1,
     const Stream &stream, FirWeightType weight_type = FirWeightType::kBF16);
 
 // HCL tensors: x2/x1/value and direct are BF16; log_poles/residues and cache
-// are F32. scratch is BF16 [length,width]. FFT mode requires an exact matching
-// workspace with fft_size=fir_fft_size(length,length).
+// are F32. scratch is BF16 [length,width]. FFT modes require an exact matching
+// workspace with fft_size=2*length. kFftStateless preserves the exact parallel
+// output path but leaves the modal cache untouched for terminal scoring calls.
 [[nodiscard]] Status
 bf16_hcl_prefill(const DeviceBuffer &x2, const DeviceBuffer &x1,
                  const DeviceBuffer &value, const DeviceBuffer &direct,

@@ -257,6 +257,48 @@ Status DeviceBuffer::zero(const Stream &stream) {
                      "cudaMemsetAsync");
 }
 
+Blas::~Blas() { reset(); }
+
+Blas::Blas(Blas &&other) noexcept
+    : handle_(std::exchange(other.handle_, nullptr)),
+      device_(std::exchange(other.device_, -1)) {}
+
+Blas &Blas::operator=(Blas &&other) noexcept {
+  if (this != &other) {
+    reset();
+    handle_ = std::exchange(other.handle_, nullptr);
+    device_ = std::exchange(other.device_, -1);
+  }
+  return *this;
+}
+
+Status Blas::create() {
+  if (handle_ != nullptr) {
+    return {ErrorCode::kInvalidArgument,
+            "cuBLAS handle is already initialized"};
+  }
+  auto status = cuda_status(cudaGetDevice(&device_), "cudaGetDevice");
+  if (!status.ok())
+    return status;
+  status = cublas_status(cublasCreate(&handle_), "cublasCreate");
+  if (!status.ok())
+    device_ = -1;
+  return status;
+}
+
+void Blas::reset() noexcept {
+  if (handle_ != nullptr) {
+    int previous = -1;
+    static_cast<void>(cudaGetDevice(&previous));
+    static_cast<void>(cudaSetDevice(device_));
+    static_cast<void>(cublasDestroy(handle_));
+    if (previous >= 0 && previous != device_)
+      static_cast<void>(cudaSetDevice(previous));
+    handle_ = nullptr;
+  }
+  device_ = -1;
+}
+
 BlasLt::~BlasLt() { reset(); }
 
 BlasLt::BlasLt(BlasLt &&other) noexcept

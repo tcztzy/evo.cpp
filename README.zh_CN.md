@@ -69,6 +69,18 @@ corruption 测试。“GPU 已验证”只表示真实转换 checkpoint 已在 C
   首次遇到新长度时仍可能支付一次 plan 创建成本。这些数字只作为回归基线，
   不能代表当前精确 kernel 的性能；审计后的复测必须使用已提交的 binary，并在
   得出性能结论前记录 binary hash 与 artifact 目录。
+- **bit-exact 审计后的 7B 性能：**最终 CUDA 12.8 候选 binary
+  (`c770bfc9f9a51b6a13581001df7ff36b3373208128d4efe36ef394a57ddbf36b`)
+  在空闲 A800 GPU2 上通过全部 prefill 门禁；16/128/1024-token repeated
+  throughput 分别为 `1071.5`/`7619.2`/`11369.3 tok/s`，artifact 为
+  `$HOME/evo2c-artifacts/perfopt-c770bfc9f9a5-cu128-gpu2-20260804`。
+  与同卡保留的审计前 binary 相比，16-token 仍慢 `8.4%`，128-token 慢
+  `0.6%`，1024-token 快 `16.5%`。因此短 prefill 仍有真实倒退，这里没有用
+  cosine 把它掩盖掉。三次 cached decode 的中位数为 `72.62 tok/s`，审计前为
+  `77.55 tok/s`，仍慢 `6.4%`。剩余 decode 成本来自 Vortex
+  `CrossAttention` 所要求的 BF16 scaled-key、batched GEMM、PyTorch softmax
+  与 probability/value GEMM；换回旧 online-attention kernel 会破坏原始位型
+  相等，因此没有采用。
 - **BF16 7B 路径现已与固定 Vortex/PyTorch reference 逐 bit 一致：**审计的
   多个 prefill 长度、16 步 cached generation、2048-key softmax 分界以及官方
   3000-token prompt-forcing 转换点上，每个 logit 与全部 32 层 block output
@@ -578,10 +590,12 @@ EVO2C_SANITIZE=ON scripts/local_test.sh build-sanitize
 - 真实 `evo2_7b` Safetensors 已在空闲 GPU1 完成固定 Vortex/PyTorch 审计：
   已审计 prefill/decode 案例的全部 32 层 block output 和 logits 均为零个原始
   位型不等元素，覆盖 2048-key softmax 与 3000-token forcing 分界；CUDA 12.8
-  native 输出也与 CUDA 13.3 reference 相等。旧性能 artifact
-  `$HOME/evo2c-artifacts/t19-evo2-7b-prefill-805e81208609-gpu1` 的 1024-token
-  repeated prefill 为 `9727.5 tok/s`；其中 cosine 质量数据仅保留为历史性能
-  证据，不再作为精确性门禁。
+  native 输出也与 CUDA 13.3 reference 相等。最终优化后的 CUDA 12.8
+  binary，其 128-token score logits NPY 文件与 reference 逐字节相等；四步
+  cached generation 的 51/51 个共同中间 tensor 均为零个原始位型不等元素，
+  完整 logits 与生成 bytes 也逐字节相等。raw artifact 为
+  `$HOME/evo2c-artifacts/perfopt-c770-score128-rawbit-20260804` 与
+  `$HOME/evo2c-artifacts/perfopt-c770-gen4-debug2-rawbit-20260804`。
 - 真实 PyTorch DCP converter integration：5/5 passed。
 
 PyTorch 只用于离线 conversion 和可选 oracle test。production binary

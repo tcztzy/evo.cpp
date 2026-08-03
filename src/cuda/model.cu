@@ -35,6 +35,7 @@ constexpr std::size_t kQ8KvPageTokens = 16384;
 constexpr std::size_t kBackendWarmupTokens = 128;
 enum class ForwardMode {
   kPrefill,
+  kStatelessPrefill,
   kCachedPrefill,
   kContinue,
   kDecode,
@@ -42,7 +43,13 @@ enum class ForwardMode {
 };
 
 constexpr bool is_initial_prefill(const ForwardMode mode) noexcept {
-  return mode == ForwardMode::kPrefill || mode == ForwardMode::kCachedPrefill;
+  return mode == ForwardMode::kPrefill ||
+         mode == ForwardMode::kStatelessPrefill ||
+         mode == ForwardMode::kCachedPrefill;
+}
+
+constexpr bool is_stateless_prefill(const ForwardMode mode) noexcept {
+  return mode == ForwardMode::kStatelessPrefill;
 }
 
 constexpr bool is_decode(const ForwardMode mode) noexcept {
@@ -1022,6 +1029,7 @@ struct SingleGpuModel::Impl final {
   bool state_valid{false};
   bool cached_attention{false};
   Stream stream;
+  Blas cached_attention_blas;
   BlasLt blas;
   DeviceBuffer embedding;
   DeviceBuffer unembed;
@@ -1347,10 +1355,11 @@ struct SingleGpuModel::Impl final {
                   "exact Vortex cached attention requires a BF16 KV cache"};
         }
         return bf16_cached_cross_attention(
-            arena.x2, layer->kv_cache.key, layer->kv_cache.value, rows,
-            layer->kv_cache.length, config.heads, config.head_dim(),
-            &arena.attention_scaled_key, &arena.attention_scores,
-            &arena.attention_probabilities, &arena.mixer_output, stream);
+            cached_attention_blas, arena.x2, layer->kv_cache.key,
+            layer->kv_cache.value, rows, layer->kv_cache.length, config.heads,
+            config.head_dim(), &arena.attention_scaled_key,
+            &arena.attention_scores, &arena.attention_probabilities,
+            &arena.mixer_output, stream);
       }
       return layer->kv_cache.type == KvCacheType::kBF16 &&
                      config.head_dim() == 128
@@ -1466,8 +1475,10 @@ struct SingleGpuModel::Impl final {
       status = bf16_hcl_prefill(
           arena.x2, arena.x1, arena.value, layer->direct, layer->log_poles,
           layer->residues, rows, config.width, config.state_size,
-          HclPrefillMode::kFft, &layer->iir_cache, &arena.mixer_scratch,
-          &arena.mixer_output, &hcl_fft, stream);
+          is_stateless_prefill(mode) ? HclPrefillMode::kFftStateless
+                                     : HclPrefillMode::kFft,
+          &layer->iir_cache, &arena.mixer_scratch, &arena.mixer_output,
+          &hcl_fft, stream);
     } else {
       status = bf16_hcl_decode(
           arena.x2, arena.x1, arena.value, layer->direct, layer->log_poles,
@@ -1476,7 +1487,7 @@ struct SingleGpuModel::Impl final {
     }
     if (!status.ok())
       return status;
-    if (layer->type == MixerType::kHcl) {
+    if (layer->type == MixerType::kHcl && !is_stateless_prefill(mode)) {
       status = dump_f32_matching(dumps, index, LayerDumpPoint::kMixerState,
                                  layer->iir_cache.state, config.width,
                                  config.state_size);
@@ -1782,8 +1793,10 @@ struct SingleGpuModel::Impl final {
     logits->reserve(raw.size());
     for (const auto value : raw)
       logits->push_back(__bfloat162float(value));
-    position = is_initial_prefill(mode) ? rows : position + rows;
-    state_valid = true;
+    position = is_stateless_prefill(mode)
+                   ? 0
+                   : (is_initial_prefill(mode) ? rows : position + rows);
+    state_valid = !is_stateless_prefill(mode);
     if (is_initial_prefill(mode))
       cached_attention = uses_cached_attention(mode);
     return Status::Ok();
@@ -1821,6 +1834,9 @@ Status SingleGpuModel::load(const ModelFile &model, const int device,
   if (!status.ok())
     return status;
   status = impl_->stream.create();
+  if (!status.ok())
+    return status;
+  status = impl_->cached_attention_blas.create();
   if (!status.ok())
     return status;
   status = impl_->blas.create();
@@ -1886,6 +1902,11 @@ Status SingleGpuModel::prefill_with_dumps(const std::vector<TokenId> &tokens,
                                           std::vector<float> *const logits,
                                           const std::vector<LayerDump> &dumps) {
   return impl_->forward(tokens, ForwardMode::kPrefill, logits, dumps);
+}
+
+Status SingleGpuModel::prefill_stateless(const std::vector<TokenId> &tokens,
+                                         std::vector<float> *const logits) {
+  return impl_->forward(tokens, ForwardMode::kStatelessPrefill, logits, {});
 }
 
 Status SingleGpuModel::prefill_cached(const std::vector<TokenId> &tokens,
@@ -2088,8 +2109,10 @@ struct PipelineModel::Impl final {
     logits->reserve(raw.size());
     for (const auto value : raw)
       logits->push_back(__bfloat162float(value));
-    position = is_initial_prefill(mode) ? rows : position + rows;
-    state_valid = true;
+    position = is_stateless_prefill(mode)
+                   ? 0
+                   : (is_initial_prefill(mode) ? rows : position + rows);
+    state_valid = !is_stateless_prefill(mode);
     if (is_initial_prefill(mode))
       cached_attention = uses_cached_attention(mode);
     return Status::Ok();
@@ -2205,6 +2228,9 @@ Status PipelineModel::load(const ModelFile &model,
     status = stage->stream.create();
     if (!status.ok())
       return status;
+    status = stage->cached_attention_blas.create();
+    if (!status.ok())
+      return status;
     status = stage->blas.create();
     if (!status.ok())
       return status;
@@ -2318,6 +2344,11 @@ Status PipelineModel::prefill_with_dumps(const std::vector<TokenId> &tokens,
                                          std::vector<float> *const logits,
                                          const std::vector<LayerDump> &dumps) {
   return impl_->forward(tokens, ForwardMode::kPrefill, logits, dumps);
+}
+
+Status PipelineModel::prefill_stateless(const std::vector<TokenId> &tokens,
+                                        std::vector<float> *const logits) {
+  return impl_->forward(tokens, ForwardMode::kStatelessPrefill, logits, {});
 }
 
 Status PipelineModel::prefill_cached(const std::vector<TokenId> &tokens,

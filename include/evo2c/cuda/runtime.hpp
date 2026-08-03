@@ -4,6 +4,7 @@
 #include <cstddef>
 
 #include <cublasLt.h>
+#include <cublas_v2.h>
 #include <cuda_runtime_api.h>
 
 #include "evo2c/status.hpp"
@@ -67,6 +68,27 @@ public:
 private:
   void *data_{nullptr};
   std::size_t bytes_{0};
+  int device_{-1};
+};
+
+class Blas final {
+public:
+  Blas() = default;
+  ~Blas();
+
+  Blas(const Blas &) = delete;
+  Blas &operator=(const Blas &) = delete;
+  Blas(Blas &&other) noexcept;
+  Blas &operator=(Blas &&other) noexcept;
+
+  [[nodiscard]] Status create();
+  void reset() noexcept;
+  [[nodiscard]] cublasHandle_t get() const noexcept { return handle_; }
+  [[nodiscard]] bool valid() const noexcept { return handle_ != nullptr; }
+  [[nodiscard]] int device() const noexcept { return device_; }
+
+private:
+  cublasHandle_t handle_{nullptr};
   int device_{-1};
 };
 

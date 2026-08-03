@@ -115,6 +115,8 @@ public:
   [[nodiscard]] Status prefill_with_dumps(const std::vector<TokenId> &tokens,
                                           std::vector<float> *logits,
                                           const std::vector<LayerDump> &dumps);
+  [[nodiscard]] Status prefill_stateless(const std::vector<TokenId> &tokens,
+                                         std::vector<float> *logits);
   [[nodiscard]] Status prefill_cached(const std::vector<TokenId> &tokens,
                                       std::vector<float> *logits);
   [[nodiscard]] Status
@@ -161,6 +163,8 @@ public:
   [[nodiscard]] Status prefill_with_dumps(const std::vector<TokenId> &tokens,
                                           std::vector<float> *logits,
                                           const std::vector<LayerDump> &dumps);
+  [[nodiscard]] Status prefill_stateless(const std::vector<TokenId> &tokens,
+                                         std::vector<float> *logits);
   [[nodiscard]] Status prefill_cached(const std::vector<TokenId> &tokens,
                                       std::vector<float> *logits);
   [[nodiscard]] Status

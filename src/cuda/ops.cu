@@ -200,15 +200,32 @@ __global__ void add_bias_kernel(__nv_bfloat16 *const output,
 __global__ void row_to_column_major_kernel(const __nv_bfloat16 *const input,
                                            __nv_bfloat16 *const output,
                                            const std::size_t rows,
-                                           const std::size_t columns,
-                                           const std::size_t elements) {
-  for (std::size_t index =
-           static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-       index < elements;
-       index += static_cast<std::size_t>(blockDim.x) * gridDim.x) {
-    const std::size_t row = index / columns;
-    const std::size_t column = index % columns;
-    output[column * rows + row] = input[index];
+                                           const std::size_t columns) {
+  constexpr unsigned int tile_width = 32;
+  constexpr unsigned int block_rows = 8;
+  __shared__ __nv_bfloat16 tile[tile_width][tile_width + 1];
+
+  const std::size_t input_column =
+      static_cast<std::size_t>(blockIdx.x) * tile_width + threadIdx.x;
+  const std::size_t input_row =
+      static_cast<std::size_t>(blockIdx.y) * tile_width + threadIdx.y;
+  for (unsigned int offset = 0; offset < tile_width; offset += block_rows) {
+    if (input_column < columns && input_row + offset < rows) {
+      tile[threadIdx.y + offset][threadIdx.x] =
+          input[(input_row + offset) * columns + input_column];
+    }
+  }
+  __syncthreads();
+
+  const std::size_t output_row =
+      static_cast<std::size_t>(blockIdx.x) * tile_width + threadIdx.y;
+  const std::size_t output_column =
+      static_cast<std::size_t>(blockIdx.y) * tile_width + threadIdx.x;
+  for (unsigned int offset = 0; offset < tile_width; offset += block_rows) {
+    if (output_row + offset < columns && output_column < rows) {
+      output[(output_row + offset) * rows + output_column] =
+          tile[threadIdx.x][threadIdx.y + offset];
+    }
   }
 }
 
@@ -764,9 +781,15 @@ Status bf16_row_to_column_major(const DeviceBuffer &input,
   status = select_device(device);
   if (!status.ok())
     return status;
-  row_to_column_major_kernel<<<grid_for(elements), kThreads, 0, stream.get()>>>(
+  constexpr unsigned int tile_width = 32;
+  constexpr unsigned int block_rows = 8;
+  const dim3 blocks(
+      static_cast<unsigned int>((columns + tile_width - 1) / tile_width),
+      static_cast<unsigned int>((rows + tile_width - 1) / tile_width));
+  const dim3 threads(tile_width, block_rows);
+  row_to_column_major_kernel<<<blocks, threads, 0, stream.get()>>>(
       static_cast<const __nv_bfloat16 *>(input.data()),
-      static_cast<__nv_bfloat16 *>(output->data()), rows, columns, elements);
+      static_cast<__nv_bfloat16 *>(output->data()), rows, columns);
   return launch_status("row_to_column_major_kernel");
 }
 

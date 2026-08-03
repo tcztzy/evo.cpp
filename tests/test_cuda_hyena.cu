@@ -548,20 +548,29 @@ void test_hcl(const int device, const evo2c::cuda::Stream &stream) {
   const std::size_t bytes = length * width * sizeof(__nv_bfloat16);
   evo2c::cuda::DeviceBuffer scratch_recurrence;
   evo2c::cuda::DeviceBuffer scratch_fft;
+  evo2c::cuda::DeviceBuffer scratch_stateless;
   evo2c::cuda::DeviceBuffer output_recurrence;
   evo2c::cuda::DeviceBuffer output_fft;
+  evo2c::cuda::DeviceBuffer output_stateless;
   require(scratch_recurrence.allocate(device, bytes),
           "allocate HCL recurrence scratch");
   require(scratch_fft.allocate(device, bytes), "allocate HCL FFT scratch");
+  require(scratch_stateless.allocate(device, bytes),
+          "allocate stateless HCL FFT scratch");
   require(output_recurrence.allocate(device, bytes),
           "allocate HCL recurrence output");
   require(output_fft.allocate(device, bytes), "allocate HCL FFT output");
+  require(output_stateless.allocate(device, bytes),
+          "allocate stateless HCL FFT output");
   evo2c::cuda::IirCache recurrence_cache;
   evo2c::cuda::IirCache fft_cache;
+  evo2c::cuda::IirCache stateless_cache;
   require(recurrence_cache.allocate(device, width, state_size, stream),
           "allocate HCL recurrence cache");
   require(fft_cache.allocate(device, width, state_size, stream),
           "allocate HCL FFT cache");
+  require(stateless_cache.allocate(device, width, state_size, stream),
+          "allocate stateless HCL FFT cache");
   require(evo2c::cuda::bf16_hcl_prefill(
               x2, x1, value, direct, poles, residue, length, width, state_size,
               evo2c::cuda::HclPrefillMode::kRecurrence, &recurrence_cache,
@@ -577,6 +586,11 @@ void test_hcl(const int device, const evo2c::cuda::Stream &stream) {
               evo2c::cuda::HclPrefillMode::kFft, &fft_cache, &scratch_fft,
               &output_fft, &fft, stream),
           "HCL FFT prefill");
+  require(evo2c::cuda::bf16_hcl_prefill(
+              x2, x1, value, direct, poles, residue, length, width, state_size,
+              evo2c::cuda::HclPrefillMode::kFftStateless, &stateless_cache,
+              &scratch_stateless, &output_stateless, &fft, stream),
+          "stateless HCL FFT prefill");
 
   std::vector<float> gated(length * width);
   for (std::size_t index = 0; index < gated.size(); ++index)
@@ -592,12 +606,21 @@ void test_hcl(const int device, const evo2c::cuda::Stream &stream) {
   const auto recurrence_actual =
       download_bf16(output_recurrence, length * width, stream);
   const auto fft_actual = download_bf16(output_fft, length * width, stream);
+  const auto stateless_actual =
+      download_bf16(output_stateless, length * width, stream);
   check(all_close(recurrence_actual, expected, 0.03F, 0.02F),
         "HCL recurrent prefill matches modal reference");
   check(all_close(fft_actual, expected, 0.04F, 0.03F),
         "HCL cuFFT prefill matches modal reference");
   check(cosine(fft_actual, expected) >= 0.999F,
         "HCL cuFFT output cosine is at least 0.999");
+  check(stateless_actual == fft_actual,
+        "stateless HCL cuFFT output is bit-identical to stateful output");
+  const auto stateless_state =
+      download_f32(stateless_cache.state, width * state_size, stream);
+  check(std::all_of(stateless_state.begin(), stateless_state.end(),
+                    [](const float item) { return item == 0.0F; }),
+        "stateless HCL cuFFT leaves modal state untouched");
   check(all_close(
             download_f32(recurrence_cache.state, width * state_size, stream),
             expected_state, 1.0e-5F, 1.0e-5F),

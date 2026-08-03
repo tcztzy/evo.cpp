@@ -74,8 +74,16 @@ Status ensure_capacity(DeviceBuffer *const buffer, const int device,
       buffer->bytes() >= bytes) {
     return Status::Ok();
   }
+  std::size_t allocation_bytes = bytes;
+  if (buffer->valid() && buffer->device() == device) {
+    if (buffer->bytes() <= std::numeric_limits<std::size_t>::max() / 2) {
+      const std::size_t doubled = buffer->bytes() * 2;
+      if (doubled > allocation_bytes)
+        allocation_bytes = doubled;
+    }
+  }
   buffer->reset();
-  auto status = buffer->allocate(device, bytes);
+  auto status = buffer->allocate(device, allocation_bytes);
   if (!status.ok())
     return {status.code(),
             std::string{"allocate "} + name + ": " + status.message()};
@@ -1659,16 +1667,16 @@ Status bf16_online_causal_attention(const DeviceBuffer &query,
 }
 
 Status bf16_cached_cross_attention(
-    const DeviceBuffer &query, const DeviceBuffer &key,
+    const Blas &blas, const DeviceBuffer &query, const DeviceBuffer &key,
     const DeviceBuffer &value, const std::size_t query_tokens,
     const std::size_t key_tokens, const std::size_t heads,
     const std::size_t head_dim, DeviceBuffer *const scaled_key,
     DeviceBuffer *const scores, DeviceBuffer *const probabilities,
     DeviceBuffer *const output, const Stream &stream) {
-  if (scaled_key == nullptr || scores == nullptr || probabilities == nullptr ||
-      output == nullptr || !stream.valid() || query_tokens == 0 ||
-      key_tokens < query_tokens || heads == 0 || head_dim == 0 ||
-      query_tokens > static_cast<std::size_t>(INT_MAX) ||
+  if (!blas.valid() || scaled_key == nullptr || scores == nullptr ||
+      probabilities == nullptr || output == nullptr || !stream.valid() ||
+      query_tokens == 0 || key_tokens < query_tokens || heads == 0 ||
+      head_dim == 0 || query_tokens > static_cast<std::size_t>(INT_MAX) ||
       key_tokens > static_cast<std::size_t>(INT_MAX) ||
       heads > static_cast<std::size_t>(INT_MAX) ||
       head_dim > static_cast<std::size_t>(INT_MAX) ||
@@ -1696,8 +1704,8 @@ Status bf16_cached_cross_attention(
             "cached cross-attention dimensions overflow"};
   }
   const int device = query.device();
-  if (key.device() != device || value.device() != device ||
-      stream.device() != device) {
+  if (blas.device() != device || key.device() != device ||
+      value.device() != device || stream.device() != device) {
     return {ErrorCode::kInvalidArgument,
             "cached cross-attention buffers span CUDA devices"};
   }
@@ -1739,21 +1747,11 @@ Status bf16_cached_cross_attention(
   if (!status.ok())
     return status;
 
-  cublasHandle_t handle = nullptr;
-  status =
-      cublas_status(cublasCreate(&handle), "cublasCreate cached attention");
-  if (!status.ok())
-    return status;
-  const auto destroy_handle = [&handle]() {
-    if (handle != nullptr)
-      static_cast<void>(cublasDestroy(handle));
-  };
+  const cublasHandle_t handle = blas.get();
   status = cublas_status(cublasSetStream(handle, stream.get()),
                          "cublasSetStream cached attention");
-  if (!status.ok()) {
-    destroy_handle();
+  if (!status.ok())
     return status;
-  }
   const float alpha = 1.0F;
   const float beta = 0.0F;
   const int token_stride = static_cast<int>(heads * head_dim);
@@ -1770,26 +1768,22 @@ Status bf16_cached_cross_attention(
           score_stride, static_cast<int>(heads), CUBLAS_COMPUTE_32F,
           CUBLAS_GEMM_DEFAULT_TENSOR_OP),
       "cached attention QK bmm");
-  if (!status.ok()) {
-    destroy_handle();
+  if (!status.ok())
     return status;
-  }
 
-  cached_causal_mask_kernel<<<grid_for(score_elements), kElementwiseThreads, 0,
-                              stream.get()>>>(
-      static_cast<__nv_bfloat16 *>(scores->data()), query_tokens, key_tokens,
-      heads);
-  status = launch_status("cached causal masked-fill kernel");
-  if (!status.ok()) {
-    destroy_handle();
-    return status;
+  if (query_tokens > 1) {
+    cached_causal_mask_kernel<<<grid_for(score_elements), kElementwiseThreads,
+                                0, stream.get()>>>(
+        static_cast<__nv_bfloat16 *>(scores->data()), query_tokens, key_tokens,
+        heads);
+    status = launch_status("cached causal masked-fill kernel");
+    if (!status.ok())
+      return status;
   }
   status = dispatch_cached_softmax(probabilities, *scores, heads * query_tokens,
                                    key_tokens, stream);
-  if (!status.ok()) {
-    destroy_handle();
+  if (!status.ok())
     return status;
-  }
 
   status = cublas_status(
       cublasGemmStridedBatchedEx(
@@ -1801,7 +1795,6 @@ Status bf16_cached_cross_attention(
           head_stride, static_cast<int>(heads), CUBLAS_COMPUTE_32F,
           CUBLAS_GEMM_DEFAULT_TENSOR_OP),
       "cached attention probability/value bmm");
-  destroy_handle();
   return status;
 }
 

@@ -210,6 +210,37 @@ void test_buffer(const int device, const evo2c::cuda::Stream &stream) {
         "DeviceBuffer rejects out-of-bounds copies");
 }
 
+void test_row_to_column_major(const int device,
+                              const evo2c::cuda::Stream &stream) {
+  constexpr std::size_t rows = 37;
+  constexpr std::size_t columns = 53;
+  std::vector<std::uint16_t> input_bits(rows * columns);
+  for (std::size_t index = 0; index < input_bits.size(); ++index) {
+    input_bits[index] = static_cast<std::uint16_t>(index * 7919U + 0x7f81U);
+  }
+  std::vector<std::uint16_t> expected(input_bits.size());
+  for (std::size_t row = 0; row < rows; ++row) {
+    for (std::size_t column = 0; column < columns; ++column) {
+      expected[column * rows + row] = input_bits[row * columns + column];
+    }
+  }
+
+  auto input = upload(device, input_bits.data(),
+                      input_bits.size() * sizeof(input_bits[0]), stream);
+  evo2c::cuda::DeviceBuffer output;
+  require(output.allocate(device, input.bytes()), "transpose output");
+  require(evo2c::cuda::bf16_row_to_column_major(input, rows, columns, &output,
+                                                stream),
+          "BF16 row-to-column-major transpose");
+  std::vector<std::uint16_t> actual(input_bits.size());
+  require(output.copy_to_host(actual.data(), actual.size() * sizeof(actual[0]),
+                              stream),
+          "download transpose output");
+  require(stream.synchronize(), "synchronize transpose output");
+  check(actual == expected,
+        "tiled BF16 transpose preserves every raw bit for partial tiles");
+}
+
 void test_linear(const int device, const evo2c::cuda::Stream &stream,
                  const evo2c::cuda::BlasLt &blas) {
   constexpr std::size_t rows = 5;
@@ -651,6 +682,7 @@ int main() {
     require(stream.create(), "create CUDA stream");
     require(blas.create(), "create cuBLASLt handle");
     test_buffer(device, stream);
+    test_row_to_column_major(device, stream);
     test_linear(device, stream, blas);
     test_software_e4m3(device, stream);
     test_software_h100_qgmma(device, stream);

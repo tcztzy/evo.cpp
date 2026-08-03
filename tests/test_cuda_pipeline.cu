@@ -130,8 +130,7 @@ int main(const int argc, char **argv) {
       require(one_gpu_model.load(file, {0}, 12, true),
               "load one-GPU pipeline model");
       const auto &one_gpu_stages = one_gpu_model.stages();
-      check(one_gpu_stages.size() == 1 &&
-                one_gpu_stages[0].layer_begin == 0 &&
+      check(one_gpu_stages.size() == 1 && one_gpu_stages[0].layer_begin == 0 &&
                 one_gpu_stages[0].layer_end == 50,
             "one-GPU pipeline owns every layer without P2P");
       std::vector<float> one_gpu_logits;
@@ -151,8 +150,7 @@ int main(const int argc, char **argv) {
       require(two_gpu_model.load(file, {0, 1}, 12, true),
               "load two-GPU pipeline model");
       const auto &two_gpu_stages = two_gpu_model.stages();
-      check(two_gpu_stages.size() == 2 &&
-                two_gpu_stages[0].layer_begin == 0 &&
+      check(two_gpu_stages.size() == 2 && two_gpu_stages[0].layer_begin == 0 &&
                 two_gpu_stages[0].layer_end == 25 &&
                 two_gpu_stages[1].layer_begin == 25 &&
                 two_gpu_stages[1].layer_end == 50,
@@ -203,8 +201,18 @@ int main(const int argc, char **argv) {
     std::uint64_t assigned_weight_bytes = 0;
     for (const auto &stage : stages)
       assigned_weight_bytes += stage.weight_bytes;
-    check(assigned_weight_bytes == file_weight_bytes,
-          "every model tensor is placed on exactly one pipeline stage");
+    const auto &config = model.config();
+    const auto hcm_layers = static_cast<std::uint64_t>(
+        std::count(config.mixer_types.begin(), config.mixer_types.end(),
+                   evo2c::cuda::MixerType::kHcm));
+    const std::uint64_t hcm_element_bytes =
+        config.hcm_filter_dtype == evo2c::cuda::HcmFilterDType::kF32 ? 4 : 2;
+    const std::uint64_t grouped_filter_expansion =
+        hcm_layers * (config.width - config.hcm_filter_groups) *
+        config.hcm_filter_length * hcm_element_bytes;
+    check(assigned_weight_bytes == file_weight_bytes + grouped_filter_expansion,
+          "pipeline counts each checkpoint tensor plus the exact expanded HCM "
+          "filter storage once");
 
     std::vector<float> rejected_logits;
     check(!model
@@ -223,11 +231,18 @@ int main(const int argc, char **argv) {
         {17, argv[5]},
         {17, copy_path},
         {17, norm_path, evo2c::cuda::LayerDumpPoint::kPreNorm}};
+    std::vector<float> stateless_logits;
+    require(model.prefill_stateless(prompt, &stateless_logits),
+            "stateless pipeline prefill");
+    check(model.position() == 0,
+          "stateless pipeline prefill has no continuation position");
     require(model.prefill_with_dumps(prompt, &logits, dumps),
             "four-GPU 50-layer prefill with multiple dumps");
     const auto expected_logits = read_f32(argv[2]);
     check(all_close(logits, expected_logits, 0.08F, 0.06F),
           "pipeline prefill logits match independent oracle");
+    check(stateless_logits == logits,
+          "stateless and stateful pipeline logits are bit-identical");
     check(cosine(logits, expected_logits) >= 0.999F,
           "pipeline prefill cosine is at least 0.999");
     check(model.position() == prompt.size(),
@@ -257,10 +272,10 @@ int main(const int argc, char **argv) {
     check(model.position() == prompt.size() + 1,
           "pipeline decode advances position");
 
-    const std::vector<evo2c::TokenId> long_prompt{
-        2, 5, 7, 3, 9, 11, 13, 17, 19};
-    const std::vector<evo2c::TokenId> initial_chunk(
-        long_prompt.begin(), long_prompt.begin() + 8);
+    const std::vector<evo2c::TokenId> long_prompt{2,  5,  7,  3, 9,
+                                                  11, 13, 17, 19};
+    const std::vector<evo2c::TokenId> initial_chunk(long_prompt.begin(),
+                                                    long_prompt.begin() + 8);
     std::vector<float> first_chunk;
     std::vector<float> final_chunk;
     require(model.prefill(initial_chunk, &first_chunk),

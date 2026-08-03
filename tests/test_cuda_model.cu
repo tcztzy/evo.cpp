@@ -200,12 +200,24 @@ int main(const int argc, char **argv) {
     check(model.position() == 1, "one-token prefill records its position");
 
     const std::vector<evo2c::TokenId> prompt{2, 5, 7, 3};
+    std::vector<float> stateless_logits;
+    require(model.prefill_stateless(prompt, &stateless_logits),
+            "stateless model prefill");
+    check(model.position() == 0,
+          "stateless prefill does not publish a continuation position");
+    std::vector<float> invalid_decode_logits;
+    const auto invalid_stateless_decode =
+        model.decode(9, &invalid_decode_logits);
+    check(!invalid_stateless_decode.ok(),
+          "stateless prefill cannot be followed by cached decode");
     std::vector<float> logits;
     const evo2c::cuda::LayerDump dump{17, argv[5]};
     require(model.prefill(prompt, &logits, dump), "50-layer model prefill");
     const auto expected_logits = read_f32(argv[2]);
     check(all_close(logits, expected_logits, 0.08F, 0.06F),
           "synthetic prefill logits match independent oracle");
+    check(stateless_logits == logits,
+          "stateless and stateful prefill logits are bit-identical");
     check(cosine(logits, expected_logits) >= 0.999F,
           "synthetic prefill logits cosine is at least 0.999");
     check(model.position() == prompt.size(),
