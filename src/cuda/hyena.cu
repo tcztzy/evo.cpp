@@ -310,7 +310,7 @@ __global__ void fir_continue_kernel(
       terms[lane] = __fadd_rn(terms[lane], product);
     }
     for (std::size_t offset = 16; offset != 0; offset /= 2) {
-      for (std::size_t lane = 0; lane < 32 - offset; ++lane) {
+      for (std::size_t lane = 0; lane < offset; ++lane) {
         terms[lane] = __fadd_rn(terms[lane], terms[lane + offset]);
       }
     }
@@ -392,7 +392,7 @@ fir_decode_kernel(const __nv_bfloat16 *const input, const Weight *const weight,
     // applies this warp-style tree. Matching those F32 boundaries prevents
     // rare one-ULP BF16 differences once an HCM history grows.
     for (std::size_t offset = 16; offset != 0; offset /= 2) {
-      for (std::size_t lane = 0; lane < 32 - offset; ++lane) {
+      for (std::size_t lane = 0; lane < offset; ++lane) {
         terms[lane] = __fadd_rn(terms[lane], terms[lane + offset]);
       }
     }
