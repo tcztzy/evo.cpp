@@ -127,6 +127,7 @@ length, KV format, driver overhead, and other GPU processes affect memory use.
 - [The model's numerical contracts](docs/math-semantics.md)
 - [Safetensors format and conversion](docs/model-format.md)
 - [Reproducible GPU environment and validation artifacts](docs/gpu02-environment.md)
+- [CentOS 7 / driver 525 compatibility path for gpu01](docs/gpu01-environment.md)
 - [Architecture and acceptance criteria](SPEC.md)
 
 `evo.cpp` is an independent runtime, not an Arc Institute or NVIDIA project. The

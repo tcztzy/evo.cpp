@@ -115,6 +115,7 @@ registry 包含官方 base 和长上下文变体。硬件数字是保守起点�
 - [模型数值契约](docs/math-semantics.md)
 - [Safetensors 格式与转换](docs/model-format.md)
 - [可复现 GPU 环境与验证 artifact](docs/gpu02-environment.md)
+- [gpu01 的 CentOS 7 / driver 525 兼容路径](docs/gpu01-environment.md)
 - [架构和验收标准](SPEC.md)
 
 `evo.cpp` 是独立 runtime，不属于 Arc Institute 或 NVIDIA。模型架构和 checkpoint

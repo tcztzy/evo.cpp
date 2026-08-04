@@ -108,6 +108,14 @@ float bits_float(const std::uint32_t bits) {
   return value;
 }
 
+__nv_bfloat16 bf16_bits(const std::uint16_t bits) {
+  static_assert(sizeof(__nv_bfloat16) == sizeof(bits));
+  __nv_bfloat16 value;
+  void *const storage = &value;
+  std::memcpy(storage, &bits, sizeof(value));
+  return value;
+}
+
 int normal_exponent_reference(const float value) {
   return static_cast<int>((float_bits(std::abs(value)) >> 23U) & 0xffU) - 127;
 }
@@ -584,11 +592,11 @@ void test_pytorch_gelu_toolkit_independence(const int device,
   expected.reserve(expected_bits.size());
   ones.reserve(input_bits.size());
   for (const auto bits : input_bits) {
-    input.push_back(__ushort_as_bfloat16(bits));
+    input.push_back(bf16_bits(bits));
     ones.push_back(__float2bfloat16(1.0F));
   }
   for (const auto bits : expected_bits)
-    expected.push_back(__ushort_as_bfloat16(bits));
+    expected.push_back(bf16_bits(bits));
   auto input_device =
       upload(device, input.data(), input.size() * sizeof(input[0]), stream);
   auto ones_device =

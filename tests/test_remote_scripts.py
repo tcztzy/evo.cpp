@@ -40,6 +40,31 @@ def main() -> int:
             f"installed: {script.name}"
         )
 
+    gpu01_build = (
+        args.source_dir / "scripts" / "gpu01_build.sh"
+    ).read_text(encoding="utf-8")
+    assert 'remote_host="${EVO_GPU01_HOST:-gpu01}"' in gpu01_build
+    assert 'cuda_release="${EVO_GPU01_CUDA_RELEASE:-12.8}"' in gpu01_build
+    assert "--delete" not in gpu01_build
+    assert 'image_name="${EVO_GPU01_IMAGE_NAME:-' in gpu01_build
+    assert 'apptainer="${EVO_APPTAINER:-' in gpu01_build
+    assert 'export APPTAINER_TMPDIR="/tmp/evo.cpp-apptainer-$UID"' in gpu01_build
+    assert 'if test "$cuda_release" != "$expected_cuda_release"' in gpu01_build
+    assert 'ctest_bin="${cmake_bin%/cmake}/ctest"' in gpu01_build
+    assert "-R '^(cuda_smoke|cuda_ops)$'" in gpu01_build
+    assert "-DCMAKE_CUDA_ARCHITECTURES=80" in gpu01_build
+    assert "-DEVO_WARNINGS_AS_ERRORS=ON" in gpu01_build
+
+    gpu01_image = (
+        args.source_dir / "scripts" / "gpu01_build_image.sh"
+    ).read_text(encoding="utf-8")
+    assert 'image_host="${EVO_GPU01_IMAGE_HOST:-gpu02}"' in gpu01_image
+    assert "evo.cpp-cuda12.4-rocky8.def" in gpu01_image
+    assert "docker-archive://$archive" in gpu01_image
+    assert "cuda12.4.1-devel-rockylinux8-amd64.docker.tar" in gpu01_image
+    assert '"$apptainer" build "$partial" "$build_source"' in gpu01_image
+    assert 'mv -- "$partial" "$image"' in gpu01_image
+
     build = (
         args.source_dir / "scripts" / "gpu02_build.sh"
     ).read_text(encoding="utf-8")
