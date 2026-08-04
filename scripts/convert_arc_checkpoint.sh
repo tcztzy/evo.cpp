@@ -50,5 +50,5 @@ if [[ "${EVO_DRY_RUN:-0}" != 1 ]]; then
   if [[ -f "$output.index.json" ]]; then
     load_path="$output.index.json"
   fi
-  "$inspector" "$load_path" --tensor norm.scale
+  env -u LD_LIBRARY_PATH "$inspector" "$load_path" --tensor norm.scale
 fi

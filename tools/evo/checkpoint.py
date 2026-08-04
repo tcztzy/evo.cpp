@@ -97,9 +97,16 @@ class TorchE4M3Source:
             )
         for offset in range(0, self.nbytes, chunk_size):
             count = min(chunk_size, self.nbytes - offset)
-            scaled = flat[offset : offset + count].to(
-                dtype=torch.float32, copy=True
-            )
+            source = flat[offset : offset + count]
+            # Vortex loads the checkpoint into BF16 model parameters before
+            # Transformer Engine applies its fixed-scale FP8 cast.  The 20B
+            # checkpoint uniquely stores projection weights as F32, so
+            # quantizing those F32 values directly skips a real PyTorch
+            # rounding boundary and changes the resulting E4M3 payload.
+            if source.dtype == torch.float32:
+                scaled = source.to(dtype=torch.bfloat16).to(dtype=torch.float32)
+            else:
+                scaled = source.to(dtype=torch.float32, copy=True)
             scaled.mul_(self.scale).clamp_(min=-448.0, max=448.0)
             encoded = scaled.to(float8).view(torch.uint8).contiguous().numpy()
             yield memoryview(encoded).cast("B")

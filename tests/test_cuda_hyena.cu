@@ -224,11 +224,14 @@ void test_short_fir_cache(const int device, const evo::cuda::Stream &stream) {
   evo::cuda::FirCache cache;
   require(cache.allocate(device, channels, kernel, stream),
           "allocate short FIR cache");
+  check(cache.length == 0, "fresh short FIR cache has no active history");
   require(evo::cuda::bf16_fir_prefill_direct(
               input, weight, &bias, length, channels, groups, kernel,
               evo::cuda::FirOrientation::kCrossCorrelation,
               evo::cuda::FirBiasMode::kAdd, &output, &cache, stream),
           "short FIR prefill");
+  check(cache.length == kernel - 1,
+        "short FIR prefill records its active history length");
   std::vector<float> expected;
   require(evo::cpu::causal_depthwise_fir(
               input_f32, length, channels, weight_f32, kernel, &bias_f32,
@@ -249,6 +252,8 @@ void test_short_fir_cache(const int device, const evo::cuda::Stream &stream) {
               evo::cuda::FirOrientation::kCrossCorrelation,
               evo::cuda::FirBiasMode::kAdd, &cache, &decoded, stream),
           "short FIR decode");
+  check(cache.length == kernel - 1,
+        "short FIR decode saturates its active history length");
   input_f32.insert(input_f32.end(), next_f32.begin(), next_f32.end());
   require(evo::cpu::causal_depthwise_fir(
               input_f32, length + 1, channels, weight_f32, kernel, &bias_f32,
@@ -274,6 +279,8 @@ void test_short_fir_cache(const int device, const evo::cuda::Stream &stream) {
               evo::cuda::FirOrientation::kCrossCorrelation,
               evo::cuda::FirBiasMode::kAdd, &chunk_output, &cache, stream),
           "continue short FIR chunk");
+  check(cache.length == kernel - 1,
+        "continued short FIR keeps a saturated active history length");
   input_f32.insert(input_f32.end(), chunk_f32.begin(), chunk_f32.end());
   require(evo::cpu::causal_depthwise_fir(
               input_f32, length + 1 + chunk_length, channels, weight_f32,
@@ -287,6 +294,46 @@ void test_short_fir_cache(const int device, const evo::cuda::Stream &stream) {
   check(all_close(download_bf16(chunk_output, chunk_length * channels, stream),
                   expected_chunk, 0.02F, 0.01F),
         "continued FIR chunk equals sequential causal reference");
+
+  // Vortex truncates the visible filter to the dynamically sized cache when
+  // a prompt is shorter than kernel_size - 1.  This is intentionally not the
+  // same tap alignment as zero-padding a full convolution.
+  const std::vector<float> short_prompt{2.0F};
+  const std::vector<float> short_weights{3.0F, 5.0F, 7.0F};
+  const std::vector<float> continuation{11.0F, 13.0F};
+  auto short_prompt_device = upload_bf16(device, short_prompt, stream);
+  auto short_weights_device = upload_bf16(device, short_weights, stream);
+  auto continuation_device = upload_bf16(device, continuation, stream);
+  evo::cuda::DeviceBuffer short_prompt_output;
+  evo::cuda::DeviceBuffer continuation_output;
+  require(short_prompt_output.allocate(device, sizeof(__nv_bfloat16)),
+          "allocate short-prompt FIR output");
+  require(continuation_output.allocate(device, continuation.size() *
+                                                   sizeof(__nv_bfloat16)),
+          "allocate dynamic FIR continuation output");
+  evo::cuda::FirCache dynamic_cache;
+  require(dynamic_cache.allocate(device, 1, kernel, stream),
+          "allocate dynamic FIR cache");
+  require(evo::cuda::bf16_fir_prefill_direct(
+              short_prompt_device, short_weights_device, nullptr, 1, 1, 1,
+              kernel, evo::cuda::FirOrientation::kCrossCorrelation,
+              evo::cuda::FirBiasMode::kAdd, &short_prompt_output,
+              &dynamic_cache, stream),
+          "prefill one-token dynamic FIR cache");
+  check(dynamic_cache.length == 1,
+        "one-token FIR prompt leaves one active cache element");
+  require(evo::cuda::bf16_fir_continue_direct(
+              continuation_device, short_weights_device, nullptr,
+              continuation.size(), 1, 1, kernel,
+              evo::cuda::FirOrientation::kCrossCorrelation,
+              evo::cuda::FirBiasMode::kAdd, &continuation_output,
+              &dynamic_cache, stream),
+          "continue dynamically sized FIR cache");
+  check(download_bf16(continuation_output, continuation.size(), stream) ==
+            std::vector<float>({61.0F, 152.0F}),
+        "dynamic FIR continuation matches Vortex's growing-cache tap mapping");
+  check(dynamic_cache.length == kernel - 1,
+        "dynamic FIR continuation grows cache length to capacity");
 }
 
 void test_hcs(const int device, const evo::cuda::Stream &stream) {
@@ -313,6 +360,8 @@ void test_hcs(const int device, const evo::cuda::Stream &stream) {
                                         groups, kernel, &cache, &gated,
                                         &filtered, stream),
           "HCS prefill");
+  check(cache.length == kernel - 1,
+        "HCS prefill records its active history length");
 
   std::vector<float> gated_f32(length * width);
   for (std::size_t index = 0; index < gated_f32.size(); ++index)
@@ -352,6 +401,8 @@ void test_hcs(const int device, const evo::cuda::Stream &stream) {
               next_x2_device, next_x1_device, next_value_device, weight, width,
               groups, kernel, &cache, &decode_scratch, &decoded, stream),
           "HCS decode");
+  check(cache.length == kernel - 1,
+        "HCS decode keeps a saturated active history length");
   gated_f32.insert(gated_f32.end(), next_gated.begin(), next_gated.end());
   require(evo::cpu::causal_depthwise_fir(
               gated_f32, length + 1, width, expanded, kernel, nullptr,
@@ -410,11 +461,15 @@ void test_hcm_fft_decode(const int device, const evo::cuda::Stream &stream,
                                         width, groups, kernel, &cache, &gated,
                                         &filtered, &fft, stream, weight_type),
           "HCM FFT prefill");
+  check(cache.length == std::min(length, kernel - 1),
+        "HCM prefill records the unpadded active history length");
   require(evo::cuda::bf16_hcm_prefill_direct(
               x2, x1, value, weight, direct, length, width, groups, kernel,
               &direct_cache, &direct_gated, &direct_filtered, stream,
               weight_type),
           "direct HCM prefill");
+  check(direct_cache.length == std::min(length, kernel - 1),
+        "direct HCM prefill records the unpadded active history length");
 
   std::vector<float> gated_f32(length * width);
   for (std::size_t index = 0; index < gated_f32.size(); ++index)
@@ -470,6 +525,8 @@ void test_hcm_fft_decode(const int device, const evo::cuda::Stream &stream,
                                        groups, kernel, &cache, &decode_scratch,
                                        &decoded, stream, weight_type),
           "HCM decode");
+  check(cache.length == std::min(length + 1, kernel - 1),
+        "HCM decode advances the active history length");
   gated_f32.insert(gated_f32.end(), next_gated.begin(), next_gated.end());
   require(evo::cpu::causal_depthwise_fir(
               gated_f32, length + 1, width, expanded, kernel, &direct_f32,
@@ -504,6 +561,8 @@ void test_hcm_fft_decode(const int device, const evo::cuda::Stream &stream,
               direct, chunk_length, width, groups, kernel, &cache,
               &chunk_scratch, &chunk_output, stream, weight_type),
           "continue HCM chunk");
+  check(cache.length == std::min(length + 1 + chunk_length, kernel - 1),
+        "continued HCM advances the active history length");
   std::vector<float> chunk_gated(chunk_length * width);
   for (std::size_t index = 0; index < chunk_gated.size(); ++index)
     chunk_gated[index] = chunk_x1[index] * chunk_value[index];

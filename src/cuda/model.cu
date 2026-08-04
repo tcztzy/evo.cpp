@@ -166,6 +166,8 @@ bool valid_dump_point(const LayerDumpPoint point) noexcept {
          point == LayerDumpPoint::kPreNorm ||
          point == LayerDumpPoint::kMixerInputProjection ||
          point == LayerDumpPoint::kMixerShortFilter ||
+         point == LayerDumpPoint::kMixerShortState ||
+         point == LayerDumpPoint::kMixerInnerState ||
          point == LayerDumpPoint::kMixerX2 ||
          point == LayerDumpPoint::kMixerX1 ||
          point == LayerDumpPoint::kMixerValue ||
@@ -1400,6 +1402,14 @@ struct SingleGpuModel::Impl final {
                            arena.short_filtered, rows, config.width * 3);
     if (!status.ok())
       return status;
+    if (!is_stateless_prefill(mode)) {
+      status = dump_f32_tail_matching(
+          dumps, index, LayerDumpPoint::kMixerShortState,
+          layer->short_cache.state, config.width * 3,
+          config.short_filter_length - 1, layer->short_cache.length);
+      if (!status.ok())
+        return status;
+    }
     status =
         bf16_split_hyena_projection(arena.short_filtered, rows, config.width,
                                     &arena.x2, &arena.x1, &arena.value, stream);
@@ -1487,6 +1497,15 @@ struct SingleGpuModel::Impl final {
     }
     if (!status.ok())
       return status;
+    if ((layer->type == MixerType::kHcs || layer->type == MixerType::kHcm) &&
+        !is_stateless_prefill(mode)) {
+      status = dump_f32_tail_matching(
+          dumps, index, LayerDumpPoint::kMixerInnerState,
+          layer->inner_cache.state, config.width,
+          layer->inner_cache.kernel_size - 1, layer->inner_cache.length);
+      if (!status.ok())
+        return status;
+    }
     if (layer->type == MixerType::kHcl && !is_stateless_prefill(mode)) {
       status = dump_f32_matching(dumps, index, LayerDumpPoint::kMixerState,
                                  layer->iir_cache.state, config.width,
@@ -1556,6 +1575,43 @@ struct SingleGpuModel::Impl final {
         if (!status.ok())
           return status;
       }
+    }
+    return Status::Ok();
+  }
+
+  [[nodiscard]] Status
+  dump_f32_tail_matching(const std::vector<LayerDump> &dumps,
+                         const std::size_t layer, const LayerDumpPoint point,
+                         const DeviceBuffer &buffer, const std::size_t rows,
+                         const std::size_t columns,
+                         const std::size_t active_columns) {
+    if (active_columns > columns) {
+      return {ErrorCode::kInternal,
+              "active FIR cache columns exceed cache capacity"};
+    }
+    for (const auto &dump : dumps) {
+      if (dump.layer != layer || dump.point != point)
+        continue;
+      std::vector<float> padded(rows * columns);
+      auto status = buffer.copy_to_host(
+          padded.data(), padded.size() * sizeof(padded[0]), stream);
+      if (!status.ok())
+        return status;
+      status = stream.synchronize();
+      if (!status.ok())
+        return status;
+      std::vector<float> active(rows * active_columns);
+      for (std::size_t row = 0; row < rows; ++row) {
+        const auto source =
+            padded.begin() + static_cast<std::ptrdiff_t>(
+                                 row * columns + columns - active_columns);
+        std::copy_n(source, active_columns,
+                    active.begin() +
+                        static_cast<std::ptrdiff_t>(row * active_columns));
+      }
+      status = write_npy(dump.path, active, rows, active_columns);
+      if (!status.ok())
+        return status;
     }
     return Status::Ok();
   }

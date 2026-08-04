@@ -108,6 +108,40 @@ def install_optional_vortex_ops_namespace(vortex_root: Path) -> None:
     vortex.ops = namespace
 
 
+def fixup_fp8_extra_states_on_module_device(module: torch.nn.Module) -> None:
+    """Reload and migrate unregistered TE FP8 metadata to each module's GPU.
+
+    Vortex reloads the serialized metadata under the right CUDA context, but
+    Transformer Engine can preserve the tensors' serialized ``cuda:0``
+    placement.  Parameters and buffers are already sharded correctly; these
+    metadata tensors are plain attributes and therefore need an explicit move.
+    """
+    for child in module.children():
+        fixup_fp8_extra_states_on_module_device(child)
+
+    if not hasattr(module, "fp8_meta"):
+        return
+
+    module.fp8_meta_tensors_initialized = False
+    device = next(module.parameters()).device
+    with torch.cuda.device(device):
+        module.set_extra_state(module.get_extra_state())
+
+    for key in ("scaling_fwd", "scaling_bwd"):
+        scaling = module.fp8_meta[key]
+        for attribute in ("amax_history", "scale", "scale_inv"):
+            tensor = getattr(scaling, attribute, None)
+            if isinstance(tensor, torch.Tensor) and tensor.device != device:
+                setattr(scaling, attribute, tensor.to(device))
+        for attribute in ("amax_history", "scale", "scale_inv"):
+            tensor = getattr(scaling, attribute, None)
+            if isinstance(tensor, torch.Tensor) and tensor.device != device:
+                raise RuntimeError(
+                    f"Transformer Engine {key}.{attribute} remained on "
+                    f"{tensor.device}; expected {device}"
+                )
+
+
 def read_prompt(args: argparse.Namespace) -> str:
     if args.prompt is not None:
         return str(args.prompt)
@@ -163,6 +197,34 @@ def software_e4m3_quantize(value: torch.Tensor, scale: float) -> torch.Tensor:
     return quantized.float()
 
 
+def software_e4m3_quantize_weight(
+    value: torch.Tensor,
+    scale: float,
+    device: torch.device,
+    *,
+    chunk_elements: int = 16 * 1024 * 1024,
+) -> torch.Tensor:
+    """Quantize a CPU weight without retaining a full-sized GPU F32 copy."""
+    if value.device.type != "cpu":
+        raise ValueError("software FP8 weight source must be on CPU")
+    if chunk_elements <= 0:
+        raise ValueError("software FP8 weight chunk size must be positive")
+    if not torch.isfinite(torch.tensor(scale)) or scale <= 0.0:
+        raise ValueError(f"software FP8 scale must be finite and positive, got {scale}")
+    scale_tensor = torch.tensor(scale, dtype=torch.float32, device=device)
+    source = value.reshape(-1)
+    output = torch.empty(value.shape, dtype=torch.bfloat16, device=device)
+    target = output.reshape(-1)
+    for offset in range(0, source.numel(), chunk_elements):
+        end = min(offset + chunk_elements, source.numel())
+        scaled = source[offset:end].to(device=device, dtype=torch.float32)
+        scaled.mul_(scale_tensor).clamp_(min=-448.0, max=448.0)
+        target[offset:end].copy_(
+            scaled.to(torch.float8_e4m3fn).float().to(torch.bfloat16)
+        )
+    return output
+
+
 def software_fp8_output_scale(scale_inv: torch.Tensor) -> float:
     """Multiply TE's two stored FP32 inverse scales with FP32 semantics."""
     if (
@@ -175,13 +237,28 @@ def software_fp8_output_scale(scale_inv: torch.Tensor) -> float:
     return float((scale_inv[0] * scale_inv[1]).item())
 
 
+def software_fp8_projection_layers(model: torch.nn.Module) -> tuple[int, ...]:
+    """Return the Hyena projection layers present in an official Evo 2 model."""
+    return tuple(
+        layer
+        for layer, block in enumerate(model.blocks)
+        if hasattr(block, "projections")
+    )
+
+
+def software_fp8_projection_bias(module: torch.nn.Module) -> torch.Tensor | None:
+    """Normalize TE's two representations of a disabled projection bias."""
+    bias = module.bias
+    return None if bias is None or bias.numel() == 0 else bias
+
+
 def install_software_fp8_projections(
     model: torch.nn.Module,
     checkpoint: Path,
     accumulator: str,
     promotion_interval: int,
 ) -> list[dict[str, float | int]]:
-    """Replace 42 Hyena projections with fixed-scale E4M3 software emulation."""
+    """Replace every Hyena projection with fixed-scale E4M3 emulation."""
     import io
 
     torch.serialization.add_safe_globals([io.BytesIO])
@@ -194,6 +271,9 @@ def install_software_fp8_projections(
     if not isinstance(state, dict):
         raise TypeError("checkpoint root must be a dictionary")
 
+    projection_layers = software_fp8_projection_layers(model)
+    if not projection_layers:
+        raise ValueError("model does not contain any Hyena projections")
     installed: list[dict[str, float | int]] = []
     for layer, block in enumerate(model.blocks):
         if not hasattr(block, "projections"):
@@ -228,8 +308,18 @@ def install_software_fp8_projections(
         history_weight_amax = float(history[:, 1].max().item())
         input_scale = float(scale[0].item())
         weight_scale = float(scale[1].item())
-        quantized_weight = software_e4m3_quantize(weight, weight_scale).to(
-            torch.bfloat16
+        weight_device = weight.device
+        weight_cpu = weight.cpu()
+        projection.weight = torch.nn.Parameter(
+            torch.empty(0, dtype=weight.dtype, device=weight_device),
+            requires_grad=False,
+        )
+        del weight
+        torch.cuda.empty_cache()
+        quantized_weight = software_e4m3_quantize_weight(
+            weight_cpu,
+            weight_scale,
+            weight_device,
         )
         projection._evo_software_fp8_weight = quantized_weight
         projection._evo_software_fp8_input_scale = input_scale
@@ -272,8 +362,9 @@ def install_software_fp8_projections(
                     module._evo_software_fp8_weight,
                     module._evo_software_fp8_output_scale,
                 )
-            if module.bias is not None:
-                output.add_(module.bias.float())
+            bias = software_fp8_projection_bias(module)
+            if bias is not None:
+                output.add_(bias.float())
             output = output.to(value.dtype)
             if module.te_return_bias:
                 return output
@@ -292,8 +383,12 @@ def install_software_fp8_projections(
             }
         )
 
-    if len(installed) != 42:
-        raise ValueError(f"installed {len(installed)} software FP8 projections; expected 42")
+    installed_layers = tuple(int(item["layer"]) for item in installed)
+    if installed_layers != projection_layers:
+        raise ValueError(
+            "software FP8 projection coverage mismatch: "
+            f"installed {installed_layers}, expected {projection_layers}"
+        )
     return installed
 
 
@@ -345,6 +440,15 @@ def main() -> int:
         import vortex
 
         install_optional_vortex_ops_namespace(args.vortex_root)
+        import vortex.model.model as vortex_model
+        import vortex.model.utils as vortex_utils
+
+        vortex_model.fixup_fp8_extra_states = (
+            fixup_fp8_extra_states_on_module_device
+        )
+        vortex_utils.fixup_fp8_extra_states = (
+            fixup_fp8_extra_states_on_module_device
+        )
         from vortex.model.model import StripedHyena
         from vortex.model.utils import dotdict, load_checkpoint
 
@@ -390,6 +494,7 @@ def main() -> int:
         handles: list[torch.utils.hooks.RemovableHandle] = []
         debug_engine = None
         original_modal_prefill = None
+        original_step_fir = None
         original_step_iir = None
 
         def save_tensor(filename: str, output: object) -> None:
@@ -434,6 +539,7 @@ def main() -> int:
             ):
                 debug_engine = debug_block.filter.engine
                 original_modal_prefill = debug_engine.prefill_via_modal_fft
+                original_step_fir = debug_engine.step_fir
                 original_step_iir = debug_engine.step_iir
 
                 def save_iir_state(state: torch.Tensor) -> None:
@@ -452,6 +558,46 @@ def main() -> int:
                     if inference_params is None or not isinstance(layer_idx, int):
                         raise TypeError("HCL modal prefill diagnostic lacks cache metadata")
                     save_iir_state(inference_params.state_dict[layer_idx])
+                    return result
+
+                def capture_step_fir(*call_args: object, **call_kwargs: object) -> object:
+                    weight_arg = (
+                        call_args[2]
+                        if len(call_args) >= 3
+                        else call_kwargs.get("weight")
+                    )
+                    if (
+                        len(call_args) < 2
+                        or not all(
+                            isinstance(value, torch.Tensor) for value in call_args[:2]
+                        )
+                        or not isinstance(weight_arg, torch.Tensor)
+                    ):
+                        raise TypeError("HCL FIR step diagnostic lacks tensor inputs")
+                    current, old_state = call_args[:2]
+                    weight = weight_arg
+                    result = original_step_fir(*call_args, **call_kwargs)
+                    if (
+                        not isinstance(result, tuple)
+                        or len(result) != 2
+                        or not all(isinstance(value, torch.Tensor) for value in result)
+                    ):
+                        raise TypeError("HCL FIR step diagnostic returned invalid state")
+                    output, new_state = result
+                    diagnostics = (
+                        ("step_fir_input", current),
+                        ("step_fir_state_before", old_state),
+                        ("step_fir_weight", weight.squeeze()),
+                        ("step_fir_output", output),
+                        ("mixer_short_state", new_state),
+                    )
+                    for suffix, tensor in diagnostics:
+                        value = tensor[0] if tensor.ndim == 3 and tensor.shape[0] == 1 else tensor
+                        np.save(
+                            args.output_dir / f"{debug_prefix}_{suffix}.npy",
+                            value.detach().float().cpu().numpy(),
+                            allow_pickle=False,
+                        )
                     return result
 
                 def capture_step_iir(*call_args: object, **call_kwargs: object) -> object:
@@ -517,7 +663,97 @@ def main() -> int:
                     return result
 
                 debug_engine.prefill_via_modal_fft = capture_modal_prefill
+                debug_engine.step_fir = capture_step_fir
                 debug_engine.step_iir = capture_step_iir
+            elif hasattr(debug_block, "filter"):
+                debug_engine = debug_block.filter.engine
+                original_step_fir = debug_engine.step_fir
+
+                def capture_inner_step_fir(
+                    *call_args: object, **call_kwargs: object
+                ) -> object:
+                    weight_arg = (
+                        call_args[2]
+                        if len(call_args) >= 3
+                        else call_kwargs.get("weight")
+                    )
+                    if (
+                        len(call_args) < 2
+                        or not all(
+                            isinstance(value, torch.Tensor) for value in call_args[:2]
+                        )
+                        or not isinstance(weight_arg, torch.Tensor)
+                    ):
+                        raise TypeError("Hyena FIR step diagnostic lacks tensor inputs")
+                    current, old_state = call_args[:2]
+                    weight = weight_arg
+                    result = original_step_fir(*call_args, **call_kwargs)
+                    if (
+                        not isinstance(result, tuple)
+                        or len(result) != 2
+                        or not all(isinstance(value, torch.Tensor) for value in result)
+                    ):
+                        raise TypeError("Hyena FIR step diagnostic returned invalid state")
+                    output, new_state = result
+                    short_step = old_state.shape[-1] == (
+                        debug_block.filter.short_filter_length - 1
+                    )
+                    stem = "step_fir" if short_step else "step_inner_fir"
+                    state_name = (
+                        "mixer_short_state" if short_step else "mixer_inner_state"
+                    )
+                    diagnostics = (
+                        (f"{stem}_input", current),
+                        (f"{stem}_state_before", old_state),
+                        (f"{stem}_weight", weight.squeeze()),
+                        (f"{stem}_output", output),
+                        (state_name, new_state),
+                    )
+                    for suffix, tensor in diagnostics:
+                        value = (
+                            tensor[0]
+                            if tensor.ndim == 3 and tensor.shape[0] == 1
+                            else tensor
+                        )
+                        np.save(
+                            args.output_dir / f"{debug_prefix}_{suffix}.npy",
+                            value.detach().float().cpu().numpy(),
+                            allow_pickle=False,
+                        )
+                    if short_step:
+                        short = output
+                        np.save(
+                            args.output_dir
+                            / f"{debug_prefix}_mixer_short_filter.npy",
+                            short.detach().float().cpu().numpy(),
+                            allow_pickle=False,
+                        )
+                        for suffix, tensor in (
+                            ("x2", short[..., 0::3]),
+                            ("x1", short[..., 1::3]),
+                            ("value", short[..., 2::3]),
+                        ):
+                            np.save(
+                                args.output_dir
+                                / f"{debug_prefix}_mixer_{suffix}.npy",
+                                tensor.detach().float().cpu().numpy(),
+                                allow_pickle=False,
+                            )
+                    else:
+                        np.save(
+                            args.output_dir / f"{debug_prefix}_mixer_pregate.npy",
+                            current.detach().float().cpu().numpy(),
+                            allow_pickle=False,
+                        )
+                        np.save(
+                            args.output_dir
+                            / f"{debug_prefix}_mixer_convolution.npy",
+                            output.detach().float().cpu().numpy(),
+                            allow_pickle=False,
+                        )
+                    return result
+
+                debug_engine.step_fir = capture_inner_step_fir
 
             def capture_named(
                 filename: str,
@@ -813,8 +1049,12 @@ def main() -> int:
             for handle in handles:
                 handle.remove()
             if debug_engine is not None:
-                debug_engine.prefill_via_modal_fft = original_modal_prefill
-                debug_engine.step_iir = original_step_iir
+                if original_modal_prefill is not None:
+                    debug_engine.prefill_via_modal_fft = original_modal_prefill
+                if original_step_fir is not None:
+                    debug_engine.step_fir = original_step_fir
+                if original_step_iir is not None:
+                    debug_engine.step_iir = original_step_iir
         np.save(args.output_dir / "logits.npy", logits.numpy(), allow_pickle=False)
 
         top_values, top_tokens = torch.topk(logits[-1], k=10)

@@ -47,6 +47,7 @@ struct FirCache final {
   DeviceBuffer state;
   std::size_t channels{0};
   std::size_t kernel_size{0};
+  std::size_t length{0};
 
   [[nodiscard]] Status allocate(int device, std::size_t channel_count,
                                 std::size_t filter_length,

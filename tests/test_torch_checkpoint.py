@@ -156,7 +156,7 @@ class CheckpointTests(unittest.TestCase):
         ):
             with self.subTest(source_dtype=source_dtype):
                 weight = torch.tensor(
-                    [[-300.0, -2.0, 0.0], [1.0, 100.0, 200.0]],
+                    [[-300.0, -2.0, 0.0], [0.2657, 100.0, 200.0]],
                     dtype=torch_dtype,
                 )
                 original = weight.clone()
@@ -203,8 +203,13 @@ class CheckpointTests(unittest.TestCase):
                 actual_codes = b"".join(
                     bytes(chunk) for chunk in prepared[1].iter_chunks(2)
                 )
+                runtime_weight = (
+                    weight.to(torch.bfloat16)
+                    if source_dtype == "F32"
+                    else weight
+                )
                 expected_codes = (
-                    weight.float()
+                    runtime_weight.float()
                     .mul(4.0)
                     .clamp(-448.0, 448.0)
                     .to(float8)

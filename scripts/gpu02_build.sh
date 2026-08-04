@@ -49,11 +49,14 @@ build_dir="$source_dir/build-gpu"
 image="$HOME/evo.cpp-cuda12.8-rocky8.sif"
 definition="$source_dir/containers/evo.cpp-cuda12.8-rocky8.def"
 nix_root="$HOME/.local/share/nix-root"
+deps_dir="$HOME/evo.cpp-deps"
 cmake_bin="/nix/store/dnsh5jd817k0zddr0k6x3zmyl146bbs6-profile/bin/cmake"
 
 test -d "$source_dir"
 test -f "$definition"
 test -d "$nix_root/store"
+test -f "$deps_dir/flash-attention-628452c73a4fab560189a7caa8702642c6a38235/csrc/flash_attn/src/flash_fwd_kernel.h"
+test -f "$deps_dir/cutlass-7127592069c2fe01b041e174ba4345ef9b279671/include/cute/tensor.hpp"
 if ! test -f "$image"; then
   image_partial="$HOME/.evo.cpp-cuda12.8-rocky8.sif.partial"
   rm -f -- "$image_partial"
@@ -78,7 +81,9 @@ apptainer exec -B "$nix_root:/nix:ro" "$image" "$cmake_bin" \
   -DCMAKE_CUDA_ARCHITECTURES=80 \
   -DEVO_WARNINGS_AS_ERRORS=ON \
   -DCMAKE_BUILD_TYPE=Release \
-  -DCUDAToolkit_rt_LIBRARY=/usr/lib64/librt.so
+  -DCUDAToolkit_rt_LIBRARY=/usr/lib64/librt.so \
+  -DEVO_FLASH_ATTENTION_SOURCE_DIR="$deps_dir/flash-attention-628452c73a4fab560189a7caa8702642c6a38235" \
+  -DEVO_CUTLASS_SOURCE_DIR="$deps_dir/cutlass-7127592069c2fe01b041e174ba4345ef9b279671"
 apptainer exec -B "$nix_root:/nix:ro" "$image" "$cmake_bin" \
   --build "$build_dir" -j4
 REMOTE

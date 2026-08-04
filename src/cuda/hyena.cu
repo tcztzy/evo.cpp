@@ -157,6 +157,10 @@ Status validate_cache(const FirCache *const cache, const int device,
     return {ErrorCode::kInvalidArgument,
             "FIR cache dimensions do not match the operation"};
   }
+  if (cache->length > kernel_size - 1) {
+    return {ErrorCode::kInvalidArgument,
+            "FIR cache length exceeds its capacity"};
+  }
   std::size_t elements = 0;
   std::size_t bytes = 0;
   if (!multiply(channels, kernel_size - 1, &elements)) {
@@ -268,14 +272,13 @@ fir_prefill_kernel(const __nv_bfloat16 *const input, const Weight *const weight,
 }
 
 template <typename Weight>
-__global__ void
-fir_continue_kernel(const __nv_bfloat16 *const input,
-                    const Weight *const weight, const __nv_bfloat16 *const bias,
-                    const float *const cache, __nv_bfloat16 *const output,
-                    const std::size_t length, const std::size_t channels,
-                    const std::size_t channels_per_group,
-                    const std::size_t kernel_size, const bool cross_correlation,
-                    const bool multiply_bias) {
+__global__ void fir_continue_kernel(
+    const __nv_bfloat16 *const input, const Weight *const weight,
+    const __nv_bfloat16 *const bias, const float *const cache,
+    __nv_bfloat16 *const output, const std::size_t length,
+    const std::size_t channels, const std::size_t channels_per_group,
+    const std::size_t kernel_size, const std::size_t active_cache_size,
+    const bool cross_correlation, const bool multiply_bias) {
   const std::size_t elements = length * channels;
   const std::size_t cache_size = kernel_size - 1;
   for (std::size_t index =
@@ -285,25 +288,42 @@ fir_continue_kernel(const __nv_bfloat16 *const input,
     const std::size_t time = index / channels;
     const std::size_t channel = index % channels;
     const std::size_t group = channel / channels_per_group;
-    float total = 0.0F;
-    for (std::size_t state_index = 0; state_index < cache_size; ++state_index) {
-      const std::size_t history = time + state_index;
+    const std::size_t total_history = active_cache_size + time;
+    const std::size_t active_history =
+        total_history < cache_size ? total_history : cache_size;
+    const std::size_t history_begin = total_history - active_history;
+    float terms[32]{};
+    for (std::size_t active_index = 0; active_index < active_history;
+         ++active_index) {
+      const std::size_t history = history_begin + active_index;
       const float source =
-          history < cache_size
-              ? cache[channel * cache_size + history]
+          history < active_cache_size
+              ? cache[channel * cache_size + cache_size - active_cache_size +
+                      history]
               : __bfloat162float(
-                    input[(history - cache_size) * channels + channel]);
+                    input[(history - active_cache_size) * channels + channel]);
       const std::size_t tap =
-          cross_correlation ? state_index : cache_size - state_index;
-      total += source * fir_weight_value(weight[group * kernel_size + tap]);
+          cross_correlation ? active_index : active_history - active_index;
+      const float product = __fmul_rn(
+          source, fir_weight_value(weight[group * kernel_size + tap]));
+      const std::size_t lane = active_index % 32;
+      terms[lane] = __fadd_rn(terms[lane], product);
+    }
+    for (std::size_t offset = 16; offset != 0; offset /= 2) {
+      for (std::size_t lane = 0; lane < 32 - offset; ++lane) {
+        terms[lane] = __fadd_rn(terms[lane], terms[lane + offset]);
+      }
     }
     const float current = __bfloat162float(input[index]);
-    const std::size_t current_tap = cross_correlation ? cache_size : 0;
-    total +=
-        current * fir_weight_value(weight[group * kernel_size + current_tap]);
+    const std::size_t current_tap = cross_correlation ? active_history : 0;
+    const float current_product = __fmul_rn(
+        current, fir_weight_value(weight[group * kernel_size + current_tap]));
+    float total = __fadd_rn(current_product, terms[0]);
     if (bias != nullptr) {
       const float bias_value = __bfloat162float(bias[channel]);
-      total += multiply_bias ? bias_value * current : bias_value;
+      const float bias_term =
+          multiply_bias ? __fmul_rn(bias_value, current) : bias_value;
+      total = __fadd_rn(total, bias_term);
     }
     output[index] = __float2bfloat16_rn(total);
   }
@@ -345,8 +365,9 @@ fir_decode_kernel(const __nv_bfloat16 *const input, const Weight *const weight,
                   const __nv_bfloat16 *const bias, float *const cache,
                   __nv_bfloat16 *const output, const std::size_t channels,
                   const std::size_t channels_per_group,
-                  const std::size_t kernel_size, const bool cross_correlation,
-                  const bool multiply_bias) {
+                  const std::size_t kernel_size,
+                  const std::size_t active_cache_size,
+                  const bool cross_correlation, const bool multiply_bias) {
   for (std::size_t channel =
            static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
        channel < channels;
@@ -354,19 +375,36 @@ fir_decode_kernel(const __nv_bfloat16 *const input, const Weight *const weight,
     const std::size_t cache_size = kernel_size - 1;
     const std::size_t group = channel / channels_per_group;
     const float current = __bfloat162float(input[channel]);
-    float total = 0.0F;
-    for (std::size_t state_index = 0; state_index < cache_size; ++state_index) {
+    float terms[32]{};
+    const std::size_t state_start = cache_size - active_cache_size;
+    for (std::size_t active_index = 0; active_index < active_cache_size;
+         ++active_index) {
+      const std::size_t state_index = state_start + active_index;
       const std::size_t tap =
-          cross_correlation ? state_index : cache_size - state_index;
-      total += cache[channel * cache_size + state_index] *
-               fir_weight_value(weight[group * kernel_size + tap]);
+          cross_correlation ? active_index : active_cache_size - active_index;
+      const float product =
+          __fmul_rn(cache[channel * cache_size + state_index],
+                    fir_weight_value(weight[group * kernel_size + tap]));
+      const std::size_t lane = active_index % 32;
+      terms[lane] = __fadd_rn(terms[lane], product);
     }
-    const std::size_t current_tap = cross_correlation ? cache_size : 0;
-    total +=
-        current * fir_weight_value(weight[group * kernel_size + current_tap]);
+    // torch.sum reduces a contiguous FIR row into 32 strided lanes and then
+    // applies this warp-style tree. Matching those F32 boundaries prevents
+    // rare one-ULP BF16 differences once an HCM history grows.
+    for (std::size_t offset = 16; offset != 0; offset /= 2) {
+      for (std::size_t lane = 0; lane < 32 - offset; ++lane) {
+        terms[lane] = __fadd_rn(terms[lane], terms[lane + offset]);
+      }
+    }
+    const std::size_t current_tap = cross_correlation ? active_cache_size : 0;
+    const float current_product = __fmul_rn(
+        current, fir_weight_value(weight[group * kernel_size + current_tap]));
+    float total = __fadd_rn(current_product, terms[0]);
     if (bias != nullptr) {
       const float bias_value = __bfloat162float(bias[channel]);
-      total += multiply_bias ? bias_value * current : bias_value;
+      const float bias_term =
+          multiply_bias ? __fmul_rn(bias_value, current) : bias_value;
+      total = __fadd_rn(total, bias_term);
     }
     output[channel] = __float2bfloat16_rn(total);
     for (std::size_t state_index = 1; state_index < cache_size; ++state_index) {
@@ -735,7 +773,10 @@ Status fill_fir_cache(const DeviceBuffer &input, const std::size_t length,
   fill_fir_cache_kernel<<<grid_for(elements), kThreads, 0, stream.get()>>>(
       static_cast<const __nv_bfloat16 *>(input.data()),
       static_cast<float *>(cache->state.data()), length, channels, cache_size);
-  return launch_status("fill FIR cache kernel");
+  auto status = launch_status("fill FIR cache kernel");
+  if (status.ok())
+    cache->length = std::min(length, cache_size);
+  return status;
 }
 
 Status validate_hcl_buffers(const DeviceBuffer &x2, const DeviceBuffer &x1,
@@ -821,6 +862,7 @@ Status FirCache::allocate(const int device, const std::size_t channel_count,
   }
   channels = channel_count;
   kernel_size = filter_length;
+  length = 0;
   return Status::Ok();
 }
 
@@ -1578,7 +1620,7 @@ Status bf16_fir_continue_direct(
                             : static_cast<const __nv_bfloat16 *>(bias->data()),
             static_cast<const float *>(cache->state.data()),
             static_cast<__nv_bfloat16 *>(output->data()), length, channels,
-            channels / filter_groups, kernel_size,
+            channels / filter_groups, kernel_size, cache->length,
             orientation == FirOrientation::kCrossCorrelation,
             bias_mode == FirBiasMode::kMultiplyInput);
   } else {
@@ -1590,7 +1632,7 @@ Status bf16_fir_continue_direct(
                             : static_cast<const __nv_bfloat16 *>(bias->data()),
             static_cast<const float *>(cache->state.data()),
             static_cast<__nv_bfloat16 *>(output->data()), length, channels,
-            channels / filter_groups, kernel_size,
+            channels / filter_groups, kernel_size, cache->length,
             orientation == FirOrientation::kCrossCorrelation,
             bias_mode == FirBiasMode::kMultiplyInput);
   }
@@ -1601,7 +1643,12 @@ Status bf16_fir_continue_direct(
       static_cast<const __nv_bfloat16 *>(input.data()),
       static_cast<float *>(cache->state.data()), length, channels,
       kernel_size - 1);
-  return launch_status("advance continued FIR cache kernel");
+  status = launch_status("advance continued FIR cache kernel");
+  if (status.ok()) {
+    const std::size_t capacity = kernel_size - 1;
+    cache->length += std::min(length, capacity - cache->length);
+  }
+  return status;
 }
 
 Status bf16_fir_prefill_fft(
@@ -1720,7 +1767,7 @@ bf16_fir_decode(const DeviceBuffer &input, const DeviceBuffer &weight,
                         : static_cast<const __nv_bfloat16 *>(bias->data()),
         static_cast<float *>(cache->state.data()),
         static_cast<__nv_bfloat16 *>(output->data()), channels,
-        channels / filter_groups, kernel_size,
+        channels / filter_groups, kernel_size, cache->length,
         orientation == FirOrientation::kCrossCorrelation,
         bias_mode == FirBiasMode::kMultiplyInput);
   } else {
@@ -1732,11 +1779,14 @@ bf16_fir_decode(const DeviceBuffer &input, const DeviceBuffer &weight,
                             : static_cast<const __nv_bfloat16 *>(bias->data()),
             static_cast<float *>(cache->state.data()),
             static_cast<__nv_bfloat16 *>(output->data()), channels,
-            channels / filter_groups, kernel_size,
+            channels / filter_groups, kernel_size, cache->length,
             orientation == FirOrientation::kCrossCorrelation,
             bias_mode == FirBiasMode::kMultiplyInput);
   }
-  return launch_status("FIR decode kernel");
+  status = launch_status("FIR decode kernel");
+  if (status.ok() && cache->length < kernel_size - 1)
+    ++cache->length;
+  return status;
 }
 
 Status bf16_hcs_prefill(const DeviceBuffer &x2, const DeviceBuffer &x1,

@@ -23,6 +23,8 @@ enum class LayerDumpPoint {
   kPreNorm,
   kMixerInputProjection,
   kMixerShortFilter,
+  kMixerShortState,
+  kMixerInnerState,
   kMixerX2,
   kMixerX1,
   kMixerValue,

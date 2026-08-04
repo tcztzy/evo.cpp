@@ -16,7 +16,7 @@ Validated on 2026-07-23:
   Nix profile; the script bootstraps `$HOME/.venv-evo.cpp-convert`
 
 The checkpoint cache is remote-only. Set
-`HF_HOME=/build/grp_icg/users/tang/.cache`; Hugging Face stores repository
+`HF_HOME=/build/grp_icg/users/tang/.cache/huggingface`; Hugging Face stores repository
 objects below its `hub/` child. The official Hugging Face
 revision is `d529aa57c30771814217ad89baaeaf6e2315c7d7`; gpu02 uses
 `https://hf-mirror.com` (equivalent to `HF_ENDPOINT=https://hf-mirror.com`)

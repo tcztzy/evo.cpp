@@ -23,7 +23,17 @@ nix_python="/nix/store/flbw79qdmvzbdrafd93avy5a7d29m2vb-python3-3.12.12/bin/pyth
 torch_pythonpath="/nix/store/zram8zr9aikvw9igsyikdxmn5af9915g-python3.12-torch-2.10.0/lib/python3.12/site-packages"
 aria2c="/nix/store/qc3vxqi6a1vzqrafgz0dnjrad6lg1xib-aria2-1.37.0-bin/bin/aria2c"
 python_runtime_library_path="/nix/store/0p8b2lqk47fvxm9hc6c8mnln5l8x51q1-gcc-14.3.0-lib/lib:/nix/store/p98zvq4nb98krxcv7ss2zr1qngfmi0f5-gcc-14.3.0-libgcc/lib:/nix/store/2kdz3m7ic8w226pcvkz1dlg169v91p6a-zlib-1.3.2/lib"
-hf_home="${EVO_HF_HOME:-/build/grp_icg/users/tang/.cache}"
+inspector=""
+for candidate in \
+  "$source_dir/build-gpu01-cu128/evo-inspect" \
+  "$source_dir/build-gpu/evo-inspect" \
+  "$source_dir/build-gpu01/evo-inspect"; do
+  if test -x "$candidate"; then
+    inspector="$candidate"
+    break
+  fi
+done
+hf_home="${EVO_HF_HOME:-/build/grp_icg/users/tang/.cache/huggingface}"
 export HF_HOME="$hf_home"
 export HF_ENDPOINT="$mirror"
 cache_dir="$hf_home/hub"
@@ -36,7 +46,7 @@ exec 9>"$model_dir/.prepare-40b.lock"
 flock 9
 test -f "$image"
 test -f "$source_dir/configs/evo2-40b-1m.yml"
-test -x "$source_dir/build-gpu/evo-inspect"
+test -n "$inspector"
 apptainer exec -B "$nix_root:/nix:ro" "$image" test -x "$aria2c"
 if ! apptainer exec -B "$nix_root:/nix:ro" "$image" \
     test -x "$venv/bin/python"; then
@@ -45,10 +55,10 @@ if ! apptainer exec -B "$nix_root:/nix:ro" "$image" \
 fi
 if ! apptainer exec -B "$nix_root:/nix:ro" "$image" \
     env LD_LIBRARY_PATH="$python_runtime_library_path" \
-    "$venv/bin/python" -c 'import numpy'; then
+    "$venv/bin/python" -c 'import numpy, typing_extensions'; then
   apptainer exec -B "$nix_root:/nix:ro" "$image" \
     env LD_LIBRARY_PATH="$python_runtime_library_path" \
-    "$venv/bin/pip" install 'numpy>=1.26,<3'
+    "$venv/bin/pip" install 'numpy>=1.26,<3' 'typing-extensions>=4.10'
 fi
 apptainer exec -B "$nix_root:/nix:ro" "$image" \
   env LD_LIBRARY_PATH="$python_runtime_library_path" \
@@ -168,7 +178,7 @@ if ! test -f "$output"; then
     --source-sha256 "$source_sha256"
 fi
 apptainer exec -B "$nix_root:/nix:ro" "$image" \
-  "$source_dir/build-gpu/evo-inspect" "$output" \
+  "$inspector" "$output" \
   --tensor embedding_layer.weight
 actual_output_sha256="$(sha256sum "$output" | cut -d' ' -f1)"
 if test -f "$output_receipt"; then

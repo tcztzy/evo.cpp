@@ -156,13 +156,17 @@ int main(const int argc, char **argv) {
       dumps.push_back({layer, (output_dir / layer_filename(layer)).string()});
     }
     if (debug_layer.has_value()) {
-      const std::array<std::pair<evo::cuda::LayerDumpPoint, const char *>, 19>
+      const std::array<std::pair<evo::cuda::LayerDumpPoint, const char *>, 21>
           points{{
               {evo::cuda::LayerDumpPoint::kPreNorm, "pre_norm"},
               {evo::cuda::LayerDumpPoint::kMixerInputProjection,
                "mixer_input_projection"},
               {evo::cuda::LayerDumpPoint::kMixerShortFilter,
                "mixer_short_filter"},
+              {evo::cuda::LayerDumpPoint::kMixerShortState,
+               "mixer_short_state"},
+              {evo::cuda::LayerDumpPoint::kMixerInnerState,
+               "mixer_inner_state"},
               {evo::cuda::LayerDumpPoint::kMixerX2, "mixer_x2"},
               {evo::cuda::LayerDumpPoint::kMixerX1, "mixer_x1"},
               {evo::cuda::LayerDumpPoint::kMixerValue, "mixer_value"},
@@ -172,8 +176,7 @@ int main(const int argc, char **argv) {
               {evo::cuda::LayerDumpPoint::kMixerConvolution,
                "mixer_convolution"},
               {evo::cuda::LayerDumpPoint::kMixerOutput, "mixer_output"},
-              {evo::cuda::LayerDumpPoint::kMixerProjection,
-               "mixer_projection"},
+              {evo::cuda::LayerDumpPoint::kMixerProjection, "mixer_projection"},
               {evo::cuda::LayerDumpPoint::kMixerResidual, "mixer_residual"},
               {evo::cuda::LayerDumpPoint::kPostNorm, "post_norm"},
               {evo::cuda::LayerDumpPoint::kMlpL1, "mlp_l1"},

@@ -46,7 +46,9 @@ torch.load(path, map_location="cpu", mmap=True, weights_only=True)
 它严格校验完整 tensor manifest、连续 storage、dtype/shape 和 TE extra state。
 BF16 norm/rope 小向量可精确 widen 到 F32；Arc software-FP8 projection
 按 chunk 直接编码为最终 `F8_E4M3`，不会在 host 内存中同时物化完整源权重和
-完整结果。
+完整结果。20B 的 projection 源权重虽为 F32，但官方 Vortex 会先把它加载进
+BF16 parameter，再由 Transformer Engine 转为 E4M3；converter 明确保留这次
+F32 → BF16 舍入。1B/40B 的 projection 源权重本身就是 BF16。
 
 默认按 4096 MiB tensor payload 贪心分片。`--output MODEL.safetensors` 是
 命名基准；大模型实际生成

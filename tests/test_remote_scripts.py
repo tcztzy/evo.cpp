@@ -70,6 +70,8 @@ def main() -> int:
     ).read_text(encoding="utf-8")
     assert 'rsync_retries="${EVO_RSYNC_RETRIES:-12}"' in build
     assert "until rsync -az --delay-updates" in build
+    assert "-DEVO_FLASH_ATTENTION_SOURCE_DIR=" in build
+    assert "-DEVO_CUTLASS_SOURCE_DIR=" in build
     assert "--delete" not in build, (
         "the source sync must not remove remote models, environments, or "
         "research artifacts that are outside the local checkout"
@@ -114,6 +116,7 @@ def main() -> int:
     assert "convert_checkpoint.py" in arc_wrapper
     assert "EVO_SOURCE_SHA256" in arc_wrapper
     assert "EVO_DRY_RUN" in arc_wrapper
+    assert 'env -u LD_LIBRARY_PATH "$inspector"' in arc_wrapper
 
     model_validation = (
         args.source_dir / "scripts" / "validate_model.sh"
@@ -125,7 +128,7 @@ def main() -> int:
     prepare = (
         args.source_dir / "scripts" / "gpu02_prepare_40b.sh"
     ).read_text(encoding="utf-8")
-    assert "/build/grp_icg/users/tang/.cache}" in prepare
+    assert "/build/grp_icg/users/tang/.cache/huggingface}" in prepare
     assert "https://hf-mirror.com" in prepare
     assert 'export HF_HOME="$hf_home"' in prepare
     assert 'export HF_ENDPOINT="$mirror"' in prepare
