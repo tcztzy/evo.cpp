@@ -15,10 +15,10 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-#include "evo2c/cli.hpp"
-#include "evo2c/sampler.hpp"
-#include "evo2c/sequence_io.hpp"
-#include "evo2c/tokenizer.hpp"
+#include "evo/cli.hpp"
+#include "evo/sampler.hpp"
+#include "evo/sequence_io.hpp"
+#include "evo/tokenizer.hpp"
 
 namespace {
 
@@ -34,7 +34,7 @@ void check(const bool condition, const std::string_view description) {
 class TemporaryFile final {
  public:
   explicit TemporaryFile(const std::string_view contents) {
-    auto pattern = (std::filesystem::temp_directory_path() / "evo2c-frontend-XXXXXX").string();
+    auto pattern = (std::filesystem::temp_directory_path() / "evo-frontend-XXXXXX").string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
     const int descriptor = ::mkstemp(writable.data());
@@ -64,34 +64,34 @@ class TemporaryFile final {
   std::string path_;
 };
 
-evo2c::Status parse(std::vector<std::string> arguments, evo2c::CliOptions* const options) {
+evo::Status parse(std::vector<std::string> arguments, evo::CliOptions* const options) {
   std::vector<char*> argv;
   argv.reserve(arguments.size());
   for (auto& argument : arguments) {
     argv.push_back(argument.data());
   }
-  return evo2c::parse_cli(static_cast<int>(argv.size()), argv.data(), options);
+  return evo::parse_cli(static_cast<int>(argv.size()), argv.data(), options);
 }
 
 void test_tokenizer() {
   const std::string bytes{"A\xC3\xA9\0\xFF", 5};
-  const auto tokens = evo2c::encode_bytes(bytes);
-  check(tokens == std::vector<evo2c::TokenId>({65, 195, 169, 0, 255}),
+  const auto tokens = evo::encode_bytes(bytes);
+  check(tokens == std::vector<evo::TokenId>({65, 195, 169, 0, 255}),
         "UTF-8 and arbitrary bytes map to identical unsigned IDs");
-  check(evo2c::kEosToken == 0 && evo2c::kPadToken == 1 &&
-            evo2c::kTokenizerVocabSize == 512,
+  check(evo::kEosToken == 0 && evo::kPadToken == 1 &&
+            evo::kTokenizerVocabSize == 512,
         "tokenizer constants match Vortex");
   std::uint8_t byte = 0;
-  check(evo2c::token_to_byte(255, &byte).ok() && byte == 255,
+  check(evo::token_to_byte(255, &byte).ok() && byte == 255,
         "byte token decodes without sign extension");
-  check(!evo2c::token_to_byte(256, &byte).ok(), "non-byte vocabulary ID is rejected");
-  check(!evo2c::token_to_byte(1, nullptr).ok(), "null tokenizer output is rejected");
+  check(!evo::token_to_byte(256, &byte).ok(), "non-byte vocabulary ID is rejected");
+  check(!evo::token_to_byte(1, nullptr).ok(), "null tokenizer output is rejected");
 }
 
 void test_sequence_reader() {
   TemporaryFile fasta{">one\nAC\nGT\n\n>two description\r\nN\r\n"};
-  std::vector<evo2c::SequenceRecord> records;
-  auto status = evo2c::read_sequence_file(fasta.path(), &records);
+  std::vector<evo::SequenceRecord> records;
+  auto status = evo::read_sequence_file(fasta.path(), &records);
   check(status.ok(), std::string{"valid FASTA parses: "} + status.message());
   check(records.size() == 2, "multi-record FASTA preserves record boundaries");
   if (records.size() == 2) {
@@ -103,35 +103,35 @@ void test_sequence_reader() {
 
   const std::string raw{"A\xC3\xA9\n\0", 5};
   TemporaryFile text{raw};
-  status = evo2c::read_sequence_file(text.path(), &records);
+  status = evo::read_sequence_file(text.path(), &records);
   check(status.ok() && records.size() == 1 && records[0].bytes == raw,
         "raw text input is byte-exact including newline and NUL");
 
   TemporaryFile empty_record{">one\n>two\nAC\n"};
-  status = evo2c::read_sequence_file(empty_record.path(), &records);
+  status = evo::read_sequence_file(empty_record.path(), &records);
   check(!status.ok() && status.message().find("has no sequence") != std::string::npos,
         "empty FASTA record is rejected");
 
   TemporaryFile whitespace{">one\nAC GT\n"};
-  status = evo2c::read_sequence_file(whitespace.path(), &records);
+  status = evo::read_sequence_file(whitespace.path(), &records);
   check(!status.ok() && status.message().find("whitespace") != std::string::npos,
         "ambiguous FASTA whitespace is rejected");
 }
 
 void test_sampler() {
-  std::vector<float> logits(evo2c::kTokenizerVocabSize, -10.0F);
+  std::vector<float> logits(evo::kTokenizerVocabSize, -10.0F);
   logits[7] = 4.0F;
   logits[9] = 4.0F;
-  evo2c::TokenId token = 0;
-  evo2c::Sampler greedy{{1.0F, 1, 1.0F, 123}};
+  evo::TokenId token = 0;
+  evo::Sampler greedy{{1.0F, 1, 1.0F, 123}};
   auto status = greedy.sample(logits, &token);
   check(status.ok() && token == 7, "greedy sampler uses stable lowest-ID tie break");
 
-  evo2c::Sampler first{{1.0F, 8, 0.95F, 42}};
-  evo2c::Sampler second{{1.0F, 8, 0.95F, 42}};
+  evo::Sampler first{{1.0F, 8, 0.95F, 42}};
+  evo::Sampler second{{1.0F, 8, 0.95F, 42}};
   for (std::size_t iteration = 0; iteration < 64; ++iteration) {
-    evo2c::TokenId left = 0;
-    evo2c::TokenId right = 0;
+    evo::TokenId left = 0;
+    evo::TokenId right = 0;
     check(first.sample(logits, &left).ok() && second.sample(logits, &right).ok() && left == right,
           "identical sampler seeds reproduce every draw");
   }
@@ -139,7 +139,7 @@ void test_sampler() {
   std::fill(logits.begin(), logits.end(), 0.0F);
   logits[2] = 3.0F;
   logits[3] = 2.0F;
-  evo2c::Sampler top_k{{1.0F, 2, 1.0F, 9}};
+  evo::Sampler top_k{{1.0F, 2, 1.0F, 9}};
   for (std::size_t iteration = 0; iteration < 128; ++iteration) {
     check(top_k.sample(logits, &token).ok() && (token == 2 || token == 3),
           "top-k sampler never selects a filtered token");
@@ -147,7 +147,7 @@ void test_sampler() {
 
   std::fill(logits.begin(), logits.end(), 0.0F);
   logits[11] = 10.0F;
-  evo2c::Sampler top_p{{1.0F, 0, 0.5F, 1}};
+  evo::Sampler top_p{{1.0F, 0, 0.5F, 1}};
   for (std::size_t iteration = 0; iteration < 16; ++iteration) {
     check(top_p.sample(logits, &token).ok() && token == 11,
           "top-p retains the minimal probability prefix");
@@ -155,13 +155,13 @@ void test_sampler() {
 
   logits[1] = std::numeric_limits<float>::quiet_NaN();
   check(!top_k.sample(logits, &token).ok(), "non-finite logits fail closed");
-  check(!evo2c::Sampler({0.0F, 1, 1.0F, 0}).sample(logits, &token).ok(),
+  check(!evo::Sampler({0.0F, 1, 1.0F, 0}).sample(logits, &token).ok(),
         "invalid sampling configuration fails closed");
 }
 
 void test_cli() {
-  evo2c::CliOptions options;
-  auto status = parse({"evo2c", "-m", "model.safetensors", "-p", "ACGT", "-n", "8",
+  evo::CliOptions options;
+  auto status = parse({"evo", "-m", "model.safetensors", "-p", "ACGT", "-n", "8",
                        "--ctx", "128", "--gpu", "0,1,2,3", "--temp", "0.8",
                        "--top-k", "32", "--top-p", "0.9", "--seed", "99",
                        "--force-prompt-threshold", "3",
@@ -169,7 +169,7 @@ void test_cli() {
                        "49:layer.npy"},
                       &options);
   check(status.ok(), std::string{"valid generation CLI parses: "} + status.message());
-  check(options.mode == evo2c::RunMode::kGenerate && options.prompt == "ACGT" &&
+  check(options.mode == evo::RunMode::kGenerate && options.prompt == "ACGT" &&
             options.generated_tokens == 8 && options.context_size == 128,
         "generation CLI values are retained");
   check(options.gpu_ids == std::vector<int>({0, 1, 2, 3}) && options.sampling.top_k == 32 &&
@@ -179,41 +179,41 @@ void test_cli() {
         "debug layer CLI parses");
   check(options.force_prompt_threshold == 3,
         "teacher-forced prompt threshold CLI parses");
-  status = parse({"evo2c", "-m", "model.safetensors", "-p", "A", "-n", "1",
+  status = parse({"evo", "-m", "model.safetensors", "-p", "A", "-n", "1",
                   "--gpu", "0", "--dump-layer", "50:layer.npy"},
                  &options);
   check(status.ok() && options.dump_layer.has_value() &&
             options.dump_layer->layer == 50,
         "CLI defers model-specific layer bounds to the runtime");
 
-  status = parse({"evo2c", "-m", "model.safetensors", "--score", "input.fa", "--gpu", "2"},
+  status = parse({"evo", "-m", "model.safetensors", "--score", "input.fa", "--gpu", "2"},
                  &options);
-  check(status.ok() && options.mode == evo2c::RunMode::kScore,
+  check(status.ok() && options.mode == evo::RunMode::kScore,
         "score CLI accepts one GPU and no sampling options");
 
-  status = parse({"evo2c", "-m", "a", "-m", "b", "-p", "A", "-n", "1", "--gpu", "0"},
+  status = parse({"evo", "-m", "a", "-m", "b", "-p", "A", "-n", "1", "--gpu", "0"},
                  &options);
   check(!status.ok() && status.message().find("specified twice") != std::string::npos,
         "duplicate CLI options are rejected");
-  status = parse({"evo2c", "-m", "a", "-p", "A", "--score", "x", "-n", "1", "--gpu", "0"},
+  status = parse({"evo", "-m", "a", "-p", "A", "--score", "x", "-n", "1", "--gpu", "0"},
                  &options);
   check(!status.ok() && status.message().find("exactly one") != std::string::npos,
         "conflicting run modes are rejected");
-  status = parse({"evo2c", "-m", "a", "-p", "A", "-n", "1", "--gpu", "0,0"},
+  status = parse({"evo", "-m", "a", "-p", "A", "-n", "1", "--gpu", "0,0"},
                  &options);
   check(!status.ok() && status.message().find("duplicate ID") != std::string::npos,
         "duplicate GPU IDs are rejected");
-  status = parse({"evo2c", "-m", "a", "-p", "A", "-n", "1", "--gpu", "0", "--top-p", "0"},
+  status = parse({"evo", "-m", "a", "-p", "A", "-n", "1", "--gpu", "0", "--top-p", "0"},
                  &options);
   check(!status.ok() && status.message().find("top-p") != std::string::npos,
         "invalid top-p is rejected");
-  status = parse({"evo2c", "-m", "a", "-p", "A", "-n", "1", "--gpu", "0",
+  status = parse({"evo", "-m", "a", "-p", "A", "-n", "1", "--gpu", "0",
                   "--force-prompt-threshold", "0"},
                  &options);
   check(!status.ok() &&
             status.message().find("force-prompt-threshold") != std::string::npos,
         "zero teacher-forcing threshold is rejected");
-  status = parse({"evo2c", "-m", "a", "--score", "input.fa", "--gpu", "0",
+  status = parse({"evo", "-m", "a", "--score", "input.fa", "--gpu", "0",
                   "--force-prompt-threshold", "3"},
                  &options);
   check(!status.ok() &&

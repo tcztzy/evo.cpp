@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Validate deterministic evo2c prefill benchmark metrics."""
+"""Validate deterministic evo prefill benchmark metrics."""
 
 from __future__ import annotations
 
@@ -35,10 +35,10 @@ def parse_mapping(
 def read_metrics(path: Path) -> dict[str, object]:
     records = []
     for line in path.read_text(encoding="utf-8").splitlines():
-        if line.startswith("evo2c_metrics "):
-            records.append(json.loads(line.removeprefix("evo2c_metrics ")))
+        if line.startswith("evo_metrics "):
+            records.append(json.loads(line.removeprefix("evo_metrics ")))
     if len(records) != 1:
-        raise ValueError(f"{path} must contain exactly one evo2c_metrics record")
+        raise ValueError(f"{path} must contain exactly one evo_metrics record")
     return records[0]
 
 

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "evo2c/version.hpp"
+#include "evo/version.hpp"
 
-namespace evo2c {
+namespace evo {
 
 std::string_view version() noexcept {
   return "0.1.0";
 }
 
-}  // namespace evo2c
+}  // namespace evo
 

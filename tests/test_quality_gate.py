@@ -19,7 +19,7 @@ def main() -> int:
     args.work_dir.mkdir(parents=True, exist_ok=True)
     prompts_path = args.work_dir / "prompts.csv"
     output_path = args.work_dir / "quality.json"
-    binary_path = args.work_dir / "unused-evo2c"
+    binary_path = args.work_dir / "unused-evo"
     binary_path.write_bytes(b"fixture-binary")
     artifact_dir = args.work_dir / "quality-artifacts"
     artifact_dir.mkdir(exist_ok=True)

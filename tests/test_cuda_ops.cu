@@ -16,10 +16,10 @@
 #include <cuda_bf16.h>
 #include <cuda_runtime_api.h>
 
-#include "evo2c/cpu_reference.hpp"
-#include "evo2c/cuda/ops.hpp"
-#include "evo2c/cuda/runtime.hpp"
-#include "evo2c/fp8.hpp"
+#include "evo/cpu_reference.hpp"
+#include "evo/cuda/ops.hpp"
+#include "evo/cuda/runtime.hpp"
+#include "evo/fp8.hpp"
 
 namespace {
 
@@ -32,7 +32,7 @@ void check(const bool condition, const std::string_view description) {
   }
 }
 
-void require(const evo2c::Status &status, const std::string_view operation) {
+void require(const evo::Status &status, const std::string_view operation) {
   if (!status.ok()) {
     throw std::runtime_error(std::string{operation} + ": " + status.message());
   }
@@ -65,18 +65,18 @@ std::vector<float> to_float(const std::vector<__nv_bfloat16> &input) {
   return output;
 }
 
-evo2c::cuda::DeviceBuffer upload(const int device, const void *const source,
+evo::cuda::DeviceBuffer upload(const int device, const void *const source,
                                  const std::size_t bytes,
-                                 const evo2c::cuda::Stream &stream) {
-  evo2c::cuda::DeviceBuffer buffer;
+                                 const evo::cuda::Stream &stream) {
+  evo::cuda::DeviceBuffer buffer;
   require(buffer.allocate(device, bytes), "allocate upload buffer");
   require(buffer.copy_from_host(source, bytes, stream), "upload buffer");
   return buffer;
 }
 
-std::vector<float> download_bf16(const evo2c::cuda::DeviceBuffer &buffer,
+std::vector<float> download_bf16(const evo::cuda::DeviceBuffer &buffer,
                                  const std::size_t elements,
-                                 const evo2c::cuda::Stream &stream) {
+                                 const evo::cuda::Stream &stream) {
   std::vector<__nv_bfloat16> raw(elements);
   require(buffer.copy_to_host(raw.data(), raw.size() * sizeof(raw[0]), stream),
           "download BF16");
@@ -196,7 +196,7 @@ bool all_close(const std::vector<float> &actual,
   return true;
 }
 
-void test_buffer(const int device, const evo2c::cuda::Stream &stream) {
+void test_buffer(const int device, const evo::cuda::Stream &stream) {
   const std::vector<float> host{1.0F, -2.0F, 3.0F, 4.0F};
   auto buffer =
       upload(device, host.data(), host.size() * sizeof(float), stream);
@@ -211,7 +211,7 @@ void test_buffer(const int device, const evo2c::cuda::Stream &stream) {
 }
 
 void test_row_to_column_major(const int device,
-                              const evo2c::cuda::Stream &stream) {
+                              const evo::cuda::Stream &stream) {
   constexpr std::size_t rows = 37;
   constexpr std::size_t columns = 53;
   std::vector<std::uint16_t> input_bits(rows * columns);
@@ -227,9 +227,9 @@ void test_row_to_column_major(const int device,
 
   auto input = upload(device, input_bits.data(),
                       input_bits.size() * sizeof(input_bits[0]), stream);
-  evo2c::cuda::DeviceBuffer output;
+  evo::cuda::DeviceBuffer output;
   require(output.allocate(device, input.bytes()), "transpose output");
-  require(evo2c::cuda::bf16_row_to_column_major(input, rows, columns, &output,
+  require(evo::cuda::bf16_row_to_column_major(input, rows, columns, &output,
                                                 stream),
           "BF16 row-to-column-major transpose");
   std::vector<std::uint16_t> actual(input_bits.size());
@@ -241,8 +241,8 @@ void test_row_to_column_major(const int device,
         "tiled BF16 transpose preserves every raw bit for partial tiles");
 }
 
-void test_linear(const int device, const evo2c::cuda::Stream &stream,
-                 const evo2c::cuda::BlasLt &blas) {
+void test_linear(const int device, const evo::cuda::Stream &stream,
+                 const evo::cuda::BlasLt &blas) {
   constexpr std::size_t rows = 5;
   constexpr std::size_t input_width = 7;
   constexpr std::size_t output_width = 11;
@@ -265,22 +265,22 @@ void test_linear(const int device, const evo2c::cuda::Stream &stream,
   auto second_bias =
       upload(device, second_bias_bf16.data(),
              second_bias_bf16.size() * sizeof(second_bias_bf16[0]), stream);
-  evo2c::cuda::DeviceBuffer output;
-  evo2c::cuda::DeviceBuffer workspace;
-  evo2c::cuda::Bf16LinearPlan plan;
+  evo::cuda::DeviceBuffer output;
+  evo::cuda::DeviceBuffer workspace;
+  evo::cuda::Bf16LinearPlan plan;
   require(output.allocate(device, rows * output_width * sizeof(__nv_bfloat16)),
           "linear output");
-  require(workspace.allocate(device, evo2c::cuda::kDefaultBlasWorkspaceBytes),
+  require(workspace.allocate(device, evo::cuda::kDefaultBlasWorkspaceBytes),
           "linear workspace");
 
-  require(evo2c::cuda::bf16_linear(blas, input, weight, nullptr, rows,
+  require(evo::cuda::bf16_linear(blas, input, weight, nullptr, rows,
                                    input_width, output_width, &output,
                                    &workspace, stream, &plan),
           "BF16 linear");
   check(plan.build_count() == 1,
         "first BF16 linear call builds exactly one cuBLASLt plan");
   std::vector<float> expected;
-  require(evo2c::cpu::linear(input_f32, rows, input_width, weight_f32,
+  require(evo::cpu::linear(input_f32, rows, input_width, weight_f32,
                              output_width, nullptr, &expected),
           "CPU linear reference");
   auto actual = download_bf16(output, rows * output_width, stream);
@@ -290,7 +290,7 @@ void test_linear(const int device, const evo2c::cuda::Stream &stream,
         "cuBLASLt BF16 linear cosine is at least 0.999");
   const auto first_actual = actual;
 
-  require(evo2c::cuda::bf16_linear(blas, input, weight, nullptr, rows,
+  require(evo::cuda::bf16_linear(blas, input, weight, nullptr, rows,
                                    input_width, output_width, &output,
                                    &workspace, stream, &plan),
           "repeat BF16 linear");
@@ -299,7 +299,7 @@ void test_linear(const int device, const evo2c::cuda::Stream &stream,
   check(download_bf16(output, rows * output_width, stream) == first_actual,
         "same-shape cached BF16 linear is bit deterministic");
 
-  require(evo2c::cuda::bf16_add_bias_inplace(&output, bias, rows, output_width,
+  require(evo::cuda::bf16_add_bias_inplace(&output, bias, rows, output_width,
                                              stream),
           "separate BF16 broadcast bias add");
   std::vector<float> separately_rounded(rows * output_width);
@@ -312,24 +312,24 @@ void test_linear(const int device, const evo2c::cuda::Stream &stream,
             to_float(separately_rounded_bf16),
         "broadcast bias add rounds after the bias operation");
 
-  require(evo2c::cuda::bf16_linear(blas, input, weight, &bias, rows,
+  require(evo::cuda::bf16_linear(blas, input, weight, &bias, rows,
                                    input_width, output_width, &output,
                                    &workspace, stream, &plan),
           "BF16 biased linear");
   check(plan.build_count() == 2,
         "changing the epilogue rebuilds the cuBLASLt plan");
-  require(evo2c::cpu::linear(input_f32, rows, input_width, weight_f32,
+  require(evo::cpu::linear(input_f32, rows, input_width, weight_f32,
                              output_width, &bias_f32, &expected),
           "CPU biased linear reference");
   actual = download_bf16(output, rows * output_width, stream);
   check(all_close(actual, expected, 0.03F, 0.02F),
         "cuBLASLt BF16 biased linear matches F32 reference");
 
-  require(evo2c::cuda::bf16_linear(blas, input, weight, &second_bias, rows,
+  require(evo::cuda::bf16_linear(blas, input, weight, &second_bias, rows,
                                    input_width, output_width, &output,
                                    &workspace, stream, &plan),
           "BF16 biased linear reuses cached plan with another bias");
-  require(evo2c::cpu::linear(input_f32, rows, input_width, weight_f32,
+  require(evo::cpu::linear(input_f32, rows, input_width, weight_f32,
                              output_width, &second_bias_f32, &expected),
           "CPU second biased linear reference");
   actual = download_bf16(output, rows * output_width, stream);
@@ -339,7 +339,7 @@ void test_linear(const int device, const evo2c::cuda::Stream &stream,
         "changing only the bias pointer reuses the cuBLASLt plan");
 
   constexpr std::size_t shorter_rows = rows - 1;
-  require(evo2c::cuda::bf16_linear(blas, input, weight, nullptr, shorter_rows,
+  require(evo::cuda::bf16_linear(blas, input, weight, nullptr, shorter_rows,
                                    input_width, output_width, &output,
                                    &workspace, stream, &plan),
           "different-row BF16 linear");
@@ -348,19 +348,19 @@ void test_linear(const int device, const evo2c::cuda::Stream &stream,
   const std::vector<float> shorter_input(
       input_f32.begin(), input_f32.begin() + static_cast<std::ptrdiff_t>(
                                                  shorter_rows * input_width));
-  require(evo2c::cpu::linear(shorter_input, shorter_rows, input_width,
+  require(evo::cpu::linear(shorter_input, shorter_rows, input_width,
                              weight_f32, output_width, nullptr, &expected),
           "CPU different-row linear reference");
   actual = download_bf16(output, shorter_rows * output_width, stream);
   check(all_close(actual, expected, 0.02F, 0.02F),
         "dimension-rebuilt cuBLASLt plan remains correct");
 
-  evo2c::cuda::Bf16LinearPlan moved = std::move(plan);
+  evo::cuda::Bf16LinearPlan moved = std::move(plan);
   check(moved.build_count() == 3 && plan.build_count() == 0,
         "moving a BF16 linear plan transfers its build counter");
 }
 
-void test_software_e4m3(const int device, const evo2c::cuda::Stream &stream) {
+void test_software_e4m3(const int device, const evo::cuda::Stream &stream) {
   const std::vector<float> values{
       -448.0F,       -432.0F,       -416.0F,        -1.25F,      -1.1875F,
       -1.125F,       -1.0625F,      -1.0F,          -0.5F,       -0.015625F,
@@ -377,12 +377,12 @@ void test_software_e4m3(const int device, const evo2c::cuda::Stream &stream) {
   const auto input_bf16 = to_bf16(values);
   auto input = upload(device, input_bf16.data(),
                       input_bf16.size() * sizeof(input_bf16[0]), stream);
-  evo2c::cuda::DeviceBuffer codes;
-  evo2c::cuda::DeviceBuffer dequantized;
+  evo::cuda::DeviceBuffer codes;
+  evo::cuda::DeviceBuffer dequantized;
   require(codes.allocate(device, values.size()), "E4M3 code output");
   require(dequantized.allocate(device, values.size() * sizeof(float)),
           "E4M3 dequantized output");
-  require(evo2c::cuda::software_e4m3_quantize_bf16(
+  require(evo::cuda::software_e4m3_quantize_bf16(
               input, values.size(), 1.0F, &codes, &dequantized, stream),
           "software E4M3 quantize");
 
@@ -399,14 +399,14 @@ void test_software_e4m3(const int device, const evo2c::cuda::Stream &stream) {
         "sm80 software E4M3 codes match PyTorch bit vectors exactly");
   for (std::size_t index = 0; index < actual_values.size(); ++index) {
     check(actual_values[index] ==
-              evo2c::fp8::decode_e4m3fn(expected_codes[index]),
+              evo::fp8::decode_e4m3fn(expected_codes[index]),
           "sm80 software E4M3 dequantization is bit exact");
   }
   auto input_f32 =
       upload(device, values.data(), values.size() * sizeof(float), stream);
-  evo2c::cuda::DeviceBuffer f32_codes;
+  evo::cuda::DeviceBuffer f32_codes;
   require(f32_codes.allocate(device, values.size()), "F32 E4M3 code output");
-  require(evo2c::cuda::software_e4m3_quantize_f32_codes(
+  require(evo::cuda::software_e4m3_quantize_f32_codes(
               input_f32, values.size(), 1.0F, &f32_codes, stream),
           "software F32-to-E4M3 quantize");
   std::vector<std::uint8_t> actual_f32_codes(values.size());
@@ -416,14 +416,14 @@ void test_software_e4m3(const int device, const evo2c::cuda::Stream &stream) {
   require(stream.synchronize(), "synchronize F32 E4M3 codes");
   check(actual_f32_codes == expected_codes,
         "20B F32 projection quantizer matches E4M3 bit vectors exactly");
-  check(!evo2c::cuda::software_e4m3_quantize_bf16(input, values.size(), 0.0F,
+  check(!evo::cuda::software_e4m3_quantize_bf16(input, values.size(), 0.0F,
                                                   nullptr, &dequantized, stream)
              .ok(),
         "software E4M3 rejects a zero scale");
 }
 
 void test_software_h100_qgmma(const int device,
-                              const evo2c::cuda::Stream &stream) {
+                              const evo::cuda::Stream &stream) {
   constexpr std::size_t rows = 3;
   constexpr std::size_t inner = 64;
   constexpr std::size_t columns = 5;
@@ -436,18 +436,18 @@ void test_software_h100_qgmma(const int device,
                       input_bf16.size() * sizeof(input_bf16[0]), stream);
   auto weight = upload(device, weight_bf16.data(),
                        weight_bf16.size() * sizeof(weight_bf16[0]), stream);
-  evo2c::cuda::DeviceBuffer payload;
-  evo2c::cuda::DeviceBuffer input_codes;
-  evo2c::cuda::DeviceBuffer output;
+  evo::cuda::DeviceBuffer payload;
+  evo::cuda::DeviceBuffer input_codes;
+  evo::cuda::DeviceBuffer output;
   require(payload.allocate(device, weight_bf16.size()), "QGMMA weight payload");
   require(input_codes.allocate(device, input_bf16.size()),
           "QGMMA input-code workspace");
   require(output.allocate(device, rows * columns * sizeof(__nv_bfloat16)),
           "QGMMA output");
-  require(evo2c::cuda::software_e4m3_quantize_bf16_codes(
+  require(evo::cuda::software_e4m3_quantize_bf16_codes(
               weight, weight_bf16.size(), weight_scale, &payload, stream),
           "QGMMA weight quantization");
-  require(evo2c::cuda::software_e4m3_h100_linear(
+  require(evo::cuda::software_e4m3_h100_linear(
               input, payload, rows, inner, columns, input_scale, output_scale,
               &input_codes, &output, stream),
           "software H100 QGMMA");
@@ -456,8 +456,8 @@ void test_software_h100_qgmma(const int device,
   std::vector<float> quantized_weight;
   quantized_weight.reserve(weight_bf16.size());
   for (const auto value : weight_bf16) {
-    quantized_weight.push_back(evo2c::fp8::decode_e4m3fn(
-        evo2c::fp8::encode_e4m3fn(__bfloat162float(value) * weight_scale)));
+    quantized_weight.push_back(evo::fp8::decode_e4m3fn(
+        evo::fp8::encode_e4m3fn(__bfloat162float(value) * weight_scale)));
   }
   std::vector<float> expected;
   expected.reserve(rows * columns);
@@ -466,7 +466,7 @@ void test_software_h100_qgmma(const int device,
     quantized_input.reserve(inner);
     for (std::size_t index = 0; index < inner; ++index) {
       quantized_input.push_back(
-          evo2c::fp8::decode_e4m3fn(evo2c::fp8::encode_e4m3fn(
+          evo::fp8::decode_e4m3fn(evo::fp8::encode_e4m3fn(
               __bfloat162float(input_bf16[row * inner + index]) *
               input_scale)));
     }
@@ -479,7 +479,7 @@ void test_software_h100_qgmma(const int device,
   }
   check(actual == expected, "sm80 software QGMMA is bit exact against the H100 "
                             "global-alignment oracle");
-  require(evo2c::cuda::software_e4m3_h100_linear(
+  require(evo::cuda::software_e4m3_h100_linear(
               input, payload, 1, inner, columns, input_scale, output_scale,
               &input_codes, &output, stream),
           "software H100 QGMMA decode tile");
@@ -487,14 +487,14 @@ void test_software_h100_qgmma(const int device,
   check(decode_actual ==
             std::vector<float>(expected.begin(), expected.begin() + columns),
         "sm80 software QGMMA one-row decode tile is bit exact");
-  check(!evo2c::cuda::software_e4m3_h100_linear(
+  check(!evo::cuda::software_e4m3_h100_linear(
              input, payload, rows, inner - 1, columns, input_scale,
              output_scale, &input_codes, &output, stream)
              .ok(),
         "software QGMMA rejects a non-K32 inner dimension");
 }
 
-void test_rms_norm(const int device, const evo2c::cuda::Stream &stream) {
+void test_rms_norm(const int device, const evo::cuda::Stream &stream) {
   constexpr std::size_t rows = 3;
   constexpr std::size_t width = 257;
   const auto input_bf16 = to_bf16(values(rows * width, 7, 19.0F));
@@ -506,14 +506,14 @@ void test_rms_norm(const int device, const evo2c::cuda::Stream &stream) {
                       input_bf16.size() * sizeof(input_bf16[0]), stream);
   auto scale = upload(device, scale_f32.data(),
                       scale_f32.size() * sizeof(float), stream);
-  evo2c::cuda::DeviceBuffer output;
+  evo::cuda::DeviceBuffer output;
   require(output.allocate(device, input_bf16.size() * sizeof(input_bf16[0])),
           "RMSNorm output");
-  require(evo2c::cuda::bf16_rms_norm(input, scale, rows, width, 1.0e-6F,
+  require(evo::cuda::bf16_rms_norm(input, scale, rows, width, 1.0e-6F,
                                      &output, stream),
           "BF16 RMSNorm");
   std::vector<float> expected;
-  require(evo2c::cpu::rms_norm(input_f32, rows, width, scale_f32, 1.0e-6F,
+  require(evo::cpu::rms_norm(input_f32, rows, width, scale_f32, 1.0e-6F,
                                &expected),
           "CPU RMSNorm reference");
   const auto actual = download_bf16(output, rows * width, stream);
@@ -523,7 +523,7 @@ void test_rms_norm(const int device, const evo2c::cuda::Stream &stream) {
         "BF16 RMSNorm cosine is at least 0.999");
 }
 
-void test_elementwise(const int device, const evo2c::cuda::Stream &stream) {
+void test_elementwise(const int device, const evo::cuda::Stream &stream) {
   constexpr std::size_t elements = 513;
   const auto first_bf16 = to_bf16(values(elements, 11, 13.0F));
   const auto second_bf16 = to_bf16(values(elements, 47, 17.0F));
@@ -533,11 +533,11 @@ void test_elementwise(const int device, const evo2c::cuda::Stream &stream) {
                       first_bf16.size() * sizeof(first_bf16[0]), stream);
   auto second = upload(device, second_bf16.data(),
                        second_bf16.size() * sizeof(second_bf16[0]), stream);
-  evo2c::cuda::DeviceBuffer output;
+  evo::cuda::DeviceBuffer output;
   require(output.allocate(device, elements * sizeof(__nv_bfloat16)),
           "gated output");
-  require(evo2c::cuda::bf16_gated_elementwise(
-              first, second, elements, evo2c::cuda::GatedActivation::kGelu,
+  require(evo::cuda::bf16_gated_elementwise(
+              first, second, elements, evo::cuda::GatedActivation::kGelu,
               &output, stream),
           "GELU gate");
   std::vector<float> expected(elements);
@@ -551,8 +551,8 @@ void test_elementwise(const int device, const evo2c::cuda::Stream &stream) {
   check(all_close(actual, expected, 0.015F, 0.01F),
         "fused GELU gate handles non-multiple tail");
 
-  require(evo2c::cuda::bf16_gated_elementwise(
-              first, second, elements, evo2c::cuda::GatedActivation::kIdentity,
+  require(evo::cuda::bf16_gated_elementwise(
+              first, second, elements, evo::cuda::GatedActivation::kIdentity,
               &output, stream),
           "identity gate");
   for (std::size_t index = 0; index < elements; ++index) {
@@ -562,7 +562,7 @@ void test_elementwise(const int device, const evo2c::cuda::Stream &stream) {
   check(all_close(actual, expected, 0.015F, 0.01F),
         "fused identity gate handles non-multiple tail");
 
-  require(evo2c::cuda::bf16_add_inplace(&output, first, elements, stream),
+  require(evo::cuda::bf16_add_inplace(&output, first, elements, stream),
           "residual add");
   for (std::size_t index = 0; index < elements; ++index)
     expected[index] += first_f32[index];
@@ -572,7 +572,7 @@ void test_elementwise(const int device, const evo2c::cuda::Stream &stream) {
 }
 
 void test_pytorch_gelu_toolkit_independence(const int device,
-                                            const evo2c::cuda::Stream &stream) {
+                                            const evo::cuda::Stream &stream) {
   const std::vector<unsigned short> input_bits{0xc049, 0xc081, 0xc089, 0xc092,
                                                0xc0a0, 0xc0a8, 0xc0ab};
   const std::vector<unsigned short> expected_bits{
@@ -593,23 +593,23 @@ void test_pytorch_gelu_toolkit_independence(const int device,
       upload(device, input.data(), input.size() * sizeof(input[0]), stream);
   auto ones_device =
       upload(device, ones.data(), ones.size() * sizeof(ones[0]), stream);
-  evo2c::cuda::DeviceBuffer output;
+  evo::cuda::DeviceBuffer output;
   require(output.allocate(device, input.size() * sizeof(input[0])),
           "allocate exact GELU output");
-  require(evo2c::cuda::bf16_gelu(input_device, input.size(), &output, stream),
+  require(evo::cuda::bf16_gelu(input_device, input.size(), &output, stream),
           "exact standalone GELU");
   check(download_bf16(output, input.size(), stream) == to_float(expected),
         "standalone GELU matches pinned PyTorch bits across CUDA toolkits");
-  require(evo2c::cuda::bf16_gated_elementwise(
+  require(evo::cuda::bf16_gated_elementwise(
               input_device, ones_device, input.size(),
-              evo2c::cuda::GatedActivation::kGelu, &output, stream),
+              evo::cuda::GatedActivation::kGelu, &output, stream),
           "exact gated GELU");
   check(download_bf16(output, input.size(), stream) == to_float(expected),
         "gated GELU matches pinned PyTorch bits across CUDA toolkits");
 }
 
-void test_mlp(const int device, const evo2c::cuda::Stream &stream,
-              const evo2c::cuda::BlasLt &blas) {
+void test_mlp(const int device, const evo::cuda::Stream &stream,
+              const evo::cuda::BlasLt &blas) {
   constexpr std::size_t rows = 3;
   constexpr std::size_t width = 7;
   constexpr std::size_t inner = 13;
@@ -625,20 +625,20 @@ void test_mlp(const int device, const evo2c::cuda::Stream &stream,
                    stream);
   auto l3 = upload(device, l3_bf16.data(), l3_bf16.size() * sizeof(l3_bf16[0]),
                    stream);
-  evo2c::cuda::MlpWorkspace workspace;
+  evo::cuda::MlpWorkspace workspace;
   require(workspace.allocate(device, rows, inner), "MLP workspace");
-  evo2c::cuda::DeviceBuffer output;
+  evo::cuda::DeviceBuffer output;
   require(output.allocate(device, rows * width * sizeof(__nv_bfloat16)),
           "MLP output");
-  require(evo2c::cuda::bf16_mlp(blas, input, l1, l2, l3, rows, width, inner,
-                                evo2c::cuda::GatedActivation::kGelu, &workspace,
+  require(evo::cuda::bf16_mlp(blas, input, l1, l2, l3, rows, width, inner,
+                                evo::cuda::GatedActivation::kGelu, &workspace,
                                 &output, stream),
           "BF16 MLP");
   std::vector<float> expected;
-  require(evo2c::cpu::gated_mlp(to_float(input_bf16), rows, width, inner,
+  require(evo::cpu::gated_mlp(to_float(input_bf16), rows, width, inner,
                                 to_float(l1_bf16), to_float(l2_bf16),
                                 to_float(l3_bf16),
-                                evo2c::cpu::MlpActivation::kGelu, &expected),
+                                evo::cpu::MlpActivation::kGelu, &expected),
           "CPU MLP reference");
   const auto actual = download_bf16(output, rows * width, stream);
   check(cosine(actual, expected) >= 0.999F,
@@ -648,7 +648,7 @@ void test_mlp(const int device, const evo2c::cuda::Stream &stream,
 }
 
 int requested_device() {
-  const char *environment = std::getenv("EVO2C_TEST_DEVICE");
+  const char *environment = std::getenv("EVO_TEST_DEVICE");
   if (environment == nullptr)
     return 0;
   return std::stoi(environment);
@@ -659,26 +659,26 @@ int requested_device() {
 int main() {
   try {
     const int device = requested_device();
-    require(evo2c::cuda::select_device(device), "select CUDA device");
+    require(evo::cuda::select_device(device), "select CUDA device");
     cudaDeviceProp properties{};
     require(
-        evo2c::cuda::cuda_status(cudaGetDeviceProperties(&properties, device),
+        evo::cuda::cuda_status(cudaGetDeviceProperties(&properties, device),
                                  "cudaGetDeviceProperties"),
         "query CUDA device");
     int driver = 0;
     int runtime = 0;
-    require(evo2c::cuda::cuda_status(cudaDriverGetVersion(&driver),
+    require(evo::cuda::cuda_status(cudaDriverGetVersion(&driver),
                                      "cudaDriverGetVersion"),
             "query CUDA driver");
-    require(evo2c::cuda::cuda_status(cudaRuntimeGetVersion(&runtime),
+    require(evo::cuda::cuda_status(cudaRuntimeGetVersion(&runtime),
                                      "cudaRuntimeGetVersion"),
             "query CUDA runtime");
     std::cout << "GPU=" << properties.name << " sm=" << properties.major
               << properties.minor << " driver=" << driver
               << " runtime=" << runtime << '\n';
 
-    evo2c::cuda::Stream stream;
-    evo2c::cuda::BlasLt blas;
+    evo::cuda::Stream stream;
+    evo::cuda::BlasLt blas;
     require(stream.create(), "create CUDA stream");
     require(blas.create(), "create cuBLASLt handle");
     test_buffer(device, stream);
@@ -691,7 +691,7 @@ int main() {
     test_pytorch_gelu_toolkit_independence(device, stream);
     test_mlp(device, stream, blas);
     require(stream.synchronize(), "final stream synchronize");
-    require(evo2c::cuda::synchronize_device(), "final device synchronize");
+    require(evo::cuda::synchronize_device(), "final device synchronize");
   } catch (const std::exception &error) {
     std::cerr << "FAIL: " << error.what() << '\n';
     return 1;

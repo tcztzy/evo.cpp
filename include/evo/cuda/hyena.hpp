@@ -5,10 +5,10 @@
 
 #include <cufft.h>
 
-#include "evo2c/cuda/runtime.hpp"
-#include "evo2c/status.hpp"
+#include "evo/cuda/runtime.hpp"
+#include "evo/status.hpp"
 
-namespace evo2c::cuda {
+namespace evo::cuda {
 
 enum class FirOrientation { kCrossCorrelation, kCausalConvolution };
 enum class FirBiasMode { kAdd, kMultiplyInput };
@@ -268,4 +268,4 @@ bf16_hcl_decode(const DeviceBuffer &x2, const DeviceBuffer &x1,
                 DeviceBuffer *gated, DeviceBuffer *output,
                 const Stream &stream);
 
-} // namespace evo2c::cuda
+} // namespace evo::cuda

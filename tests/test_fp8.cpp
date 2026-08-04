@@ -1,4 +1,4 @@
-#include "evo2c/fp8.hpp"
+#include "evo/fp8.hpp"
 
 #include <cmath>
 #include <cstdint>
@@ -32,7 +32,7 @@ void test_pytorch_e4m3fn_vectors() {
       {432.0F, 0x7e},        {448.0F, 0x7e},
   };
   for (const auto &[value, expected] : vectors) {
-    const auto actual = evo2c::fp8::encode_e4m3fn(value);
+    const auto actual = evo::fp8::encode_e4m3fn(value);
     if (actual != expected) {
       std::cerr << "FAIL: E4M3FN(" << value << ") produced "
                 << static_cast<unsigned>(actual) << ", expected "
@@ -43,32 +43,32 @@ void test_pytorch_e4m3fn_vectors() {
 }
 
 void test_decode_and_satfinite() {
-  require(evo2c::fp8::decode_e4m3fn(0x01) == 0.001953125F,
+  require(evo::fp8::decode_e4m3fn(0x01) == 0.001953125F,
           "smallest E4M3FN subnormal decodes exactly");
-  require(evo2c::fp8::decode_e4m3fn(0x7e) == 448.0F,
+  require(evo::fp8::decode_e4m3fn(0x7e) == 448.0F,
           "maximum E4M3FN value decodes exactly");
-  require(evo2c::fp8::decode_e4m3fn(0xfe) == -448.0F,
+  require(evo::fp8::decode_e4m3fn(0xfe) == -448.0F,
           "negative maximum E4M3FN value decodes exactly");
-  require(std::isnan(evo2c::fp8::decode_e4m3fn(0x7f)),
+  require(std::isnan(evo::fp8::decode_e4m3fn(0x7f)),
           "E4M3FN NaN code decodes to NaN");
-  require(evo2c::fp8::encode_e4m3fn(1000.0F) == 0x7e,
+  require(evo::fp8::encode_e4m3fn(1000.0F) == 0x7e,
           "positive overflow saturates to finite maximum");
-  require(evo2c::fp8::encode_e4m3fn(-1000.0F) == 0xfe,
+  require(evo::fp8::encode_e4m3fn(-1000.0F) == 0xfe,
           "negative overflow saturates to finite maximum");
-  require(evo2c::fp8::encode_e4m3fn(
+  require(evo::fp8::encode_e4m3fn(
               std::numeric_limits<float>::infinity()) == 0x7e,
           "positive infinity uses NVIDIA satfinite semantics");
-  require(evo2c::fp8::encode_e4m3fn(
+  require(evo::fp8::encode_e4m3fn(
               -std::numeric_limits<float>::infinity()) == 0xfe,
           "negative infinity uses NVIDIA satfinite semantics");
 }
 
 void test_scaled_roundtrip() {
-  require(evo2c::fp8::scaled_e4m3fn_roundtrip(1.1F, 2.0F) == 1.125F,
+  require(evo::fp8::scaled_e4m3fn_roundtrip(1.1F, 2.0F) == 1.125F,
           "scaled roundtrip quantizes in FP32 and descales");
-  require(evo2c::fp8::valid_scale(1.0F), "finite positive FP8 scale is valid");
-  require(!evo2c::fp8::valid_scale(0.0F), "zero FP8 scale is invalid");
-  require(!evo2c::fp8::valid_scale(
+  require(evo::fp8::valid_scale(1.0F), "finite positive FP8 scale is valid");
+  require(!evo::fp8::valid_scale(0.0F), "zero FP8 scale is invalid");
+  require(!evo::fp8::valid_scale(
               std::numeric_limits<float>::infinity()),
           "infinite FP8 scale is invalid");
 }

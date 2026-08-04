@@ -8,11 +8,11 @@
 #include <string>
 #include <vector>
 
-#include "evo2c/model_format.hpp"
-#include "evo2c/status.hpp"
-#include "evo2c/tokenizer.hpp"
+#include "evo/model_format.hpp"
+#include "evo/status.hpp"
+#include "evo/tokenizer.hpp"
 
-namespace evo2c::cuda {
+namespace evo::cuda {
 
 enum class MixerType { kHcs, kHcm, kHcl, kAttention };
 enum class HyenaProjectionDType { kBF16, kE4M3Sw };
@@ -190,4 +190,4 @@ private:
   std::unique_ptr<Impl> impl_;
 };
 
-} // namespace evo2c::cuda
+} // namespace evo::cuda

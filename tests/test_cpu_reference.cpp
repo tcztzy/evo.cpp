@@ -10,7 +10,7 @@
 #include <utility>
 #include <vector>
 
-#include "evo2c/cpu_reference.hpp"
+#include "evo/cpu_reference.hpp"
 
 namespace {
 
@@ -39,7 +39,7 @@ std::vector<float> values(const std::size_t count,
   return result;
 }
 
-void require(const evo2c::Status& status, const std::string_view operation) {
+void require(const evo::Status& status, const std::string_view operation) {
   if (!status.ok()) {
     std::cerr << "fixture " << operation << " failed: " << status.message() << '\n';
     std::abort();
@@ -59,13 +59,13 @@ std::vector<NamedVector> build_fixture() {
     rms_scale.push_back(1.0F + item * 0.1F);
   }
   std::vector<float> result;
-  require(evo2c::cpu::rms_norm(rms_input, 2, 4, rms_scale, 1.0e-6F, &result), "rmsnorm");
+  require(evo::cpu::rms_norm(rms_input, 2, 4, rms_scale, 1.0e-6F, &result), "rmsnorm");
   vectors.emplace_back("rmsnorm", result);
 
   const auto linear_input = values(8, 7, 9.0F);
   const auto linear_weight = values(12, 19, 13.0F);
   const auto linear_bias = values(3, 43, 17.0F);
-  require(evo2c::cpu::linear(linear_input, 2, 4, linear_weight, 3, &linear_bias, &result),
+  require(evo::cpu::linear(linear_input, 2, 4, linear_weight, 3, &linear_bias, &result),
           "linear");
   vectors.emplace_back("linear", result);
 
@@ -73,25 +73,25 @@ std::vector<NamedVector> build_fixture() {
   const auto l1 = values(15, 17, 23.0F);
   const auto l2 = values(15, 41, 29.0F);
   const auto l3 = values(15, 67, 31.0F);
-  require(evo2c::cpu::gated_mlp(mlp_input, 2, 3, 5, l1, l2, l3,
-                                evo2c::cpu::MlpActivation::kGelu, &result),
+  require(evo::cpu::gated_mlp(mlp_input, 2, 3, 5, l1, l2, l3,
+                                evo::cpu::MlpActivation::kGelu, &result),
           "mlp_gelu");
   vectors.emplace_back("mlp_gelu", result);
-  require(evo2c::cpu::gated_mlp(mlp_input, 2, 3, 5, l1, l2, l3,
-                                evo2c::cpu::MlpActivation::kIdentity, &result),
+  require(evo::cpu::gated_mlp(mlp_input, 2, 3, 5, l1, l2, l3,
+                                evo::cpu::MlpActivation::kIdentity, &result),
           "mlp_identity");
   vectors.emplace_back("mlp_identity", result);
 
   const auto fir_input = values(15, 5, 13.0F);
   const auto fir_weight = values(9, 29, 17.0F);
   const auto fir_bias = values(3, 53, 19.0F);
-  require(evo2c::cpu::causal_depthwise_fir(fir_input, 5, 3, fir_weight, 3, &fir_bias, &result),
+  require(evo::cpu::causal_depthwise_fir(fir_input, 5, 3, fir_weight, 3, &fir_bias, &result),
           "fir");
   vectors.emplace_back("fir", result);
-  require(evo2c::cpu::causal_depthwise_fir(
+  require(evo::cpu::causal_depthwise_fir(
               fir_input, 5, 3, fir_weight, 3, &fir_bias, &result,
-              evo2c::cpu::FirOrientation::kCausalConvolution,
-              evo2c::cpu::FirBiasMode::kMultiplyInput),
+              evo::cpu::FirOrientation::kCausalConvolution,
+              evo::cpu::FirBiasMode::kMultiplyInput),
           "fir_causal_gated");
   vectors.emplace_back("fir_causal_gated", result);
 
@@ -99,7 +99,7 @@ std::vector<NamedVector> build_fixture() {
   std::vector<float> x2;
   std::vector<float> x1;
   std::vector<float> value;
-  require(evo2c::cpu::split_hyena_projection(projection, 2, 4, &x2, &x1, &value),
+  require(evo::cpu::split_hyena_projection(projection, 2, 4, &x2, &x1, &value),
           "hyena_split");
   vectors.emplace_back("hyena_x2", x2);
   vectors.emplace_back("hyena_x1", x1);
@@ -115,7 +115,7 @@ std::vector<NamedVector> build_fixture() {
   }
   const auto residues = values(6, 23, 19.0F);
   auto state = values(6, 47, 31.0F);
-  require(evo2c::cpu::hcl_recurrence(hcl_x2, hcl_x1, hcl_value, 4, 3, direct, log_poles,
+  require(evo::cpu::hcl_recurrence(hcl_x2, hcl_x1, hcl_value, 4, 3, direct, log_poles,
                                      residues, 2, &state, &result),
           "hcl");
   vectors.emplace_back("hcl", result);
@@ -125,11 +125,11 @@ std::vector<NamedVector> build_fixture() {
   auto key = values(24, 83, 17.0F);
   const auto attention_value = values(24, 107, 19.0F);
   const std::vector<float> inverse_frequency{1.0F, 0.01F};
-  require(evo2c::cpu::apply_rope(&query, &key, 3, 2, 4, inverse_frequency, 5, 128.0F),
+  require(evo::cpu::apply_rope(&query, &key, 3, 2, 4, inverse_frequency, 5, 128.0F),
           "rope");
   vectors.emplace_back("rope_query", query);
   vectors.emplace_back("rope_key", key);
-  require(evo2c::cpu::causal_attention(query, key, attention_value, 3, 2, 4, &result),
+  require(evo::cpu::causal_attention(query, key, attention_value, 3, 2, 4, &result),
           "attention");
   vectors.emplace_back("attention", result);
   return vectors;
@@ -155,15 +155,15 @@ void test_rms_norm() {
   const std::vector<float> input{3.0F, 4.0F};
   const std::vector<float> scale{1.0F, 2.0F};
   std::vector<float> output;
-  auto status = evo2c::cpu::rms_norm(input, 1, 2, scale, 0.25F, &output);
+  auto status = evo::cpu::rms_norm(input, 1, 2, scale, 0.25F, &output);
   const float denominator = std::sqrt(12.5F) + 0.25F;
   check(status.ok() && output.size() == 2, "RMSNorm accepts a valid row");
   check(close(output[0], 3.0F / denominator) && close(output[1], 8.0F / denominator),
         "RMSNorm adds epsilon after square root");
-  check(!evo2c::cpu::rms_norm(input, 1, 3, scale, 1.0e-6F, &output).ok(),
+  check(!evo::cpu::rms_norm(input, 1, 3, scale, 1.0e-6F, &output).ok(),
         "RMSNorm rejects inconsistent shapes");
   const std::vector<float> non_finite{std::numeric_limits<float>::quiet_NaN(), 1.0F};
-  check(!evo2c::cpu::rms_norm(non_finite, 1, 2, scale, 1.0e-6F, &output).ok(),
+  check(!evo::cpu::rms_norm(non_finite, 1, 2, scale, 1.0e-6F, &output).ok(),
         "RMSNorm rejects non-finite inputs");
 }
 
@@ -172,16 +172,16 @@ void test_linear_and_mlp() {
   const std::vector<float> weight{1.0F, 3.0F, -2.0F, 4.0F};
   const std::vector<float> bias{0.5F, -0.5F};
   std::vector<float> output;
-  auto status = evo2c::cpu::linear(input, 1, 2, weight, 2, &bias, &output);
+  auto status = evo::cpu::linear(input, 1, 2, weight, 2, &bias, &output);
   check(status.ok() && close(output[0], -0.5F) && close(output[1], -8.5F),
         "linear uses PyTorch [out,in] weights and bias");
 
   const std::vector<float> one{1.0F};
-  status = evo2c::cpu::gated_mlp(one, 1, 1, 1, one, one, one,
-                                 evo2c::cpu::MlpActivation::kIdentity, &output);
+  status = evo::cpu::gated_mlp(one, 1, 1, 1, one, one, one,
+                                 evo::cpu::MlpActivation::kIdentity, &output);
   check(status.ok() && close(output[0], 1.0F), "identity gated MLP multiplies l1 and l2");
-  status = evo2c::cpu::gated_mlp(one, 1, 1, 1, one, one, one,
-                                 evo2c::cpu::MlpActivation::kGelu, &output);
+  status = evo::cpu::gated_mlp(one, 1, 1, 1, one, one, one,
+                                 evo::cpu::MlpActivation::kGelu, &output);
   const float expected_gelu = 0.5F * (1.0F + std::erf(1.0F / std::sqrt(2.0F)));
   check(status.ok() && close(output[0], expected_gelu), "layer-zero MLP uses exact GELU");
 }
@@ -190,14 +190,14 @@ void test_fir_and_split() {
   const std::vector<float> input{1.0F, 2.0F, 3.0F, 4.0F};
   const std::vector<float> weight{1.0F, 2.0F, 3.0F};
   std::vector<float> output;
-  auto status = evo2c::cpu::causal_depthwise_fir(input, 4, 1, weight, 3, nullptr, &output);
+  auto status = evo::cpu::causal_depthwise_fir(input, 4, 1, weight, 3, nullptr, &output);
   check(status.ok() && output == std::vector<float>({3.0F, 8.0F, 14.0F, 20.0F}),
         "FIR matches conv1d cross-correlation with causal left padding");
   const std::vector<float> direct{0.5F};
-  status = evo2c::cpu::causal_depthwise_fir(
+  status = evo::cpu::causal_depthwise_fir(
       input, 4, 1, weight, 3, &direct, &output,
-      evo2c::cpu::FirOrientation::kCausalConvolution,
-      evo2c::cpu::FirBiasMode::kMultiplyInput);
+      evo::cpu::FirOrientation::kCausalConvolution,
+      evo::cpu::FirBiasMode::kMultiplyInput);
   check(status.ok() && output == std::vector<float>({1.5F, 5.0F, 11.5F, 18.0F}),
         "HCM FIR uses causal filter order and D times the gated input");
 
@@ -205,7 +205,7 @@ void test_fir_and_split() {
   std::vector<float> x2;
   std::vector<float> x1;
   std::vector<float> value;
-  status = evo2c::cpu::split_hyena_projection(projection, 1, 2, &x2, &x1, &value);
+  status = evo::cpu::split_hyena_projection(projection, 1, 2, &x2, &x1, &value);
   check(status.ok() && x2 == std::vector<float>({20.0F, 21.0F}) &&
             x1 == std::vector<float>({10.0F, 11.0F}) &&
             value == std::vector<float>({30.0F, 31.0F}),
@@ -221,7 +221,7 @@ void test_hcl() {
   const std::vector<float> residues{2.0F};
   std::vector<float> state{1.0F};
   std::vector<float> output;
-  const auto status = evo2c::cpu::hcl_recurrence(x2, x1, value, 2, 1, direct, log_poles,
+  const auto status = evo::cpu::hcl_recurrence(x2, x1, value, 2, 1, direct, log_poles,
                                                   residues, 1, &state, &output);
   check(status.ok() && close(output[0], 22.0F) && close(output[1], 88.5F),
         "HCL applies modal update, residue, direct term, and outer gate");
@@ -232,14 +232,14 @@ void test_rope_and_attention() {
   std::vector<float> query{1.0F, 2.0F, 3.0F, 4.0F};
   std::vector<float> key = query;
   const std::vector<float> frequencies{1.0F, 0.5F};
-  auto status = evo2c::cpu::apply_rope(&query, &key, 1, 1, 4, frequencies, 0, 128.0F);
+  auto status = evo::cpu::apply_rope(&query, &key, 1, 1, 4, frequencies, 0, 128.0F);
   check(status.ok() && query == std::vector<float>({1.0F, 2.0F, 3.0F, 4.0F}),
         "RoPE position zero is identity");
 
   const std::vector<float> q{1.0F, 0.0F, 1.0F, 0.0F};
   const std::vector<float> k{1.0F, 0.0F, 0.0F, 1.0F};
   const std::vector<float> v{2.0F, 3.0F, 5.0F, 7.0F};
-  status = evo2c::cpu::causal_attention(q, k, v, 2, 1, 2, &query);
+  status = evo::cpu::causal_attention(q, k, v, 2, 1, 2, &query);
   const float first_weight = std::exp(1.0F / std::sqrt(2.0F));
   const float denominator = first_weight + 1.0F;
   check(status.ok() && close(query[0], 2.0F) && close(query[1], 3.0F),
@@ -257,7 +257,7 @@ int main(const int argc, char** argv) {
     return 0;
   }
   if (argc != 1) {
-    std::cerr << "usage: evo2c-cpu-reference-tests [--dump-json]\n";
+    std::cerr << "usage: evo-cpu-reference-tests [--dump-json]\n";
     return 2;
   }
   test_rms_norm();

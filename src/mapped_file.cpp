@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "evo2c/mapped_file.hpp"
+#include "evo/mapped_file.hpp"
 
 #include <cerrno>
 #include <cstring>
@@ -10,7 +10,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-namespace evo2c {
+namespace evo {
 namespace {
 
 Status io_error(const std::string& path, const char* operation, const int error) {
@@ -91,5 +91,5 @@ void MappedFile::reset() noexcept {
   }
 }
 
-}  // namespace evo2c
+}  // namespace evo
 

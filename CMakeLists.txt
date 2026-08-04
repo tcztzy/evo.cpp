@@ -1,40 +1,40 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(
-  evo2c
+  evo_cpp
   VERSION 0.1.0
-  DESCRIPTION "Native Evo 2 inference engine"
+  DESCRIPTION "evo.cpp: native Evo 2 inference engine"
   LANGUAGES CXX)
 
 include(CTest)
 include(CheckLanguage)
 
-option(EVO2C_CUDA "Build the CUDA backend" ON)
-option(EVO2C_SANITIZE "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
-option(EVO2C_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+option(EVO_CUDA "Build the CUDA backend" ON)
+option(EVO_SANITIZE "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+option(EVO_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-function(evo2c_configure_target target)
+function(evo_configure_target target)
   target_compile_features(${target} PUBLIC cxx_std_17)
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
-    if(EVO2C_WARNINGS_AS_ERRORS)
+    if(EVO_WARNINGS_AS_ERRORS)
       target_compile_options(${target} PRIVATE -Werror)
     endif()
   elseif(MSVC)
     target_compile_options(${target} PRIVATE /W4)
-    if(EVO2C_WARNINGS_AS_ERRORS)
+    if(EVO_WARNINGS_AS_ERRORS)
       target_compile_options(${target} PRIVATE /WX)
     endif()
   endif()
 
-  if(EVO2C_SANITIZE)
+  if(EVO_SANITIZE)
     if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-      message(FATAL_ERROR "EVO2C_SANITIZE requires a Clang or GNU compiler")
+      message(FATAL_ERROR "EVO_SANITIZE requires a Clang or GNU compiler")
     endif()
     target_compile_options(${target} PRIVATE -fno-omit-frame-pointer -fsanitize=address,undefined)
     target_link_options(${target} PRIVATE -fno-omit-frame-pointer -fsanitize=address,undefined)
@@ -42,7 +42,7 @@ function(evo2c_configure_target target)
 endfunction()
 
 add_library(
-  evo2c_core STATIC
+  evo_core STATIC
   src/cli.cpp
   src/cpu_reference.cpp
   src/fp8.cpp
@@ -55,23 +55,23 @@ add_library(
   src/tokenizer.cpp
   src/version.cpp)
 target_include_directories(
-  evo2c_core
+  evo_core
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
-evo2c_configure_target(evo2c_core)
+evo_configure_target(evo_core)
 
-add_executable(evo2c src/main.cpp)
-target_link_libraries(evo2c PRIVATE evo2c_core)
-evo2c_configure_target(evo2c)
+add_executable(evo src/main.cpp)
+target_link_libraries(evo PRIVATE evo_core)
+evo_configure_target(evo)
 
-add_executable(evo2c-inspect src/inspect_main.cpp)
-target_link_libraries(evo2c-inspect PRIVATE evo2c_core)
-evo2c_configure_target(evo2c-inspect)
+add_executable(evo-inspect src/inspect_main.cpp)
+target_link_libraries(evo-inspect PRIVATE evo_core)
+evo_configure_target(evo-inspect)
 
-if(EVO2C_CUDA)
+if(EVO_CUDA)
   check_language(CUDA)
   if(NOT CMAKE_CUDA_COMPILER)
     message(FATAL_ERROR
-      "EVO2C_CUDA=ON but no CUDA compiler was found. Install CUDA 12.x or configure with -DEVO2C_CUDA=OFF for CPU-only tests.")
+      "EVO_CUDA=ON but no CUDA compiler was found. Install CUDA 12.x or configure with -DEVO_CUDA=OFF for CPU-only tests.")
   endif()
   enable_language(CUDA)
   set(CMAKE_CUDA_STANDARD 17)
@@ -83,48 +83,48 @@ if(EVO2C_CUDA)
   find_package(Threads REQUIRED)
   find_package(CUDAToolkit 12 REQUIRED)
 
-  set(EVO2C_FLASH_ATTENTION_SOURCE_DIR "" CACHE PATH
+  set(EVO_FLASH_ATTENTION_SOURCE_DIR "" CACHE PATH
       "Existing FlashAttention source tree (optional offline override)")
-  set(EVO2C_CUTLASS_SOURCE_DIR "" CACHE PATH
+  set(EVO_CUTLASS_SOURCE_DIR "" CACHE PATH
       "Existing CUTLASS source tree (optional offline override)")
   include(FetchContent)
-  if(NOT EVO2C_FLASH_ATTENTION_SOURCE_DIR)
+  if(NOT EVO_FLASH_ATTENTION_SOURCE_DIR)
     FetchContent_Declare(
-      evo2c_flash_attention
+      evo_flash_attention
       URL https://github.com/Dao-AILab/flash-attention/archive/628452c73a4fab560189a7caa8702642c6a38235.tar.gz
       URL_HASH SHA256=352bee729ad09f21362ed23c22dd4826deeea5acf0a00fb4a86af2863a666958
       DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
-    FetchContent_GetProperties(evo2c_flash_attention)
-    if(NOT evo2c_flash_attention_POPULATED)
-      FetchContent_Populate(evo2c_flash_attention)
+    FetchContent_GetProperties(evo_flash_attention)
+    if(NOT evo_flash_attention_POPULATED)
+      FetchContent_Populate(evo_flash_attention)
     endif()
-    set(EVO2C_FLASH_ATTENTION_SOURCE_DIR
-        "${evo2c_flash_attention_SOURCE_DIR}")
+    set(EVO_FLASH_ATTENTION_SOURCE_DIR
+        "${evo_flash_attention_SOURCE_DIR}")
   endif()
-  if(NOT EVO2C_CUTLASS_SOURCE_DIR)
+  if(NOT EVO_CUTLASS_SOURCE_DIR)
     FetchContent_Declare(
-      evo2c_cutlass
+      evo_cutlass
       URL https://github.com/NVIDIA/cutlass/archive/7127592069c2fe01b041e174ba4345ef9b279671.tar.gz
       URL_HASH SHA256=12baa9c2bf22eaca065b5e55387c21bb4ac742992a6ecd2dd1d3b016dfd25a0a
       DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
-    FetchContent_GetProperties(evo2c_cutlass)
-    if(NOT evo2c_cutlass_POPULATED)
-      FetchContent_Populate(evo2c_cutlass)
+    FetchContent_GetProperties(evo_cutlass)
+    if(NOT evo_cutlass_POPULATED)
+      FetchContent_Populate(evo_cutlass)
     endif()
-    set(EVO2C_CUTLASS_SOURCE_DIR "${evo2c_cutlass_SOURCE_DIR}")
+    set(EVO_CUTLASS_SOURCE_DIR "${evo_cutlass_SOURCE_DIR}")
   endif()
   if(NOT EXISTS
-      "${EVO2C_FLASH_ATTENTION_SOURCE_DIR}/csrc/flash_attn/src/flash_fwd_kernel.h")
+      "${EVO_FLASH_ATTENTION_SOURCE_DIR}/csrc/flash_attn/src/flash_fwd_kernel.h")
     message(FATAL_ERROR
-      "EVO2C_FLASH_ATTENTION_SOURCE_DIR does not contain FlashAttention sources")
+      "EVO_FLASH_ATTENTION_SOURCE_DIR does not contain FlashAttention sources")
   endif()
-  if(NOT EXISTS "${EVO2C_CUTLASS_SOURCE_DIR}/include/cute/tensor.hpp")
+  if(NOT EXISTS "${EVO_CUTLASS_SOURCE_DIR}/include/cute/tensor.hpp")
     message(FATAL_ERROR
-      "EVO2C_CUTLASS_SOURCE_DIR does not contain CUTLASS headers")
+      "EVO_CUTLASS_SOURCE_DIR does not contain CUTLASS headers")
   endif()
 
   add_library(
-    evo2c_cuda STATIC
+    evo_cuda STATIC
     src/cuda/attention.cu
     src/cuda/flash_attention.cu
     src/cuda/hyena.cu
@@ -132,192 +132,192 @@ if(EVO2C_CUDA)
     src/cuda/ops.cu
     src/cuda/runtime.cu)
   target_include_directories(
-    evo2c_cuda
+    evo_cuda
     PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
   # Pinned FlashAttention/CUTLASS headers intentionally trigger host-compiler
-  # warnings. Mark only those include roots as system headers, so the evo2c
+  # warnings. Mark only those include roots as system headers, so the evo
   # wrapper itself remains under the normal -Werror policy.
   target_include_directories(
-    evo2c_cuda SYSTEM PRIVATE
+    evo_cuda SYSTEM PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/third_party/flash-attention-shim
-      ${EVO2C_FLASH_ATTENTION_SOURCE_DIR}/csrc/flash_attn/src
-      ${EVO2C_CUTLASS_SOURCE_DIR}/include)
+      ${EVO_FLASH_ATTENTION_SOURCE_DIR}/csrc/flash_attn/src
+      ${EVO_CUTLASS_SOURCE_DIR}/include)
   target_link_libraries(
-    evo2c_cuda
+    evo_cuda
     PUBLIC
-      evo2c_core
+      evo_core
       Threads::Threads
       CUDA::cudart
       CUDA::cublas
       CUDA::cublasLt
       CUDA::cufft)
   set_target_properties(
-    evo2c_cuda
+    evo_cuda
     PROPERTIES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
   target_compile_options(
-    evo2c_cuda
+    evo_cuda
     PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr;--extended-lambda;-Xcompiler=-Wall,-Wextra,-Wconversion,-Wshadow>)
-  if(EVO2C_WARNINGS_AS_ERRORS)
-    target_compile_options(evo2c_cuda PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Werror>)
+  if(EVO_WARNINGS_AS_ERRORS)
+    target_compile_options(evo_cuda PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Werror>)
   endif()
 
-  target_sources(evo2c PRIVATE src/cuda/inference_cli.cpp)
-  target_link_libraries(evo2c PRIVATE evo2c_cuda)
-  target_compile_definitions(evo2c PRIVATE EVO2C_HAS_CUDA=1)
+  target_sources(evo PRIVATE src/cuda/inference_cli.cpp)
+  target_link_libraries(evo PRIVATE evo_cuda)
+  target_compile_definitions(evo PRIVATE EVO_HAS_CUDA=1)
 
-  add_executable(evo2c-cuda-smoke src/cuda/smoke.cu)
+  add_executable(evo-cuda-smoke src/cuda/smoke.cu)
   target_link_libraries(
-    evo2c-cuda-smoke
-    PRIVATE evo2c_cuda)
+    evo-cuda-smoke
+    PRIVATE evo_cuda)
   set_target_properties(
-    evo2c-cuda-smoke
+    evo-cuda-smoke
     PROPERTIES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
   target_compile_options(
-    evo2c-cuda-smoke
+    evo-cuda-smoke
     PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>)
 
-  add_executable(evo2c-cuda-probe tools/cuda_model_probe.cu)
-  target_link_libraries(evo2c-cuda-probe PRIVATE evo2c_cuda)
+  add_executable(evo-cuda-probe tools/cuda_model_probe.cu)
+  target_link_libraries(evo-cuda-probe PRIVATE evo_cuda)
   set_target_properties(
-    evo2c-cuda-probe
+    evo-cuda-probe
     PROPERTIES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
   target_compile_options(
-    evo2c-cuda-probe
+    evo-cuda-probe
     PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra,-Wconversion,-Wshadow>)
-  if(EVO2C_WARNINGS_AS_ERRORS)
+  if(EVO_WARNINGS_AS_ERRORS)
     target_compile_options(
-      evo2c-cuda-probe PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Werror>)
+      evo-cuda-probe PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Werror>)
   endif()
   if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
-    target_link_libraries(evo2c-cuda-probe PRIVATE stdc++fs)
+    target_link_libraries(evo-cuda-probe PRIVATE stdc++fs)
   endif()
 
   if(BUILD_TESTING)
-    add_executable(evo2c-cuda-ops-tests tests/test_cuda_ops.cu)
-    target_link_libraries(evo2c-cuda-ops-tests PRIVATE evo2c_cuda)
+    add_executable(evo-cuda-ops-tests tests/test_cuda_ops.cu)
+    target_link_libraries(evo-cuda-ops-tests PRIVATE evo_cuda)
     set_target_properties(
-      evo2c-cuda-ops-tests
+      evo-cuda-ops-tests
       PROPERTIES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
     target_compile_options(
-      evo2c-cuda-ops-tests
+      evo-cuda-ops-tests
       PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra,-Wconversion,-Wshadow>)
-    if(EVO2C_WARNINGS_AS_ERRORS)
+    if(EVO_WARNINGS_AS_ERRORS)
       target_compile_options(
-        evo2c-cuda-ops-tests PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Werror>)
+        evo-cuda-ops-tests PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Werror>)
     endif()
 
-    add_executable(evo2c-cuda-hyena-tests tests/test_cuda_hyena.cu)
-    target_link_libraries(evo2c-cuda-hyena-tests PRIVATE evo2c_cuda)
+    add_executable(evo-cuda-hyena-tests tests/test_cuda_hyena.cu)
+    target_link_libraries(evo-cuda-hyena-tests PRIVATE evo_cuda)
     set_target_properties(
-      evo2c-cuda-hyena-tests
+      evo-cuda-hyena-tests
       PROPERTIES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
     target_compile_options(
-      evo2c-cuda-hyena-tests
+      evo-cuda-hyena-tests
       PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra,-Wconversion,-Wshadow>)
-    if(EVO2C_WARNINGS_AS_ERRORS)
+    if(EVO_WARNINGS_AS_ERRORS)
       target_compile_options(
-        evo2c-cuda-hyena-tests PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Werror>)
+        evo-cuda-hyena-tests PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Werror>)
     endif()
 
-    add_executable(evo2c-cuda-attention-tests tests/test_cuda_attention.cu)
-    target_link_libraries(evo2c-cuda-attention-tests PRIVATE evo2c_cuda)
+    add_executable(evo-cuda-attention-tests tests/test_cuda_attention.cu)
+    target_link_libraries(evo-cuda-attention-tests PRIVATE evo_cuda)
     set_target_properties(
-      evo2c-cuda-attention-tests
+      evo-cuda-attention-tests
       PROPERTIES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
     target_compile_options(
-      evo2c-cuda-attention-tests
+      evo-cuda-attention-tests
       PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra,-Wconversion,-Wshadow>)
-    if(EVO2C_WARNINGS_AS_ERRORS)
+    if(EVO_WARNINGS_AS_ERRORS)
       target_compile_options(
-        evo2c-cuda-attention-tests PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Werror>)
+        evo-cuda-attention-tests PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Werror>)
     endif()
 
-    add_executable(evo2c-cuda-model-tests tests/test_cuda_model.cu)
-    target_link_libraries(evo2c-cuda-model-tests PRIVATE evo2c_cuda)
+    add_executable(evo-cuda-model-tests tests/test_cuda_model.cu)
+    target_link_libraries(evo-cuda-model-tests PRIVATE evo_cuda)
     set_target_properties(
-      evo2c-cuda-model-tests
+      evo-cuda-model-tests
       PROPERTIES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
     target_compile_options(
-      evo2c-cuda-model-tests
+      evo-cuda-model-tests
       PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra,-Wconversion,-Wshadow>)
-    if(EVO2C_WARNINGS_AS_ERRORS)
+    if(EVO_WARNINGS_AS_ERRORS)
       target_compile_options(
-        evo2c-cuda-model-tests PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Werror>)
+        evo-cuda-model-tests PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Werror>)
     endif()
 
-    add_executable(evo2c-cuda-pipeline-tests tests/test_cuda_pipeline.cu)
-    target_link_libraries(evo2c-cuda-pipeline-tests PRIVATE evo2c_cuda)
+    add_executable(evo-cuda-pipeline-tests tests/test_cuda_pipeline.cu)
+    target_link_libraries(evo-cuda-pipeline-tests PRIVATE evo_cuda)
     set_target_properties(
-      evo2c-cuda-pipeline-tests
+      evo-cuda-pipeline-tests
       PROPERTIES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
     target_compile_options(
-      evo2c-cuda-pipeline-tests
+      evo-cuda-pipeline-tests
       PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra,-Wconversion,-Wshadow>)
-    if(EVO2C_WARNINGS_AS_ERRORS)
+    if(EVO_WARNINGS_AS_ERRORS)
       target_compile_options(
-        evo2c-cuda-pipeline-tests PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Werror>)
+        evo-cuda-pipeline-tests PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Werror>)
     endif()
 
     add_executable(
-      evo2c-cuda-cli-test-bin
+      evo-cuda-cli-test-bin
       src/main.cpp
       src/cuda/inference_cli.cpp)
-    target_link_libraries(evo2c-cuda-cli-test-bin PRIVATE evo2c_cuda)
+    target_link_libraries(evo-cuda-cli-test-bin PRIVATE evo_cuda)
     target_compile_definitions(
-      evo2c-cuda-cli-test-bin
-      PRIVATE EVO2C_HAS_CUDA=1 EVO2C_ALLOW_TEST_FIXTURE=1)
-    evo2c_configure_target(evo2c-cuda-cli-test-bin)
+      evo-cuda-cli-test-bin
+      PRIVATE EVO_HAS_CUDA=1 EVO_ALLOW_TEST_FIXTURE=1)
+    evo_configure_target(evo-cuda-cli-test-bin)
   endif()
 endif()
 
 if(BUILD_TESTING)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
-  add_executable(evo2c-core-tests tests/test_core.cpp)
-  target_link_libraries(evo2c-core-tests PRIVATE evo2c_core)
-  evo2c_configure_target(evo2c-core-tests)
-  add_test(NAME core COMMAND evo2c-core-tests)
+  add_executable(evo-core-tests tests/test_core.cpp)
+  target_link_libraries(evo-core-tests PRIVATE evo_core)
+  evo_configure_target(evo-core-tests)
+  add_test(NAME core COMMAND evo-core-tests)
 
-  add_executable(evo2c-registry-dump tests/dump_model_registry.cpp)
-  target_link_libraries(evo2c-registry-dump PRIVATE evo2c_core)
-  evo2c_configure_target(evo2c-registry-dump)
+  add_executable(evo-registry-dump tests/dump_model_registry.cpp)
+  target_link_libraries(evo-registry-dump PRIVATE evo_core)
+  evo_configure_target(evo-registry-dump)
   add_test(
     NAME native_registry
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_native_registry.py
-      --binary $<TARGET_FILE:evo2c-registry-dump>
+      --binary $<TARGET_FILE:evo-registry-dump>
       --registry ${CMAKE_CURRENT_SOURCE_DIR}/configs/model-registry.json)
 
-  add_executable(evo2c-model-format-tests tests/test_model_format.cpp)
-  target_link_libraries(evo2c-model-format-tests PRIVATE evo2c_core)
-  evo2c_configure_target(evo2c-model-format-tests)
-  add_test(NAME model_format COMMAND evo2c-model-format-tests)
+  add_executable(evo-model-format-tests tests/test_model_format.cpp)
+  target_link_libraries(evo-model-format-tests PRIVATE evo_core)
+  evo_configure_target(evo-model-format-tests)
+  add_test(NAME model_format COMMAND evo-model-format-tests)
 
-  add_executable(evo2c-frontend-tests tests/test_frontend.cpp)
-  target_link_libraries(evo2c-frontend-tests PRIVATE evo2c_core)
-  evo2c_configure_target(evo2c-frontend-tests)
-  add_test(NAME frontend COMMAND evo2c-frontend-tests)
+  add_executable(evo-frontend-tests tests/test_frontend.cpp)
+  target_link_libraries(evo-frontend-tests PRIVATE evo_core)
+  evo_configure_target(evo-frontend-tests)
+  add_test(NAME frontend COMMAND evo-frontend-tests)
 
   if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
-    target_link_libraries(evo2c-model-format-tests PRIVATE stdc++fs)
-    target_link_libraries(evo2c-frontend-tests PRIVATE stdc++fs)
+    target_link_libraries(evo-model-format-tests PRIVATE stdc++fs)
+    target_link_libraries(evo-frontend-tests PRIVATE stdc++fs)
   endif()
 
-  add_executable(evo2c-cpu-reference-tests tests/test_cpu_reference.cpp)
-  target_link_libraries(evo2c-cpu-reference-tests PRIVATE evo2c_core)
-  evo2c_configure_target(evo2c-cpu-reference-tests)
-  add_test(NAME cpu_reference COMMAND evo2c-cpu-reference-tests)
+  add_executable(evo-cpu-reference-tests tests/test_cpu_reference.cpp)
+  target_link_libraries(evo-cpu-reference-tests PRIVATE evo_core)
+  evo_configure_target(evo-cpu-reference-tests)
+  add_test(NAME cpu_reference COMMAND evo-cpu-reference-tests)
 
-  add_executable(evo2c-fp8-tests tests/test_fp8.cpp)
-  target_link_libraries(evo2c-fp8-tests PRIVATE evo2c_core)
-  evo2c_configure_target(evo2c-fp8-tests)
-  add_test(NAME fp8 COMMAND evo2c-fp8-tests)
+  add_executable(evo-fp8-tests tests/test_fp8.cpp)
+  target_link_libraries(evo-fp8-tests PRIVATE evo_core)
+  evo_configure_target(evo-fp8-tests)
+  add_test(NAME fp8 COMMAND evo-fp8-tests)
 
   add_test(
     NAME cpu_reference_vectors
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cpu_vectors.py
-      --binary $<TARGET_FILE:evo2c-cpu-reference-tests>
+      --binary $<TARGET_FILE:evo-cpu-reference-tests>
       --fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/cpu_ops.json
       --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_cpu_vectors.py)
   add_test(
@@ -330,22 +330,22 @@ if(BUILD_TESTING)
   add_test(
     NAME model_inspect_contract
     COMMAND ${CMAKE_COMMAND}
-      -DEVO2C_FIXTURE_WRITER=$<TARGET_FILE:evo2c-model-format-tests>
-      -DEVO2C_INSPECT_BINARY=$<TARGET_FILE:evo2c-inspect>
-      -DEVO2C_FIXTURE_PATH=${CMAKE_CURRENT_BINARY_DIR}/Testing/tiny.safetensors
+      -DEVO_FIXTURE_WRITER=$<TARGET_FILE:evo-model-format-tests>
+      -DEVO_INSPECT_BINARY=$<TARGET_FILE:evo-inspect>
+      -DEVO_FIXTURE_PATH=${CMAKE_CURRENT_BINARY_DIR}/Testing/tiny.safetensors
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/model_inspect_contract.cmake)
 
   add_test(
     NAME cli_contract
     COMMAND ${CMAKE_COMMAND}
-      -DEVO2C_BINARY=$<TARGET_FILE:evo2c>
-      -DEVO2C_INSPECT_BINARY=$<TARGET_FILE:evo2c-inspect>
+      -DEVO_BINARY=$<TARGET_FILE:evo>
+      -DEVO_INSPECT_BINARY=$<TARGET_FILE:evo-inspect>
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_contract.cmake)
 
   add_test(
     NAME runtime_dependencies
     COMMAND ${CMAKE_COMMAND}
-      -DEVO2C_BINARY=$<TARGET_FILE:evo2c>
+      -DEVO_BINARY=$<TARGET_FILE:evo>
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/runtime_dependencies.cmake)
 
   add_test(
@@ -369,7 +369,7 @@ if(BUILD_TESTING)
     NAME prefill_benchmark_gate
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_prefill_benchmark_gate.py
-      --tool ${CMAKE_CURRENT_SOURCE_DIR}/tools/evo2c/prefill_benchmark_gate.py
+      --tool ${CMAKE_CURRENT_SOURCE_DIR}/tools/evo/prefill_benchmark_gate.py
       --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/prefill-benchmark-gate)
   add_test(
     NAME source_hygiene
@@ -381,7 +381,7 @@ if(BUILD_TESTING)
     NAME converter_roundtrip
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_converter.py
-      --inspector $<TARGET_FILE:evo2c-inspect>
+      --inspector $<TARGET_FILE:evo-inspect>
       --config ${CMAKE_CURRENT_SOURCE_DIR}/configs/evo2-40b-1m.yml
       --config-dir ${CMAKE_CURRENT_SOURCE_DIR}/configs
       --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/converter)
@@ -441,22 +441,22 @@ if(BUILD_TESTING)
       ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools"
       SKIP_RETURN_CODE 77)
 
-  if(EVO2C_CUDA)
-    add_test(NAME cuda_smoke COMMAND evo2c-cuda-smoke)
-    add_test(NAME cuda_ops COMMAND evo2c-cuda-ops-tests)
+  if(EVO_CUDA)
+    add_test(NAME cuda_smoke COMMAND evo-cuda-smoke)
+    add_test(NAME cuda_ops COMMAND evo-cuda-ops-tests)
     add_test(
       NAME fp8_sass
       COMMAND ${CMAKE_COMMAND}
-        -DEVO2C_CUDA_BINARY=$<TARGET_FILE:evo2c-cuda-ops-tests>
-        -DEVO2C_CUOBJDUMP=${CUDAToolkit_BIN_DIR}/cuobjdump
+        -DEVO_CUDA_BINARY=$<TARGET_FILE:evo-cuda-ops-tests>
+        -DEVO_CUOBJDUMP=${CUDAToolkit_BIN_DIR}/cuobjdump
         -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/fp8_sass_contract.cmake)
-    add_test(NAME cuda_hyena COMMAND evo2c-cuda-hyena-tests)
-    add_test(NAME cuda_attention COMMAND evo2c-cuda-attention-tests)
+    add_test(NAME cuda_hyena COMMAND evo-cuda-hyena-tests)
+    add_test(NAME cuda_attention COMMAND evo-cuda-attention-tests)
     add_test(
       NAME cuda_model
       COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cuda_model.py
-        --binary $<TARGET_FILE:evo2c-cuda-model-tests>
+        --binary $<TARGET_FILE:evo-cuda-model-tests>
         --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_tiny_model.py
         --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/cuda_model
         --check-precision-metadata)
@@ -464,14 +464,14 @@ if(BUILD_TESTING)
       NAME cuda_pipeline
       COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cuda_model.py
-        --binary $<TARGET_FILE:evo2c-cuda-pipeline-tests>
+        --binary $<TARGET_FILE:evo-cuda-pipeline-tests>
         --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_tiny_model.py
         --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/cuda_pipeline)
     add_test(
       NAME cuda_cli
       COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cuda_cli.py
-        --binary $<TARGET_FILE:evo2c-cuda-cli-test-bin>
+        --binary $<TARGET_FILE:evo-cuda-cli-test-bin>
         --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_tiny_model.py
         --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/cuda_cli)
     set_tests_properties(cuda_smoke PROPERTIES LABELS "gpu;cuda")

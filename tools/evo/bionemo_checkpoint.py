@@ -1,4 +1,4 @@
-"""Streaming BioNeMo NeMo2/MBridge DCP to EVO2C tensor mapping."""
+"""Streaming BioNeMo NeMo2/MBridge DCP to EVO tensor mapping."""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from evo2c.checkpoint import CheckpointError
-from evo2c.model_config import (
+from evo.checkpoint import CheckpointError
+from evo.model_config import (
     ModelConfig,
     TensorSpec,
     bionemo_checkpoint_manifest,
@@ -213,7 +213,7 @@ def build_mapping_groups(config: ModelConfig) -> list[MappingGroup]:
     output_names = [spec.name for group in groups for spec in group.outputs]
     manifest_names = [spec.name for spec in manifest]
     if output_names != manifest_names:
-        raise AssertionError("BioNeMo mapping order does not match EVO2C manifest")
+        raise AssertionError("BioNeMo mapping order does not match EVO manifest")
     return groups
 
 
@@ -629,7 +629,7 @@ def load_bionemo_checkpoint(
     path: Path,
     config: ModelConfig,
 ) -> tuple[list[DcpTensorSource], DcpReader]:
-    """Validate DCP metadata and return lazy, streaming EVO2C tensor sources."""
+    """Validate DCP metadata and return lazy, streaming EVO tensor sources."""
     reader = DcpReader(path)
     groups = build_mapping_groups(config)
     bound_groups = resolve_mapping(groups, reader.tensor_metadata)

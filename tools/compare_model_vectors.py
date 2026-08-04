@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare native EVO2C layer/logit dumps with official Vortex BF16 vectors."""
+"""Compare native EVO layer/logit dumps with official Vortex BF16 vectors."""
 
 import argparse
 import json

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "evo2c/cuda/attention.hpp"
+#include "evo/cuda/attention.hpp"
 
 #include <climits>
 #include <cmath>
@@ -12,7 +12,7 @@
 #include <cuda_bf16.h>
 #include <math_constants.h>
 
-namespace evo2c::cuda {
+namespace evo::cuda {
 namespace {
 
 constexpr int kAttentionThreads = 256;
@@ -688,24 +688,24 @@ Status launch_cached_large_softmax(__nv_bfloat16 *const output,
   const int register_count = (columns + kThreads - 1) / kThreads;
   const std::size_t reduction_bytes = (kThreads / 32) * sizeof(float);
   if (register_count < 10) {
-#define EVO2C_REGISTER_SOFTMAX_CASE(value)                                     \
+#define EVO_REGISTER_SOFTMAX_CASE(value)                                     \
   case value:                                                                  \
     cached_softmax_register_kernel<value>                                      \
         <<<rows, kThreads, reduction_bytes, stream>>>(output, input, columns); \
     break
     switch (register_count) {
-      EVO2C_REGISTER_SOFTMAX_CASE(3);
-      EVO2C_REGISTER_SOFTMAX_CASE(4);
-      EVO2C_REGISTER_SOFTMAX_CASE(5);
-      EVO2C_REGISTER_SOFTMAX_CASE(6);
-      EVO2C_REGISTER_SOFTMAX_CASE(7);
-      EVO2C_REGISTER_SOFTMAX_CASE(8);
-      EVO2C_REGISTER_SOFTMAX_CASE(9);
+      EVO_REGISTER_SOFTMAX_CASE(3);
+      EVO_REGISTER_SOFTMAX_CASE(4);
+      EVO_REGISTER_SOFTMAX_CASE(5);
+      EVO_REGISTER_SOFTMAX_CASE(6);
+      EVO_REGISTER_SOFTMAX_CASE(7);
+      EVO_REGISTER_SOFTMAX_CASE(8);
+      EVO_REGISTER_SOFTMAX_CASE(9);
     default:
       return {ErrorCode::kUnsupported,
               "cached register softmax dispatch is unavailable"};
     }
-#undef EVO2C_REGISTER_SOFTMAX_CASE
+#undef EVO_REGISTER_SOFTMAX_CASE
     return launch_status("PyTorch-compatible cached register softmax");
   }
 
@@ -758,28 +758,28 @@ Status dispatch_cached_softmax(DeviceBuffer *const output,
   int log2_elements = 0;
   while ((1ULL << log2_elements) < columns)
     ++log2_elements;
-#define EVO2C_SOFTMAX_CASE(value)                                              \
+#define EVO_SOFTMAX_CASE(value)                                              \
   case value:                                                                  \
     launch_cached_softmax<value>(destination, source, static_cast<int>(rows),  \
                                  static_cast<int>(columns), stream.get());     \
     break
   switch (log2_elements) {
-    EVO2C_SOFTMAX_CASE(0);
-    EVO2C_SOFTMAX_CASE(1);
-    EVO2C_SOFTMAX_CASE(2);
-    EVO2C_SOFTMAX_CASE(3);
-    EVO2C_SOFTMAX_CASE(4);
-    EVO2C_SOFTMAX_CASE(5);
-    EVO2C_SOFTMAX_CASE(6);
-    EVO2C_SOFTMAX_CASE(7);
-    EVO2C_SOFTMAX_CASE(8);
-    EVO2C_SOFTMAX_CASE(9);
-    EVO2C_SOFTMAX_CASE(10);
-    EVO2C_SOFTMAX_CASE(11);
+    EVO_SOFTMAX_CASE(0);
+    EVO_SOFTMAX_CASE(1);
+    EVO_SOFTMAX_CASE(2);
+    EVO_SOFTMAX_CASE(3);
+    EVO_SOFTMAX_CASE(4);
+    EVO_SOFTMAX_CASE(5);
+    EVO_SOFTMAX_CASE(6);
+    EVO_SOFTMAX_CASE(7);
+    EVO_SOFTMAX_CASE(8);
+    EVO_SOFTMAX_CASE(9);
+    EVO_SOFTMAX_CASE(10);
+    EVO_SOFTMAX_CASE(11);
   default:
     return {ErrorCode::kUnsupported, "cached softmax dispatch is unavailable"};
   }
-#undef EVO2C_SOFTMAX_CASE
+#undef EVO_SOFTMAX_CASE
   return launch_status("PyTorch-compatible cached softmax kernel");
 }
 
@@ -1853,4 +1853,4 @@ Status bf16_mha_decode(const DeviceBuffer &qkv,
                           position_scale, cache, workspace, output, stream);
 }
 
-} // namespace evo2c::cuda
+} // namespace evo::cuda

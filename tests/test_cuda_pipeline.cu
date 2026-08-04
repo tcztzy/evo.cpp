@@ -14,11 +14,11 @@
 
 #include <cuda_runtime_api.h>
 
-#include "evo2c/cuda/model.hpp"
-#include "evo2c/cuda/runtime.hpp"
-#include "evo2c/model_format.hpp"
-#include "evo2c/status.hpp"
-#include "evo2c/tokenizer.hpp"
+#include "evo/cuda/model.hpp"
+#include "evo/cuda/runtime.hpp"
+#include "evo/model_format.hpp"
+#include "evo/status.hpp"
+#include "evo/tokenizer.hpp"
 
 namespace {
 
@@ -31,7 +31,7 @@ void check(const bool condition, const std::string_view description) {
   }
 }
 
-void require(const evo2c::Status &status, const std::string_view operation) {
+void require(const evo::Status &status, const std::string_view operation) {
   if (!status.ok())
     throw std::runtime_error(std::string{operation} + ": " + status.message());
 }
@@ -115,7 +115,7 @@ int main(const int argc, char **argv) {
       return 2;
     }
     int device_count = 0;
-    require(evo2c::cuda::cuda_status(cudaGetDeviceCount(&device_count),
+    require(evo::cuda::cuda_status(cudaGetDeviceCount(&device_count),
                                      "cudaGetDeviceCount"),
             "count CUDA devices");
     if (device_count < 1) {
@@ -123,10 +123,10 @@ int main(const int argc, char **argv) {
       return 77;
     }
 
-    evo2c::ModelFile file;
+    evo::ModelFile file;
     require(file.open(argv[1]), "open synthetic pipeline model");
     {
-      evo2c::cuda::PipelineModel one_gpu_model;
+      evo::cuda::PipelineModel one_gpu_model;
       require(one_gpu_model.load(file, {0}, 12, true),
               "load one-GPU pipeline model");
       const auto &one_gpu_stages = one_gpu_model.stages();
@@ -146,7 +146,7 @@ int main(const int argc, char **argv) {
       return failures == 0 ? 0 : 1;
     }
     {
-      evo2c::cuda::PipelineModel two_gpu_model;
+      evo::cuda::PipelineModel two_gpu_model;
       require(two_gpu_model.load(file, {0, 1}, 12, true),
               "load two-GPU pipeline model");
       const auto &two_gpu_stages = two_gpu_model.stages();
@@ -168,7 +168,7 @@ int main(const int argc, char **argv) {
       std::cout << "SKIP: four-GPU checks require four CUDA devices\n";
       return failures == 0 ? 0 : 1;
     }
-    evo2c::cuda::PipelineModel model;
+    evo::cuda::PipelineModel model;
     check(!model.load(file, {0, 0, 1, 2}, 8, true).ok(),
           "pipeline rejects duplicate CUDA devices");
     require(model.load(file, {0, 1, 2, 3}, 12, true),
@@ -177,7 +177,7 @@ int main(const int argc, char **argv) {
           "pipeline exposes its fixed eight-token activation arena");
 
     const auto &stages = model.stages();
-    const std::vector<evo2c::cuda::StageAssignment> expected_stages{
+    const std::vector<evo::cuda::StageAssignment> expected_stages{
         {0, 0, 13, 0, 0, 0},
         {1, 13, 26, 0, 0, 0},
         {2, 26, 38, 0, 0, 0},
@@ -204,9 +204,9 @@ int main(const int argc, char **argv) {
     const auto &config = model.config();
     const auto hcm_layers = static_cast<std::uint64_t>(
         std::count(config.mixer_types.begin(), config.mixer_types.end(),
-                   evo2c::cuda::MixerType::kHcm));
+                   evo::cuda::MixerType::kHcm));
     const std::uint64_t hcm_element_bytes =
-        config.hcm_filter_dtype == evo2c::cuda::HcmFilterDType::kF32 ? 4 : 2;
+        config.hcm_filter_dtype == evo::cuda::HcmFilterDType::kF32 ? 4 : 2;
     const std::uint64_t grouped_filter_expansion =
         hcm_layers * (config.width - config.hcm_filter_groups) *
         config.hcm_filter_length * hcm_element_bytes;
@@ -219,18 +219,18 @@ int main(const int argc, char **argv) {
                .prefill_with_dumps(
                    {1}, &rejected_logits,
                    {{17, std::string{argv[5]} + ".invalid.npy",
-                     static_cast<evo2c::cuda::LayerDumpPoint>(999)}})
+                     static_cast<evo::cuda::LayerDumpPoint>(999)}})
                .ok(),
           "pipeline rejects an invalid intermediate dump point");
 
-    const std::vector<evo2c::TokenId> prompt{2, 5, 7, 3};
+    const std::vector<evo::TokenId> prompt{2, 5, 7, 3};
     std::vector<float> logits;
     const std::string copy_path = std::string{argv[5]} + ".copy.npy";
     const std::string norm_path = std::string{argv[5]} + ".pre_norm.npy";
-    const std::vector<evo2c::cuda::LayerDump> dumps{
+    const std::vector<evo::cuda::LayerDump> dumps{
         {17, argv[5]},
         {17, copy_path},
-        {17, norm_path, evo2c::cuda::LayerDumpPoint::kPreNorm}};
+        {17, norm_path, evo::cuda::LayerDumpPoint::kPreNorm}};
     std::vector<float> stateless_logits;
     require(model.prefill_stateless(prompt, &stateless_logits),
             "stateless pipeline prefill");
@@ -272,9 +272,9 @@ int main(const int argc, char **argv) {
     check(model.position() == prompt.size() + 1,
           "pipeline decode advances position");
 
-    const std::vector<evo2c::TokenId> long_prompt{2,  5,  7,  3, 9,
+    const std::vector<evo::TokenId> long_prompt{2,  5,  7,  3, 9,
                                                   11, 13, 17, 19};
-    const std::vector<evo2c::TokenId> initial_chunk(long_prompt.begin(),
+    const std::vector<evo::TokenId> initial_chunk(long_prompt.begin(),
                                                     long_prompt.begin() + 8);
     std::vector<float> first_chunk;
     std::vector<float> final_chunk;

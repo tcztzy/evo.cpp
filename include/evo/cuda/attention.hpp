@@ -5,10 +5,10 @@
 #include <cstdint>
 #include <vector>
 
-#include "evo2c/cuda/runtime.hpp"
-#include "evo2c/status.hpp"
+#include "evo/cuda/runtime.hpp"
+#include "evo/status.hpp"
 
-namespace evo2c::cuda {
+namespace evo::cuda {
 
 enum class QkvLayout {
   // [tokens,3,heads,head_dim], as produced by a projection-major weight.
@@ -153,4 +153,4 @@ bf16_mha_decode(const DeviceBuffer &qkv, const DeviceBuffer &inverse_frequency,
                 KvCache *cache, AttentionWorkspace *workspace,
                 DeviceBuffer *output, const Stream &stream);
 
-} // namespace evo2c::cuda
+} // namespace evo::cuda

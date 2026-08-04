@@ -3,7 +3,7 @@
 
 #include <string_view>
 
-namespace evo2c {
+namespace evo {
 
 inline constexpr int kVersionMajor = 0;
 inline constexpr int kVersionMinor = 1;
@@ -11,5 +11,5 @@ inline constexpr int kVersionPatch = 0;
 
 [[nodiscard]] std::string_view version() noexcept;
 
-}  // namespace evo2c
+}  // namespace evo
 

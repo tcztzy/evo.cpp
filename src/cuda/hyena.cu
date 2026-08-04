@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "evo2c/cuda/hyena.hpp"
+#include "evo/cuda/hyena.hpp"
 
 #include <algorithm>
 #include <array>
@@ -13,9 +13,9 @@
 #include <cuda_bf16.h>
 #include <cufftXt.h>
 
-#include "evo2c/cuda/ops.hpp"
+#include "evo/cuda/ops.hpp"
 
-namespace evo2c::cuda {
+namespace evo::cuda {
 namespace {
 
 constexpr int kThreads = 256;
@@ -2116,4 +2116,4 @@ Status bf16_hcl_decode(const DeviceBuffer &x2, const DeviceBuffer &x1,
   return launch_status("HCL decode kernel");
 }
 
-} // namespace evo2c::cuda
+} // namespace evo::cuda

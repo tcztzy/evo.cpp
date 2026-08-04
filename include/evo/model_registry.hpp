@@ -5,7 +5,7 @@
 #include <string_view>
 #include <vector>
 
-namespace evo2c {
+namespace evo {
 
 enum class OfficialProjectionPrecision { kBF16, kE4M3Software };
 enum class OfficialProjectionWeightDType { kBF16, kF32 };
@@ -38,4 +38,4 @@ struct OfficialModelSpec final {
 [[nodiscard]] const OfficialModelSpec *
 find_official_model(std::string_view model_id) noexcept;
 
-} // namespace evo2c
+} // namespace evo

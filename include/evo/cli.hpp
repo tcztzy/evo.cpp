@@ -8,10 +8,10 @@
 #include <string_view>
 #include <vector>
 
-#include "evo2c/sampler.hpp"
-#include "evo2c/status.hpp"
+#include "evo/sampler.hpp"
+#include "evo/status.hpp"
 
-namespace evo2c {
+namespace evo {
 
 enum class RunMode { kGenerate, kScore };
 
@@ -38,4 +38,4 @@ struct CliOptions final {
 [[nodiscard]] std::string_view cli_usage() noexcept;
 [[nodiscard]] Status parse_cli(int argc, char* const argv[], CliOptions* options);
 
-}  // namespace evo2c
+}  // namespace evo

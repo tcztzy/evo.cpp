@@ -7,13 +7,13 @@ Validated on 2026-07-23:
 - NVIDIA driver 580.126.20
 - bidirectional CUDA P2P read/write available between every GPU pair
 - Apptainer 1.4.5
-- CUDA 12.8.93 inside `$HOME/evo2c-cuda12.8-rocky8.sif`
+- CUDA 12.8.93 inside `$HOME/evo.cpp-cuda12.8-rocky8.sif`
 - image: 4,843,704,320 bytes, SHA256
   `d5f2682c742a4bd1af0f2d70c7c8d5e63bdbc6ca76c41df0c941b31849fe5667`
 - native CUDA target: `sm_80`
 - aria2 1.37.0 from the user's read-only Nix profile
 - conversion Python 3.12 and CPU PyTorch 2.10.0 from the user's read-only
-  Nix profile; the script bootstraps `$HOME/.venv-evo2c-convert`
+  Nix profile; the script bootstraps `$HOME/.venv-evo.cpp-convert`
 
 The checkpoint cache is remote-only. Set
 `HF_HOME=/build/grp_icg/users/tang/.cache`; Hugging Face stores repository
@@ -33,9 +33,9 @@ Historical generated artifacts from the pre-Safetensors container:
 
 | File | Bytes | SHA256 |
 |---|---:|---|
-| `$HOME/evo2c-models/evo2_40b.pt` | 82,253,491,694 | `dd299612b1c1cdded0dfdcaf4d16f98fc97458261d80f4d662429f0ccb316bc3` |
-| `$HOME/evo2c-models/evo2-40b-e4m3sw.evo2` | 82,252,717,056 | `d1619e3b2eef0fba7c5838bb61982e891cf63d55385ced865af06693222d6687` |
-| `$HOME/evo2c-models/evo2-40b-bionemo-bf16.evo2` | 82,254,509,184 | `3fb2ec7ed2c89c4f88dcb9c4c6f675e46c2b37722ee82778ce0ff84794dfa5c8` |
+| `$HOME/evo.cpp-models/evo2_40b.pt` | 82,253,491,694 | `dd299612b1c1cdded0dfdcaf4d16f98fc97458261d80f4d662429f0ccb316bc3` |
+| `$HOME/evo.cpp-models/evo2-40b-e4m3sw.evo2` | 82,252,717,056 | `d1619e3b2eef0fba7c5838bb61982e891cf63d55385ced865af06693222d6687` |
+| `$HOME/evo.cpp-models/evo2-40b-bionemo-bf16.evo2` | 82,254,509,184 | `3fb2ec7ed2c89c4f88dcb9c4c6f675e46c2b37722ee82778ce0ff84794dfa5c8` |
 
 ## BioNeMo 40B BF16 provenance and oracle
 
@@ -44,12 +44,12 @@ The native BF16 model comes from NVIDIA's NGC resource
 with SHA256
 `544b47e033d1fb0261b686a53f7c4fe240cd290253187d31e8c99dea9e35a680`.
 Its NeMo2 DCP manifest contains 506 BF16 data tensors and 210 byte metadata
-entries. The EVO2C converter maps those data tensors to 537 output tensors and
+entries. The evo.cpp converter maps those data tensors to 537 output tensors and
 uses the same BF16-to-F32 filter materialization as NVIDIA's exporter.
 
 As an independent loader check, Megatron Bridge 0.4.1 converted the same DCP
 to its native checkpoint at
-`$HOME/evo2c-models/evo2-40b-bionemo-mbridge-bf16`. The resulting 515 files
+`$HOME/evo.cpp-models/evo2-40b-bionemo-mbridge-bf16`. The resulting 515 files
 total 82,241,616,477 bytes; `.metadata` has SHA256
 `bbd16963098f00812b400d8488e6588918ba515d6006d27efcfd35c34411dace`.
 
@@ -81,7 +81,7 @@ Generation took 8.71 seconds (0.9 tok/s) after model loading, with a reported
 The matching native gate ran on physical GPUs 1 and 2 while unrelated jobs
 occupied about 8.5 GiB on each card. Runtime binary SHA256 was
 `73b3c2ac5cdfd362ff9a4c4c973b81a4682437ddd1d08e92f60bb99e1f84c123`.
-EVO2C split the 50 layers evenly and reported peak allocation deltas of
+evo.cpp split the 50 layers evenly and reported peak allocation deltas of
 45,392,855,040 and 45,376,077,824 bytes, so both processes remained well
 below the 80 GiB physical limit even under contention.
 
@@ -101,7 +101,7 @@ byte-identical to the official `ACGTACGT`. The combined comparison report is
 3,110 bytes with SHA256
 `864f8f64ffaf18de005c770412c9ab31a1775c98556dd1da67ff49e0b984e44c`.
 All artifacts are under
-`$HOME/evo2c-artifacts/t22-bionemo-bf16-3fb2ec7e-gpu12`; its hash manifest has
+`$HOME/evo.cpp-artifacts/t22-bionemo-bf16-3fb2ec7e-gpu12`; its hash manifest has
 SHA256
 `fa68a8c1a061c992ba4f1fb3647309138ffaf15ca1fb29c02a446acbfd77f5b2`.
 
@@ -115,28 +115,28 @@ scripts/gpu02_prepare_40b.sh
 scripts/gpu02_quality.sh
 ```
 
-`gpu02_build.sh` constructs `$HOME/evo2c-cuda12.8-rocky8.sif` from
-`containers/evo2c-cuda12.8-rocky8.def` when the image is absent, then reuses it
+`gpu02_build.sh` constructs `$HOME/evo.cpp-cuda12.8-rocky8.sif` from
+`containers/evo.cpp-cuda12.8-rocky8.def` when the image is absent, then reuses it
 on later runs.
 
 The preparation script resumes both official checkpoint parts into the shared
 Hugging Face cache with ordinary HTTP Range requests against the mirror. This
 avoids depending on FP8 packages or the Xet reconstruction client. It verifies
 exact sizes and SHA256 values before publishing cache blobs, merges them in
-numeric order, records the merged SHA in EVO2C metadata, performs the streaming
+numeric order, records the merged SHA in evo.cpp metadata, performs the streaming
 BF16 data conversion, extracts the 42 Transformer Engine projection scale
-states, and validates the resulting 663-tensor file with `evo2c-inspect`.
-Model files remain under `$HOME/evo2c-models` on gpu02.
+states, and validates the resulting 663-tensor file with `evo-inspect`.
+Model files remain under `$HOME/evo.cpp-models` on gpu02.
 
 The long-running preparation phase executes as a detached remote worker. Its
 PID, log, and atomically published exit status are kept under
-`$HOME/evo2c-models/.prepare-40b-jobs`; the local wrapper reconnects and resumes
+`$HOME/evo.cpp-models/.prepare-40b-jobs`; the local wrapper reconnects and resumes
 polling after SSH or jump-host interruptions.
 
 The official four-prompt generation gate uses the same detached-worker
 contract through `gpu02_quality.sh`. It stores job control below
-`$HOME/evo2c-artifacts/.quality-jobs` and writes its consolidated quality
-report to `$HOME/evo2c-artifacts/t13-native-quality-4x500.json`.
+`$HOME/evo.cpp-artifacts/.quality-jobs` and writes its consolidated quality
+report to `$HOME/evo.cpp-artifacts/t13-native-quality-4x500.json`.
 
 ## Evo 2 40B production validation
 
@@ -176,7 +176,7 @@ The exact-log-softmax score run used binary SHA256
 For `tests/vectors/t13_short.fasta`, it scored 15 targets with total
 log-likelihood -21.115582024538305, mean -1.4077054683025536, and perplexity
 4.0865678786711825. The canonical artifact directory is
-`$HOME/evo2c-artifacts/t13-native-score-short-e6e356d2`; `score.jsonl` has
+`$HOME/evo.cpp-artifacts/t13-native-score-short-e6e356d2`; `score.jsonl` has
 SHA256 `84c5463f62bd0c0244518a1a9b19c7d453bd84de6486569618c9bc599ceb8906`.
 
 The final gpu02 build passed all 25 CTest entries; four optional
@@ -201,8 +201,8 @@ The score JSON remained byte-identical with SHA256
 The long-prompt continuation also remained byte-identical with SHA256
 `d5c1771dd559cf6b0e17a4b0bbc354ac212e98331c0e2dbbff238535e56ce213`.
 Artifacts are in
-`$HOME/evo2c-artifacts/t15-parallel-load-score-f0a09d4a` and
-`$HOME/evo2c-artifacts/t15-parallel-load-p0-10-f0a09d4a`.
+`$HOME/evo.cpp-artifacts/t15-parallel-load-score-f0a09d4a` and
+`$HOME/evo.cpp-artifacts/t15-parallel-load-p0-10-f0a09d4a`.
 
 The long-prompt run overlapped unrelated jobs using 60–70 GiB on GPUs 1–3,
 so its prefill/decode throughput is not used as a kernel comparison. The
@@ -221,7 +221,7 @@ It exited zero and emitted byte `0x41` (`A`), whose SHA256 is
 `559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd`.
 
 The artifact directory is
-`$HOME/evo2c-artifacts/t16-ctx32768-chunk8193-0129dc14`. Its `metrics.log` is
+`$HOME/evo.cpp-artifacts/t16-ctx32768-chunk8193-0129dc14`. Its `metrics.log` is
 1,169 bytes with SHA256
 `3f00ec66c89ece53a848def79985892c7c9a666273dad03054c065d977c67225`.
 Model loading took 56.614 seconds. Prefill took 1,064.976 seconds, or
@@ -250,7 +250,7 @@ zero, and emitted `AC`. The output SHA256 is
 `472e73d796e20aa8ff9059e6316f218e0322548f661ec4dc267507ed66317404`.
 
 The artifact directory is
-`$HOME/evo2c-artifacts/t17-ctx131072-q8-short-6f803ea0`. Its `metrics.log`
+`$HOME/evo.cpp-artifacts/t17-ctx131072-q8-short-6f803ea0`. Its `metrics.log`
 has SHA256
 `6782b4af158317c011f549a0b986839c5fd038bcb87050da136738844c3874c5`.
 Loading took 58.650 seconds, 16-token prefill took 2.992 seconds, and one
@@ -293,7 +293,7 @@ The direct BF16 comparison again passed with minimum cosine
 test checks RoPE at position 1,048,575 against the CPU reference.
 
 The canonical artifact directory is
-`$HOME/evo2c-artifacts/t18-ctx1048576-q8-short-f9924b96`. Its 1,184-byte
+`$HOME/evo.cpp-artifacts/t18-ctx1048576-q8-short-f9924b96`. Its 1,184-byte
 `metrics.log` has SHA256
 `19d82de81977896539bb00f77154eb0d3d34b8d7b6cf1f54f8267cf4c7f71614`;
 the 926-byte BF16 comparison has SHA256
@@ -398,7 +398,7 @@ The benchmarked T19 binary SHA256 is
 the Safetensors index SHA256 is
 `ee1757566fdf8616f706ebcce3ae65487beab6fab3246cff1762c799d7951e1e`.
 Artifacts are under
-`/data/grp_icg/users/tang/evo2c_7b_1m_runtime_compare/native_prefill_final`.
+`/data/grp_icg/users/tang/evo.cpp_7b_1m_runtime_compare/native_prefill_final`.
 The current gpu02 build completed all 30 CTest entries with zero failures,
 including nine CUDA tests and the one-/two-GPU pipeline paths. Five optional
 external oracle tests reported their declared skip status.
@@ -410,4 +410,4 @@ and 9,727.5 tok/s for 16, 128, and 1,024 tokens respectively; model load was
 2.07--2.14 seconds. The current binary SHA256 is
 `805e81208609e035d23776695d416bd6354b7255d6a039439322bce2b76114eb`, and the
 artifact directory is
-`$HOME/evo2c-artifacts/t19-evo2-7b-prefill-805e81208609-gpu1`.
+`$HOME/evo.cpp-artifacts/t19-evo2-7b-prefill-805e81208609-gpu1`.

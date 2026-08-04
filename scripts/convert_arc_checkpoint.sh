@@ -12,8 +12,8 @@ source_dir="$(cd -- "${script_dir}/.." && pwd)"
 model_id="$1"
 checkpoint="$2"
 output="$3"
-python_bin="${EVO2C_PYTHON:-python3}"
-inspector="${EVO2C_INSPECT:-${source_dir}/build/evo2c-inspect}"
+python_bin="${EVO_PYTHON:-python3}"
+inspector="${EVO_INSPECT:-${source_dir}/build/evo-inspect}"
 
 config_name="$(
   "$python_bin" - "$source_dir/configs/model-registry.json" "$model_id" <<'PY'
@@ -36,16 +36,16 @@ arguments=(
   --config "$config"
   --output "$output"
 )
-if [[ -n "${EVO2C_SOURCE_SHA256:-}" ]]; then
-  arguments+=(--source-sha256 "$EVO2C_SOURCE_SHA256")
+if [[ -n "${EVO_SOURCE_SHA256:-}" ]]; then
+  arguments+=(--source-sha256 "$EVO_SOURCE_SHA256")
 fi
-if [[ "${EVO2C_DRY_RUN:-0}" == 1 ]]; then
+if [[ "${EVO_DRY_RUN:-0}" == 1 ]]; then
   arguments+=(--dry-run)
 fi
 
 PYTHONPATH="${source_dir}/tools${PYTHONPATH:+:${PYTHONPATH}}" \
   "$python_bin" "${arguments[@]}"
-if [[ "${EVO2C_DRY_RUN:-0}" != 1 ]]; then
+if [[ "${EVO_DRY_RUN:-0}" != 1 ]]; then
   load_path="$output"
   if [[ -f "$output.index.json" ]]; then
     load_path="$output.index.json"

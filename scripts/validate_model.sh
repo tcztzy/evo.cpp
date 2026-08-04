@@ -12,9 +12,9 @@ source_dir="$(cd -- "${script_dir}/.." && pwd)"
 model="$1"
 gpu_list="$2"
 context="${3:-8192}"
-binary="${EVO2C_BINARY:-${source_dir}/build/evo2c}"
-inspector="${EVO2C_INSPECT:-${source_dir}/build/evo2c-inspect}"
-artifact_dir="$(mktemp -d "${TMPDIR:-/tmp}/evo2c-smoke.XXXXXX")"
+binary="${EVO_BINARY:-${source_dir}/build/evo}"
+inspector="${EVO_INSPECT:-${source_dir}/build/evo-inspect}"
+artifact_dir="$(mktemp -d "${TMPDIR:-/tmp}/evo.cpp-smoke.XXXXXX")"
 trap 'rm -rf -- "$artifact_dir"' EXIT HUP INT TERM
 
 "$inspector" "$model" --tensor norm.scale
@@ -28,8 +28,8 @@ trap 'rm -rf -- "$artifact_dir"' EXIT HUP INT TERM
   --seed 0 \
   --dump-logits "$artifact_dir/logits.npy"
 
-if [[ -n "${EVO2C_EXPECTED_LOGITS:-}" ]]; then
+if [[ -n "${EVO_EXPECTED_LOGITS:-}" ]]; then
   python3 "$source_dir/tools/compare_logits.py" \
-    --reference "$EVO2C_EXPECTED_LOGITS" \
+    --reference "$EVO_EXPECTED_LOGITS" \
     --candidate "$artifact_dir/logits.npy"
 fi

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "evo2c/cuda/inference_cli.hpp"
+#include "evo/cuda/inference_cli.hpp"
 
 #include <algorithm>
 #include <array>
@@ -19,14 +19,14 @@
 
 #include <cuda_runtime_api.h>
 
-#include "evo2c/cuda/model.hpp"
-#include "evo2c/cuda/runtime.hpp"
-#include "evo2c/model_format.hpp"
-#include "evo2c/sampler.hpp"
-#include "evo2c/sequence_io.hpp"
-#include "evo2c/tokenizer.hpp"
+#include "evo/cuda/model.hpp"
+#include "evo/cuda/runtime.hpp"
+#include "evo/model_format.hpp"
+#include "evo/sampler.hpp"
+#include "evo/sequence_io.hpp"
+#include "evo/tokenizer.hpp"
 
-namespace evo2c::cuda {
+namespace evo::cuda {
 namespace {
 
 using Clock = std::chrono::steady_clock;
@@ -560,7 +560,7 @@ void print_metrics(const Metrics &metrics, const MemoryTracker &memory,
           ? static_cast<double>(metrics.teacher_force_tokens) /
                 metrics.teacher_force_seconds
           : 0.0;
-  std::cerr << "evo2c_metrics {\"model_load_seconds\":" << std::setprecision(9)
+  std::cerr << "evo_metrics {\"model_load_seconds\":" << std::setprecision(9)
             << metrics.model_load_seconds
             << ",\"prefill_tokens\":" << metrics.prefill_tokens
             << ",\"prefill_seconds\":" << metrics.prefill_seconds
@@ -608,7 +608,7 @@ Status run_inference_cli(const CliOptions &options,
 
   Metrics metrics;
   const auto load_start = Clock::now();
-  std::cerr << "evo2c: validating and opening model '" << options.model_path
+  std::cerr << "evo: validating and opening model '" << options.model_path
             << "'\n";
   ModelFile model_file;
   status = model_file.open(options.model_path);
@@ -616,7 +616,7 @@ Status run_inference_cli(const CliOptions &options,
     return status;
   }
   std::cerr
-      << "evo2c: loading native BF16/software-E4M3 pipeline on CUDA devices";
+      << "evo: loading native BF16/software-E4M3 pipeline on CUDA devices";
   for (const int device : options.gpu_ids) {
     std::cerr << ' ' << device;
   }
@@ -646,4 +646,4 @@ Status run_inference_cli(const CliOptions &options,
   return Status::Ok();
 }
 
-} // namespace evo2c::cuda
+} // namespace evo::cuda

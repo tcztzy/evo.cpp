@@ -23,7 +23,7 @@ def write_metrics(
     }
     path.write_text(
         "diagnostic\n"
-        + "evo2c_metrics "
+        + "evo_metrics "
         + json.dumps(record, sort_keys=True)
         + "\n",
         encoding="utf-8",

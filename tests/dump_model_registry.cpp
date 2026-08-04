@@ -3,7 +3,7 @@
 #include <iostream>
 #include <vector>
 
-#include "evo2c/model_registry.hpp"
+#include "evo/model_registry.hpp"
 
 namespace {
 
@@ -19,7 +19,7 @@ void indices(const std::vector<std::size_t> &values) {
 
 int main() {
   std::cout << std::setprecision(17);
-  for (const auto &model : evo2c::official_model_specs()) {
+  for (const auto &model : evo::official_model_specs()) {
     std::cout
         << model.id << '|' << model.vocab_size << '|' << model.hidden_size
         << '|' << model.layers << '|' << model.heads << '|'
@@ -28,17 +28,17 @@ int main() {
         << model.max_seqlen << '|' << model.rope_base << '|'
         << model.rope_scale << '|' << (model.interpolated_rope ? 1 : 0) << '|'
         << (model.projection_precision ==
-                    evo2c::OfficialProjectionPrecision::kBF16
+                    evo::OfficialProjectionPrecision::kBF16
                 ? "BF16"
                 : "E4M3_SW")
         << '|'
         << (model.projection_weight_dtype ==
-                    evo2c::OfficialProjectionWeightDType::kBF16
+                    evo::OfficialProjectionWeightDType::kBF16
                 ? "BF16"
                 : "F32")
         << '|'
         << (model.hcm_filter_dtype ==
-                    evo2c::OfficialHcmFilterDType::kBF16
+                    evo::OfficialHcmFilterDType::kBF16
                 ? "BF16"
                 : "F32")
         << '|';

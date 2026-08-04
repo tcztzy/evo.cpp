@@ -17,13 +17,13 @@ except ModuleNotFoundError:
     print("SKIP: PyTorch is not installed; install requirements-convert.txt", file=sys.stderr)
     raise SystemExit(77)
 
-from evo2c.bionemo_checkpoint import (
+from evo.bionemo_checkpoint import (
     DcpReader,
     MappingGroup,
     _install_mcore_save_plan_stub,
     _transform_tensors,
 )
-from evo2c.model_config import TensorSpec, load_config
+from evo.model_config import TensorSpec, load_config
 
 
 CONFIG: Path
@@ -31,7 +31,7 @@ CONFIG: Path
 
 class BioNeMoDcpTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory(prefix="evo2c-bionemo-dcp-")
+        self.temporary = tempfile.TemporaryDirectory(prefix="evo-bionemo-dcp-")
         self.directory = Path(self.temporary.name)
         self.config = load_config(CONFIG)
 

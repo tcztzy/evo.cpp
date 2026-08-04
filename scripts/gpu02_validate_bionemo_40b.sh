@@ -3,15 +3,15 @@
 set -euo pipefail
 
 run_remote_worker() {
-  local source_dir="$HOME/evo2c"
-  local image="$HOME/evo2c-cuda12.8-rocky8.sif"
+  local source_dir="$HOME/evo.cpp"
+  local image="$HOME/evo.cpp-cuda12.8-rocky8.sif"
   local nix_root="$HOME/.local/share/nix-root"
-  local binary="$source_dir/build-gpu/evo2c"
-  local model="$HOME/evo2c-models/evo2-40b-bionemo-bf16.safetensors.index.json"
+  local binary="$source_dir/build-gpu/evo"
+  local model="$HOME/evo.cpp-models/evo2-40b-bionemo-bf16.safetensors.index.json"
   local expected_greedy_sha256="b28b7e7e6b70661dfee15d5290c4bca097ca145f721c4fbc4de73ad1d1660b8b"
-  local gpu_list="${EVO2C_BIONEMO_GPU_LIST:-0,1,2,3}"
+  local gpu_list="${EVO_BIONEMO_GPU_LIST:-0,1,2,3}"
   local gpu_tag="${gpu_list//,/}"
-  local oracle_dir="${EVO2C_BIONEMO_ORACLE_DIR:-$HOME/evo2c-artifacts/t22-bionemo-oracle}"
+  local oracle_dir="${EVO_BIONEMO_ORACLE_DIR:-$HOME/evo.cpp-artifacts/t22-bionemo-oracle}"
   local comparison_python="/nix/store/dnsh5jd817k0zddr0k6x3zmyl146bbs6-profile/bin/python3"
   local model_sha256
   local greedy_sha256
@@ -61,7 +61,7 @@ run_remote_worker() {
   test -f "$model"
   test -f "$source_dir/tests/vectors/t13_short.fasta"
   model_sha256="$(sha256sum "$model" | cut -d' ' -f1)"
-  artifact_dir="$HOME/evo2c-artifacts/t22-bionemo-bf16-${model_sha256:0:8}-gpu${gpu_tag}"
+  artifact_dir="$HOME/evo.cpp-artifacts/t22-bionemo-bf16-${model_sha256:0:8}-gpu${gpu_tag}"
   score_input="$artifact_dir/score-short.fasta"
   mkdir -p "$artifact_dir"
   cp -- "$source_dir/tests/vectors/t13_short.fasta" "$score_input"
@@ -92,8 +92,8 @@ run_remote_worker() {
     echo "gpu02_validate_bionemo_40b: greedy output differs from BioNeMo" >&2
     exit 2
   fi
-  grep -q '^evo2c_metrics ' "$artifact_dir/native-score-metrics.log"
-  grep -q '^evo2c_metrics ' "$artifact_dir/native-greedy-metrics.log"
+  grep -q '^evo_metrics ' "$artifact_dir/native-score-metrics.log"
+  grep -q '^evo_metrics ' "$artifact_dir/native-greedy-metrics.log"
   if test -f "$oracle_dir/bionemo-score-logits.npy" &&
      test -f "$oracle_dir/bionemo-greedy.bin"; then
     apptainer exec -B "$nix_root:/nix:ro" "$image" \
@@ -120,13 +120,13 @@ run_remote_worker() {
   cat "$artifact_dir/native-greedy-metrics.log"
 }
 
-if test "${EVO2C_REMOTE_BIONEMO_VALIDATION_WORKER:-0}" = "1"; then
+if test "${EVO_REMOTE_BIONEMO_VALIDATION_WORKER:-0}" = "1"; then
   run_remote_worker
   exit 0
 fi
 
-remote_host="${EVO2C_GPU02_HOST:-gpu02}"
-gpu_list="${EVO2C_BIONEMO_GPU_LIST:-0,1,2,3}"
+remote_host="${EVO_GPU02_HOST:-gpu02}"
+gpu_list="${EVO_BIONEMO_GPU_LIST:-0,1,2,3}"
 ssh_options=(
   -o ConnectTimeout=10
   -o ServerAliveInterval=5
@@ -137,8 +137,8 @@ until launch_output="$(
   ssh "${ssh_options[@]}" "${remote_host}" 'bash -s' -- "$gpu_list" <<'REMOTE_LAUNCH'
 set -euo pipefail
 gpu_list="$1"
-worker="$HOME/evo2c/scripts/gpu02_validate_bionemo_40b.sh"
-binary="$HOME/evo2c/build-gpu/evo2c"
+worker="$HOME/evo.cpp/scripts/gpu02_validate_bionemo_40b.sh"
+binary="$HOME/evo.cpp/build-gpu/evo"
 worker_sha256="$(sha256sum "$worker" | cut -d' ' -f1)"
 binary_sha256="$(sha256sum "$binary" | cut -d' ' -f1)"
 job_sha256="$(
@@ -146,7 +146,7 @@ job_sha256="$(
     sha256sum |
     cut -d' ' -f1
 )"
-job_dir="$HOME/evo2c-artifacts/.bionemo-validation-jobs/$job_sha256"
+job_dir="$HOME/evo.cpp-artifacts/.bionemo-validation-jobs/$job_sha256"
 pid_file="$job_dir/pid"
 status_file="$job_dir/status"
 log_file="$job_dir/output.log"
@@ -158,7 +158,7 @@ if test -f "$pid_file"; then
   pid="$(cat "$pid_file")"
   if test -n "$pid" && kill -0 "$pid" 2>/dev/null; then
     command_line="$(tr '\0' ' ' <"/proc/$pid/cmdline")"
-    if [[ "$command_line" == *evo2c-bionemo-validation-runner* ]]; then
+    if [[ "$command_line" == *evo-bionemo-validation-runner* ]]; then
       running=1
     fi
   fi
@@ -174,14 +174,14 @@ if test "$running" = "0" && ! test -f "$status_file"; then
     log_file="$2"
     status_file="$3"
     gpu_list="$4"
-    EVO2C_REMOTE_BIONEMO_VALIDATION_WORKER=1 \
-      EVO2C_BIONEMO_GPU_LIST="$gpu_list" \
+    EVO_REMOTE_BIONEMO_VALIDATION_WORKER=1 \
+      EVO_BIONEMO_GPU_LIST="$gpu_list" \
       bash "$worker" >"$log_file" 2>&1
     code=$?
     status_partial="${status_file}.$$.partial"
     printf "%s\n" "$code" >"$status_partial"
     mv -- "$status_partial" "$status_file"
-  ' evo2c-bionemo-validation-runner "$worker" "$log_file" "$status_file" \
+  ' evo-bionemo-validation-runner "$worker" "$log_file" "$status_file" \
     "$gpu_list" \
     </dev/null >/dev/null 2>&1 &
   pid="$!"

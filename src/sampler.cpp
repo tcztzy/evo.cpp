@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "evo2c/sampler.hpp"
+#include "evo/sampler.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -7,7 +7,7 @@
 #include <numeric>
 #include <utility>
 
-namespace evo2c {
+namespace evo {
 
 Status validate_sampling_config(const SamplingConfig& config) {
   if (!std::isfinite(config.temperature) || config.temperature <= 0.0F) {
@@ -99,4 +99,4 @@ Status Sampler::sample(const std::vector<float>& logits, TokenId* const token) {
   return {ErrorCode::kInternal, "sampler failed to select a token"};
 }
 
-}  // namespace evo2c
+}  // namespace evo

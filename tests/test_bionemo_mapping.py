@@ -8,14 +8,14 @@ import unittest
 from collections import Counter
 from pathlib import Path
 
-from evo2c.bionemo_checkpoint import (
+from evo.bionemo_checkpoint import (
     DcpTensorMetadata,
     MappingGroup,
     build_mapping_groups,
     resolve_mapping,
 )
-from evo2c.checkpoint import CheckpointError
-from evo2c.model_config import (
+from evo.checkpoint import CheckpointError
+from evo.model_config import (
     EXPECTED_BIONEMO_BF16_TENSOR_COUNT,
     EXPECTED_BIONEMO_F32_TENSOR_COUNT,
     EXPECTED_BIONEMO_TENSOR_BYTES,

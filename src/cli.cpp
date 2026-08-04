@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "evo2c/cli.hpp"
+#include "evo/cli.hpp"
 
 #include <cerrno>
 #include <charconv>
@@ -10,7 +10,7 @@
 #include <set>
 #include <string_view>
 
-namespace evo2c {
+namespace evo {
 namespace {
 
 template <typename Integer>
@@ -89,12 +89,12 @@ Status parse_gpu_list(const std::string_view text, std::vector<int>* const ids) 
 }  // namespace
 
 std::string_view cli_usage() noexcept {
-  return "evo2c - native Evo 2 inference engine (1B, 7B, 20B, 40B)\n\n"
+  return "evo - native Evo 2 inference engine (1B, 7B, 20B, 40B)\n\n"
          "Usage:\n"
-         "  evo2c --help\n"
-         "  evo2c --version\n"
-         "  evo2c -m MODEL.safetensors[.index.json] -p DNA -n TOKENS --ctx N --gpu 0,1,2,3 [sampling]\n"
-         "  evo2c -m MODEL.safetensors[.index.json] --score FASTA_OR_TEXT --gpu 0,1,2,3\n\n"
+         "  evo --help\n"
+         "  evo --version\n"
+         "  evo -m MODEL.safetensors[.index.json] -p DNA -n TOKENS --ctx N --gpu 0,1,2,3 [sampling]\n"
+         "  evo -m MODEL.safetensors[.index.json] --score FASTA_OR_TEXT --gpu 0,1,2,3\n\n"
          "Sampling:\n"
          "  --temp F       Temperature > 0 (default: 1)\n"
          "  --top-k K      Keep K logits; 0 disables, 1 is greedy (default: 1)\n"
@@ -286,4 +286,4 @@ Status parse_cli(const int argc, char* const argv[], CliOptions* const options) 
   return validate_sampling_config(options->sampling);
 }
 
-}  // namespace evo2c
+}  // namespace evo

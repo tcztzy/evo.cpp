@@ -1,6 +1,6 @@
 # Evo 2 Safetensors runtime profile
 
-`evo2c` 使用标准 Safetensors 作为唯一生产模型格式，并在其上定义一个严格、
+`evo.cpp` 使用标准 Safetensors 作为唯一生产模型格式，并在其上定义一个严格、
 确定性的 `evo2-runtime-v1` profile。单文件使用 `.safetensors` 后缀；大模型
 使用标准 Safetensors 分片名与 `model.safetensors.index.json`。
 

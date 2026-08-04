@@ -8,19 +8,19 @@
 namespace {
 
 int cuda_failure(const char* operation, const cudaError_t error) {
-  std::cerr << "evo2c-cuda-smoke: cuda: " << operation << " failed: "
+  std::cerr << "evo-cuda-smoke: cuda: " << operation << " failed: "
             << cudaGetErrorString(error) << '\n';
   return 6;
 }
 
 int cublas_failure(const char* operation, const cublasStatus_t status) {
-  std::cerr << "evo2c-cuda-smoke: cuda: " << operation
+  std::cerr << "evo-cuda-smoke: cuda: " << operation
             << " failed with cuBLAS status " << static_cast<int>(status) << '\n';
   return 6;
 }
 
 int cufft_failure(const char* operation, const cufftResult status) {
-  std::cerr << "evo2c-cuda-smoke: cuda: " << operation
+  std::cerr << "evo-cuda-smoke: cuda: " << operation
             << " failed with cuFFT status " << static_cast<int>(status) << '\n';
   return 6;
 }
@@ -39,7 +39,7 @@ int main() {
     return cuda_failure("cudaGetDeviceCount", error);
   }
   if (device_count < 1) {
-    std::cerr << "evo2c-cuda-smoke: cuda: no CUDA device available\n";
+    std::cerr << "evo-cuda-smoke: cuda: no CUDA device available\n";
     return 6;
   }
   if (const auto error = cudaSetDevice(0); error != cudaSuccess) {
@@ -82,7 +82,7 @@ int main() {
     return cuda_failure("cudaFree", error);
   }
   if (host_value != 0x2c40) {
-    std::cerr << "evo2c-cuda-smoke: cuda: kernel returned wrong sentinel\n";
+    std::cerr << "evo-cuda-smoke: cuda: kernel returned wrong sentinel\n";
     return 6;
   }
 

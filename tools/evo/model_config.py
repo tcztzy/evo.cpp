@@ -549,7 +549,7 @@ def config_metadata(
     registry = load_model_registry()
     entry = config.registry
     metadata = {
-        "format.producer": "evo2c",
+        "format.producer": "evo.cpp",
         "runtime.abi": "evo2-safetensors-v1",
         "model.id": config.model_id,
         "model.name": config.model_name,

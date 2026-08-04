@@ -14,7 +14,7 @@ except ModuleNotFoundError:
     print("SKIP: PyTorch or Triton is not installed", file=sys.stderr)
     raise SystemExit(77)
 
-from evo2c.triton_fp8 import e8m13_linear, h100_qgmma_linear
+from evo.triton_fp8 import e8m13_linear, h100_qgmma_linear
 
 
 def truncate_e8m13(value: torch.Tensor, *, rne: bool) -> torch.Tensor:

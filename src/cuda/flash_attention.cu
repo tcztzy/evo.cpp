@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "evo2c/cuda/attention.hpp"
+#include "evo/cuda/attention.hpp"
 
 #include <algorithm>
 #include <array>
@@ -12,13 +12,13 @@
 
 #include <cuda_bf16.h>
 
-#define FLASH_NAMESPACE evo2c_flash
+#define FLASH_NAMESPACE evo_flash
 #define FLASHATTENTION_DISABLE_ALIBI 1
 #define FLASHATTENTION_DISABLE_SOFTCAP 1
 #define UNFUSE_FMA 1
 #include "flash_fwd_kernel.h"
 
-namespace evo2c::cuda {
+namespace evo::cuda {
 namespace {
 
 struct FlashParams final {
@@ -105,19 +105,19 @@ using SplitFlashTraits =
 
 template <bool IsEvenMN>
 __global__ void flash_causal_kernel(const FlashParams params) {
-  evo2c_flash::compute_attn<FlashTraits, false, true, false, false, IsEvenMN,
+  evo_flash::compute_attn<FlashTraits, false, true, false, false, IsEvenMN,
                             true, false, false>(params);
 }
 
 template <bool IsEvenMN>
 __global__ void flash_causal_split_kernel(const FlashParams params) {
-  evo2c_flash::compute_attn_splitkv<SplitFlashTraits, true, false, false,
+  evo_flash::compute_attn_splitkv<SplitFlashTraits, true, false, false,
                                     IsEvenMN, true, false, true, false>(params);
 }
 
 template <int LogMaxSplits>
 __global__ void flash_causal_combine_kernel(const FlashParams params) {
-  evo2c_flash::combine_attn_seqk_parallel<SplitFlashTraits, 4, LogMaxSplits,
+  evo_flash::combine_attn_seqk_parallel<SplitFlashTraits, 4, LogMaxSplits,
                                           true>(params);
 }
 
@@ -440,4 +440,4 @@ Status bf16_flash_causal_attention(
                      "PyTorch-compatible Flash causal attention kernel");
 }
 
-} // namespace evo2c::cuda
+} // namespace evo::cuda

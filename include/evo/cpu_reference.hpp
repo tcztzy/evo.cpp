@@ -4,9 +4,9 @@
 #include <cstddef>
 #include <vector>
 
-#include "evo2c/status.hpp"
+#include "evo/status.hpp"
 
-namespace evo2c::cpu {
+namespace evo::cpu {
 
 enum class MlpActivation { kGelu, kIdentity };
 enum class FirOrientation { kCrossCorrelation, kCausalConvolution };
@@ -90,4 +90,4 @@ enum class FirBiasMode { kAdd, kMultiplyInput };
                                       std::size_t head_dim,
                                       std::vector<float>* output);
 
-}  // namespace evo2c::cpu
+}  // namespace evo::cpu

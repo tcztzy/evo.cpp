@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "evo2c/tokenizer.hpp"
+#include "evo/tokenizer.hpp"
 
 #include <limits>
 
-namespace evo2c {
+namespace evo {
 
 std::vector<TokenId> encode_bytes(const std::string_view bytes) {
   std::vector<TokenId> tokens;
@@ -26,4 +26,4 @@ Status token_to_byte(const TokenId token, std::uint8_t* const byte) {
   return Status::Ok();
 }
 
-}  // namespace evo2c
+}  // namespace evo

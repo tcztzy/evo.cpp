@@ -116,7 +116,7 @@
     ],
     "repeat_run_bit_exact": true
   },
-  "evo2c_40b_bf16": {
+  "evo_40b_bf16": {
     "model_sha256": "7452b1412919d6724172dfe4a76b01605ccdb20522873dea6f06df4ea76c8ac7",
     "vector_files": 51,
     "vector_bytes": 26253696,

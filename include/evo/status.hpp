@@ -4,7 +4,7 @@
 #include <string>
 #include <utility>
 
-namespace evo2c {
+namespace evo {
 
 enum class ErrorCode : int {
   kOk = 0,
@@ -38,5 +38,5 @@ class Status final {
 [[nodiscard]] const char* error_code_name(ErrorCode code) noexcept;
 [[nodiscard]] int exit_code(ErrorCode code) noexcept;
 
-}  // namespace evo2c
+}  // namespace evo
 

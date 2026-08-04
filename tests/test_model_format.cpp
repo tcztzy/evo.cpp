@@ -14,7 +14,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-#include "evo2c/model_format.hpp"
+#include "evo/model_format.hpp"
 
 namespace {
 
@@ -81,7 +81,7 @@ class TemporaryFile final {
 public:
   TemporaryFile() {
     auto pattern =
-        (std::filesystem::temp_directory_path() / "evo2c-safetensors-XXXXXX")
+        (std::filesystem::temp_directory_path() / "evo-safetensors-XXXXXX")
             .string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
@@ -120,10 +120,10 @@ void expect_failure(const Fixture &fixture,
                     const std::string_view expected_message) {
   TemporaryFile file;
   check(write_file(file.path(), fixture.bytes), "write invalid fixture");
-  evo2c::ModelFile model;
+  evo::ModelFile model;
   const auto status = model.open(file.path());
   check(!status.ok(), "invalid Safetensors file is rejected");
-  check(status.code() == evo2c::ErrorCode::kModelFormat,
+  check(status.code() == evo::ErrorCode::kModelFormat,
         "invalid Safetensors file returns model_format");
   check(status.message().find(expected_message) != std::string::npos,
         std::string{"failure explains "} + std::string{expected_message});
@@ -132,7 +132,7 @@ void expect_failure(const Fixture &fixture,
 void test_valid_fixture(const Fixture &fixture) {
   TemporaryFile file;
   check(write_file(file.path(), fixture.bytes), "write valid fixture");
-  evo2c::ModelFile model;
+  evo::ModelFile model;
   const auto status = model.open(file.path());
   check(status.ok(), std::string{"valid fixture loads: "} + status.message());
   if (!status.ok())
@@ -146,17 +146,17 @@ void test_valid_fixture(const Fixture &fixture) {
 
   const auto *const model_name = model.find_metadata("model.name");
   check(model_name != nullptr &&
-            evo2c::metadata_value_text(*model_name) == "tiny-evo2",
+            evo::metadata_value_text(*model_name) == "tiny-evo2",
         "string metadata is decoded");
   const auto *const layers = model.find_metadata("config.layers");
-  check(layers != nullptr && evo2c::metadata_value_text(*layers) == "[0,3]",
+  check(layers != nullptr && evo::metadata_value_text(*layers) == "[0,3]",
         "list metadata is decoded");
 
   const auto *const tensor = model.find_tensor("embed.weight");
   check(tensor != nullptr, "tensor lookup succeeds");
   if (tensor == nullptr)
     return;
-  check(tensor->dtype == evo2c::TensorDType::kBF16, "tensor dtype is decoded");
+  check(tensor->dtype == evo::TensorDType::kBF16, "tensor dtype is decoded");
   check(tensor->rank == 2 && tensor->dimensions[0] == 2 &&
             tensor->dimensions[1] == 2,
         "tensor shape is decoded");

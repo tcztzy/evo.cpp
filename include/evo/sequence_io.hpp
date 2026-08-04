@@ -4,9 +4,9 @@
 #include <string>
 #include <vector>
 
-#include "evo2c/status.hpp"
+#include "evo/status.hpp"
 
-namespace evo2c {
+namespace evo {
 
 struct SequenceRecord final {
   std::string name;
@@ -17,4 +17,4 @@ struct SequenceRecord final {
 [[nodiscard]] Status read_sequence_file(const std::string& path,
                                         std::vector<SequenceRecord>* records);
 
-}  // namespace evo2c
+}  // namespace evo

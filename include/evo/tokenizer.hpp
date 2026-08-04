@@ -6,9 +6,9 @@
 #include <string_view>
 #include <vector>
 
-#include "evo2c/status.hpp"
+#include "evo/status.hpp"
 
-namespace evo2c {
+namespace evo {
 
 using TokenId = std::uint16_t;
 
@@ -22,4 +22,4 @@ inline constexpr TokenId kPadToken = 1;
 // IDs 256..511 have logits but no byte representation in the supported tokenizer.
 [[nodiscard]] Status token_to_byte(TokenId token, std::uint8_t* byte);
 
-}  // namespace evo2c
+}  // namespace evo

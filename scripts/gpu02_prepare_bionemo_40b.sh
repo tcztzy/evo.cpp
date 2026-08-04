@@ -7,19 +7,19 @@ archive_name="evo2_40b_bf16_finetune_wandb_Ji2IRcrz_step_119.tar.gz"
 archive_size="63680606710"
 archive_sha256="544b47e033d1fb0261b686a53f7c4fe240cd290253187d31e8c99dea9e35a680"
 ngc_url="https://api.ngc.nvidia.com/v2/models/nvidia/clara/evo2-40b-1m-fp8-bf16-nemo2/versions/1.0/files/$archive_name"
-source_dir="$HOME/evo2c"
-model_dir="$HOME/evo2c-models"
+source_dir="$HOME/evo.cpp"
+model_dir="$HOME/evo.cpp-models"
 output_base="$model_dir/evo2-40b-bionemo-bf16.safetensors"
 output="$output_base.index.json"
 output_receipt="$output_base.sha256"
-image="$HOME/evo2c-cuda12.8-rocky8.sif"
+image="$HOME/evo.cpp-cuda12.8-rocky8.sif"
 nix_root="$HOME/.local/share/nix-root"
-venv="$HOME/.venv-evo2c-convert"
+venv="$HOME/.venv-evo.cpp-convert"
 nix_python="/nix/store/flbw79qdmvzbdrafd93avy5a7d29m2vb-python3-3.12.12/bin/python3"
 torch_pythonpath="/nix/store/zram8zr9aikvw9igsyikdxmn5af9915g-python3.12-torch-2.10.0/lib/python3.12/site-packages"
 aria2c="/nix/store/qc3vxqi6a1vzqrafgz0dnjrad6lg1xib-aria2-1.37.0-bin/bin/aria2c"
 python_runtime_library_path="/nix/store/0p8b2lqk47fvxm9hc6c8mnln5l8x51q1-gcc-14.3.0-lib/lib:/nix/store/p98zvq4nb98krxcv7ss2zr1qngfmi0f5-gcc-14.3.0-libgcc/lib:/nix/store/2kdz3m7ic8w226pcvkz1dlg169v91p6a-zlib-1.3.2/lib"
-bionemo_cache="${EVO2C_BIONEMO_CACHE:-/build/grp_icg/users/tang/.cache/bionemo}"
+bionemo_cache="${EVO_BIONEMO_CACHE:-/build/grp_icg/users/tang/.cache/bionemo}"
 resource_dir="$bionemo_cache/evo2/40b-1m-fp8-bf16/1.0"
 archive="$resource_dir/$archive_name"
 archive_incomplete="$archive.incomplete"
@@ -32,7 +32,7 @@ flock 9
 test -f "$image"
 test -f "$source_dir/configs/evo2-40b-1m-bionemo-bf16.yml"
 test -f "$source_dir/tools/convert_bionemo_checkpoint.py"
-test -x "$source_dir/build-gpu/evo2c-inspect"
+test -x "$source_dir/build-gpu/evo-inspect"
 apptainer exec -B "$nix_root:/nix:ro" "$image" test -x "$aria2c"
 
 if ! apptainer exec -B "$nix_root:/nix:ro" "$image" \
@@ -119,13 +119,13 @@ if ! test -d "$extract_dir"; then
     echo "gpu02_prepare_bionemo_40b: extracted archive has ${#partial_metadata[@]} DCP metadata files; expected 1" >&2
     exit 2
   fi
-  printf '%s\n' "$archive_sha256" >"$extract_partial/.evo2c-archive-sha256"
+  printf '%s\n' "$archive_sha256" >"$extract_partial/.evo.cpp-archive-sha256"
   mv -- "$extract_partial" "$extract_dir"
   trap - EXIT HUP INT TERM
 fi
 
-if ! test -f "$extract_dir/.evo2c-archive-sha256" ||
-   test "$(cat "$extract_dir/.evo2c-archive-sha256")" != "$archive_sha256"; then
+if ! test -f "$extract_dir/.evo.cpp-archive-sha256" ||
+   test "$(cat "$extract_dir/.evo.cpp-archive-sha256")" != "$archive_sha256"; then
   echo "gpu02_prepare_bionemo_40b: extraction provenance is missing or stale" >&2
   exit 2
 fi
@@ -165,7 +165,7 @@ if ! test -f "$output"; then
 fi
 
 apptainer exec -B "$nix_root:/nix:ro" "$image" \
-  "$source_dir/build-gpu/evo2c-inspect" "$output" \
+  "$source_dir/build-gpu/evo-inspect" "$output" \
   --tensor blocks.0.projections.weight
 actual_output_sha256="$(sha256sum "$output" | cut -d' ' -f1)"
 if test -f "$output_receipt"; then
@@ -181,12 +181,12 @@ echo "output_size=$(stat --printf='%s' "$output")"
 echo "$actual_output_sha256  $output"
 }
 
-if test "${EVO2C_REMOTE_BIONEMO_WORKER:-0}" = "1"; then
+if test "${EVO_REMOTE_BIONEMO_WORKER:-0}" = "1"; then
   run_remote_worker
   exit 0
 fi
 
-remote_host="${EVO2C_GPU02_HOST:-gpu02}"
+remote_host="${EVO_GPU02_HOST:-gpu02}"
 ssh_options=(
   -o ConnectTimeout=10
   -o ServerAliveInterval=5
@@ -198,18 +198,18 @@ until launch_output="$(
   ssh "${ssh_options[@]}" "${remote_host}" 'bash -s' <<'REMOTE_LAUNCH'
 set -euo pipefail
 
-worker="$HOME/evo2c/scripts/gpu02_prepare_bionemo_40b.sh"
-source_dir="$HOME/evo2c"
+worker="$HOME/evo.cpp/scripts/gpu02_prepare_bionemo_40b.sh"
+source_dir="$HOME/evo.cpp"
 job_manifest="$(
   sha256sum \
     "$worker" \
     "$source_dir/tools/convert_bionemo_checkpoint.py" \
-    "$source_dir/tools/evo2c/bionemo_checkpoint.py" \
-    "$source_dir/tools/evo2c/model_config.py" \
+    "$source_dir/tools/evo/bionemo_checkpoint.py" \
+    "$source_dir/tools/evo/model_config.py" \
     "$source_dir/configs/evo2-40b-1m-bionemo-bf16.yml"
 )"
 job_sha256="$(printf '%s\n' "$job_manifest" | sha256sum | cut -d' ' -f1)"
-job_dir="$HOME/evo2c-models/.prepare-bionemo-40b-jobs/$job_sha256"
+job_dir="$HOME/evo.cpp-models/.prepare-bionemo-40b-jobs/$job_sha256"
 pid_file="$job_dir/pid"
 status_file="$job_dir/status"
 log_file="$job_dir/output.log"
@@ -221,7 +221,7 @@ if test -f "$pid_file"; then
   pid="$(cat "$pid_file")"
   if test -n "$pid" && kill -0 "$pid" 2>/dev/null; then
     command_line="$(tr '\0' ' ' <"/proc/$pid/cmdline")"
-    if [[ "$command_line" == *evo2c-bionemo-prepare-runner* ]]; then
+    if [[ "$command_line" == *evo-bionemo-prepare-runner* ]]; then
       running=1
     fi
   fi
@@ -236,12 +236,12 @@ if test "$running" = "0" && ! test -f "$status_file"; then
     worker="$1"
     log_file="$2"
     status_file="$3"
-    EVO2C_REMOTE_BIONEMO_WORKER=1 bash "$worker" >"$log_file" 2>&1
+    EVO_REMOTE_BIONEMO_WORKER=1 bash "$worker" >"$log_file" 2>&1
     code=$?
     status_partial="${status_file}.$$.partial"
     printf "%s\n" "$code" >"$status_partial"
     mv -- "$status_partial" "$status_file"
-  ' evo2c-bionemo-prepare-runner "$worker" "$log_file" "$status_file" \
+  ' evo-bionemo-prepare-runner "$worker" "$log_file" "$status_file" \
     </dev/null >/dev/null 2>&1 &
   pid="$!"
   printf '%s\n' "$pid" >"$pid_file"

@@ -15,18 +15,18 @@ except ModuleNotFoundError:
     print("SKIP: PyTorch is not installed; install requirements-convert.txt", file=sys.stderr)
     raise SystemExit(77)
 
-from evo2c.checkpoint import (
+from evo.checkpoint import (
     CheckpointError,
     load_checkpoint,
     prepare_runtime_image_sources,
     prepare_runtime_sources,
 )
-from evo2c.model_config import TensorSpec
+from evo.model_config import TensorSpec
 
 
 class CheckpointTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory(prefix="evo2c-torch-test-")
+        self.temporary = tempfile.TemporaryDirectory(prefix="evo-torch-test-")
         self.directory = Path(self.temporary.name)
         self.manifest = [
             TensorSpec("bf16.weight", "BF16", (2, 3)),

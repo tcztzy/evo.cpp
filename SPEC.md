@@ -26,9 +26,9 @@ Vortex、Transformer Engine 或硬件 FP8 指令。
 ## 唯一生产输入
 
 ```sh
-evo2c -m model.safetensors.index.json -p ACGT -n 100 --ctx 8192 --gpu 0,1
-evo2c -m model.safetensors.index.json --score sequences.fasta --gpu 0,1
-evo2c-inspect model.safetensors.index.json
+evo -m model.safetensors.index.json -p ACGT -n 100 --ctx 8192 --gpu 0,1
+evo -m model.safetensors.index.json --score sequences.fasta --gpu 0,1
+evo-inspect model.safetensors.index.json
 ```
 
 runtime 不直接读取 `.pt`，也没有 Python/libtorch fallback。输入不是严格 profile、

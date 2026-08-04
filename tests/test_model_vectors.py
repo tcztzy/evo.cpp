@@ -17,7 +17,7 @@ from compare_model_vectors import compare_directories
 
 class ModelVectorComparatorTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory(prefix="evo2c-vector-test-")
+        self.temporary = tempfile.TemporaryDirectory(prefix="evo-vector-test-")
         self.root = Path(self.temporary.name)
         self.reference = self.root / "reference"
         self.native = self.root / "native"
@@ -60,7 +60,7 @@ class ModelVectorComparatorTests(unittest.TestCase):
     def test_checked_in_real_model_alignment_evidence_passes(self) -> None:
         evidence_path = Path(__file__).parent / "vectors" / "model_alignment.json"
         evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
-        native = evidence["evo2c_40b_bf16"]
+        native = evidence["evo_40b_bf16"]
         self.assertTrue(native["passed"])
         self.assertIsNone(native["first_failing_layer"])
         self.assertGreaterEqual(
@@ -76,7 +76,7 @@ class ModelVectorComparatorTests(unittest.TestCase):
         for key in (
             "evo2_7b_bf16_reference",
             "evo2_40b_bf16_reference",
-            "evo2c_40b_bf16",
+            "evo_40b_bf16",
         ):
             self.assertRegex(
                 evidence[key]["vector_set_sha256"],

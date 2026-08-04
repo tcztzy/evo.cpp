@@ -7,16 +7,16 @@ import argparse
 import sys
 from pathlib import Path
 
-from evo2c.bionemo_checkpoint import (
+from evo.bionemo_checkpoint import (
     dcp_payload_size,
     dcp_storage_size,
     load_bionemo_checkpoint,
     normalized_dcp_kind,
     validate_source_sha256,
 )
-from evo2c.checkpoint import CheckpointError
-from evo2c.format import FormatError, TensorSource, write_model
-from evo2c.model_config import config_metadata, load_config
+from evo.checkpoint import CheckpointError
+from evo.format import FormatError, TensorSource, write_model
+from evo.model_config import config_metadata, load_config
 
 
 NGC_RESOURCE = "evo2/40b-1m-fp8-bf16:1.0"
@@ -109,7 +109,7 @@ def main() -> int:
         metadata = config_metadata(config, reader.directory.name, storage_size)
         metadata.update(
             {
-                "format.producer": "evo2c-bionemo",
+                "format.producer": "evo.cpp-bionemo",
                 "model.source_repo": f"ngc://{NGC_MODEL}",
                 "checkpoint.format": "torch_dist",
                 "checkpoint.kind": checkpoint_kind,

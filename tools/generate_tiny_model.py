@@ -9,7 +9,7 @@ import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from evo2c.format import BytesTensorSource, write_model
+from evo.format import BytesTensorSource, write_model
 
 
 VOCAB = 512
@@ -453,7 +453,7 @@ def main() -> int:
     model = TinyModel(add_fp8_residue=args.add_fp8_residue)
     metadata = {
         "runtime.abi": "evo2-safetensors-v1",
-        "model.name": "tiny-evo2c-50l",
+        "model.name": "tiny-evo-50l",
         "model.architecture": "StripedHyena2Test",
         "fixture.synthetic": True,
         "config.vocab_size": VOCAB,

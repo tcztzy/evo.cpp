@@ -2,18 +2,18 @@
 # SPDX-License-Identifier: Apache-2.0
 set -euo pipefail
 
-remote_host="${EVO2C_GPU02_HOST:-gpu02}"
+remote_host="${EVO_GPU02_HOST:-gpu02}"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "${script_dir}/.." && pwd)"
-rsync_retries="${EVO2C_RSYNC_RETRIES:-12}"
-rsync_retry_delay="${EVO2C_RSYNC_RETRY_DELAY:-5}"
+rsync_retries="${EVO_RSYNC_RETRIES:-12}"
+rsync_retry_delay="${EVO_RSYNC_RETRY_DELAY:-5}"
 
 if [[ ! "$rsync_retries" =~ ^[1-9][0-9]*$ ]]; then
-  echo "gpu02_build: EVO2C_RSYNC_RETRIES must be a positive integer" >&2
+  echo "gpu02_build: EVO_RSYNC_RETRIES must be a positive integer" >&2
   exit 2
 fi
 if [[ ! "$rsync_retry_delay" =~ ^[0-9]+$ ]]; then
-  echo "gpu02_build: EVO2C_RSYNC_RETRY_DELAY must be a nonnegative integer" >&2
+  echo "gpu02_build: EVO_RSYNC_RETRY_DELAY must be a nonnegative integer" >&2
   exit 2
 fi
 
@@ -29,7 +29,7 @@ until rsync -az --delay-updates \
     --exclude '*.pt.part*' \
     --exclude '*.safetensors' \
     --exclude '*.safetensors.index.json' \
-    "${repo_root}/" "${remote_host}:evo2c/"; do
+    "${repo_root}/" "${remote_host}:evo.cpp/"; do
   rsync_exit=$?
   if (( rsync_attempt >= rsync_retries )); then
     echo "gpu02_build: source sync failed after $rsync_attempt attempts" >&2
@@ -44,10 +44,10 @@ ssh -o ServerAliveInterval=5 -o ServerAliveCountMax=720 \
   "${remote_host}" 'bash -s' <<'REMOTE'
 set -euo pipefail
 
-source_dir="$HOME/evo2c"
+source_dir="$HOME/evo.cpp"
 build_dir="$source_dir/build-gpu"
-image="$HOME/evo2c-cuda12.8-rocky8.sif"
-definition="$source_dir/containers/evo2c-cuda12.8-rocky8.def"
+image="$HOME/evo.cpp-cuda12.8-rocky8.sif"
+definition="$source_dir/containers/evo.cpp-cuda12.8-rocky8.def"
 nix_root="$HOME/.local/share/nix-root"
 cmake_bin="/nix/store/dnsh5jd817k0zddr0k6x3zmyl146bbs6-profile/bin/cmake"
 
@@ -55,7 +55,7 @@ test -d "$source_dir"
 test -f "$definition"
 test -d "$nix_root/store"
 if ! test -f "$image"; then
-  image_partial="$HOME/.evo2c-cuda12.8-rocky8.sif.partial"
+  image_partial="$HOME/.evo.cpp-cuda12.8-rocky8.sif.partial"
   rm -f -- "$image_partial"
   trap 'rm -f -- "$image_partial"' EXIT HUP INT TERM
   apptainer build "$image_partial" "$definition"
@@ -74,9 +74,9 @@ apptainer exec -B "$nix_root:/nix:ro" "$image" nvcc --version
 apptainer exec -B "$nix_root:/nix:ro" "$image" "$cmake_bin" \
   -S "$source_dir" \
   -B "$build_dir" \
-  -DEVO2C_CUDA=ON \
+  -DEVO_CUDA=ON \
   -DCMAKE_CUDA_ARCHITECTURES=80 \
-  -DEVO2C_WARNINGS_AS_ERRORS=ON \
+  -DEVO_WARNINGS_AS_ERRORS=ON \
   -DCMAKE_BUILD_TYPE=Release \
   -DCUDAToolkit_rt_LIBRARY=/usr/lib64/librt.so
 apptainer exec -B "$nix_root:/nix:ro" "$image" "$cmake_bin" \

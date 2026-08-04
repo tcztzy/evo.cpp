@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "evo2c/sequence_io.hpp"
+#include "evo/sequence_io.hpp"
 
 #include <fstream>
 #include <iterator>
 #include <string_view>
 #include <utility>
 
-namespace evo2c {
+namespace evo {
 namespace {
 
 Status parse_fasta(const std::string_view input, std::vector<SequenceRecord>* const records) {
@@ -91,4 +91,4 @@ Status read_sequence_file(const std::string& path, std::vector<SequenceRecord>* 
   return Status::Ok();
 }
 
-}  // namespace evo2c
+}  // namespace evo

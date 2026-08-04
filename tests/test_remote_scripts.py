@@ -43,7 +43,7 @@ def main() -> int:
     build = (
         args.source_dir / "scripts" / "gpu02_build.sh"
     ).read_text(encoding="utf-8")
-    assert 'rsync_retries="${EVO2C_RSYNC_RETRIES:-12}"' in build
+    assert 'rsync_retries="${EVO_RSYNC_RETRIES:-12}"' in build
     assert "until rsync -az --delay-updates" in build
     assert "--delete" not in build, (
         "the source sync must not remove remote models, environments, or "
@@ -79,22 +79,22 @@ def main() -> int:
     assert local_configure_index < local_compile_index < local_test_index, (
         "V16: local verification must configure before build and test"
     )
-    assert '-DEVO2C_SANITIZE="$sanitize"' in local_build
-    assert "EVO2C_SANITIZERS" not in local_build
+    assert '-DEVO_SANITIZE="$sanitize"' in local_build
+    assert "EVO_SANITIZERS" not in local_build
 
     arc_wrapper = (
         args.source_dir / "scripts" / "convert_arc_checkpoint.sh"
     ).read_text(encoding="utf-8")
     assert "configs/model-registry.json" in arc_wrapper
     assert "convert_checkpoint.py" in arc_wrapper
-    assert "EVO2C_SOURCE_SHA256" in arc_wrapper
-    assert "EVO2C_DRY_RUN" in arc_wrapper
+    assert "EVO_SOURCE_SHA256" in arc_wrapper
+    assert "EVO_DRY_RUN" in arc_wrapper
 
     model_validation = (
         args.source_dir / "scripts" / "validate_model.sh"
     ).read_text(encoding="utf-8")
     assert '--gpu "$gpu_list"' in model_validation
-    assert "EVO2C_EXPECTED_LOGITS" in model_validation
+    assert "EVO_EXPECTED_LOGITS" in model_validation
     assert "compare_logits.py" in model_validation
 
     prepare = (
@@ -132,7 +132,7 @@ def main() -> int:
     assert 'status_partial="${status_file}.$$.partial"' in bionemo
     assert 'until launch_output="$(' in bionemo
     assert 'job_manifest="$(' in bionemo
-    assert '"$source_dir/tools/evo2c/bionemo_checkpoint.py"' in bionemo
+    assert '"$source_dir/tools/evo/bionemo_checkpoint.py"' in bionemo
     assert 'test "$(cat "$status_file")" != "0"' in bionemo
     assert 'checkpoint_dir="$resource_dir/checkpoint"' not in bionemo, (
         "V32: locate the actual DCP .metadata instead of assuming archive layout"
@@ -159,12 +159,12 @@ def main() -> int:
     assert "--reference-bytes" in bionemo_validation
     assert bionemo_validation.count("apptainer exec --nv") == 2
     assert "nohup setsid" in bionemo_validation
-    assert 'binary="$HOME/evo2c/build-gpu/evo2c"' in bionemo_validation
+    assert 'binary="$HOME/evo.cpp/build-gpu/evo"' in bionemo_validation
     assert 'binary_sha256="$(sha256sum "$binary"' in bionemo_validation
     assert 'status_partial="${status_file}.$$.partial"' in bionemo_validation
     assert "nvidia-smi --query-gpu=" in bionemo_validation
     assert "wait_for_exclusive_devices" in bionemo_validation
-    assert "EVO2C_BIONEMO_GPU_LIST" in bionemo_validation
+    assert "EVO_BIONEMO_GPU_LIST" in bionemo_validation
     assert 'gpu_tag="${gpu_list//,/}"' in bionemo_validation
     assert 'test "$mode" = "Exclusive_Process"' in bionemo_validation
     assert 'test "$(cat "$status_file")" != "0"' in bionemo_validation
@@ -172,10 +172,10 @@ def main() -> int:
     benchmark_7b = (
         args.source_dir / "scripts" / "gpu02_benchmark_7b.sh"
     ).read_text(encoding="utf-8")
-    assert "EVO2C_REMOTE_7B_BENCHMARK_WORKER" in benchmark_7b
-    assert 'remote_host="${EVO2C_GPU02_HOST:-gpu02}"' in benchmark_7b
+    assert "EVO_REMOTE_7B_BENCHMARK_WORKER" in benchmark_7b
+    assert 'remote_host="${EVO_GPU02_HOST:-gpu02}"' in benchmark_7b
     assert "'bash -s' -- \"$requested_gpu\"" in benchmark_7b
-    assert 'gpu="${EVO2C_7B_GPU:-3}"' in benchmark_7b
+    assert 'gpu="${EVO_7B_GPU:-3}"' in benchmark_7b
     assert "nvidia-smi --query-compute-apps=gpu_uuid" in benchmark_7b
     assert "CUDA device $gpu is not idle" in benchmark_7b
     assert "-B /data:/data" in benchmark_7b
@@ -187,7 +187,7 @@ def main() -> int:
     assert "--minimum-cosine 0.99999" in benchmark_7b
     assert "prefill_benchmark_gate.py" in benchmark_7b
     assert '--minimum-rate "1024=$minimum_rate_1024"' in benchmark_7b
-    assert 'minimum_rate_1024="${EVO2C_7B_MIN_RATE_1024:-9300}"' in benchmark_7b
+    assert 'minimum_rate_1024="${EVO_7B_MIN_RATE_1024:-9300}"' in benchmark_7b
     assert "artifact-sha256.txt" in benchmark_7b
 
     quality = (

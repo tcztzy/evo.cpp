@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "evo2c/model_format.hpp"
+#include "evo/model_format.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -14,7 +14,7 @@
 #include <utility>
 #include <vector>
 
-namespace evo2c {
+namespace evo {
 namespace {
 
 constexpr std::size_t kSafetensorsPrefixSize = 8;
@@ -1084,4 +1084,4 @@ std::string metadata_value_text(const MetadataEntry &entry) {
   return "<invalid>";
 }
 
-} // namespace evo2c
+} // namespace evo

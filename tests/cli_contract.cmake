@@ -1,44 +1,44 @@
-if(NOT DEFINED EVO2C_BINARY OR NOT DEFINED EVO2C_INSPECT_BINARY)
+if(NOT DEFINED EVO_BINARY OR NOT DEFINED EVO_INSPECT_BINARY)
   message(FATAL_ERROR "CLI contract test requires both executable paths")
 endif()
 
 execute_process(
-  COMMAND "${EVO2C_BINARY}" --version
+  COMMAND "${EVO_BINARY}" --version
   RESULT_VARIABLE version_result
   OUTPUT_VARIABLE version_output
   ERROR_VARIABLE version_error)
-if(NOT version_result EQUAL 0 OR NOT version_output MATCHES "^evo2c 0\\.1\\.0")
-  message(FATAL_ERROR "evo2c --version contract failed: ${version_error}${version_output}")
+if(NOT version_result EQUAL 0 OR NOT version_output MATCHES "^evo 0\\.1\\.0")
+  message(FATAL_ERROR "evo --version contract failed: ${version_error}${version_output}")
 endif()
 
 execute_process(
-  COMMAND "${EVO2C_BINARY}" --help
+  COMMAND "${EVO_BINARY}" --help
   RESULT_VARIABLE help_result
   OUTPUT_VARIABLE help_output
   ERROR_VARIABLE help_error)
 if(NOT help_result EQUAL 0 OR NOT help_output MATCHES "Usage:")
-  message(FATAL_ERROR "evo2c --help contract failed: ${help_error}${help_output}")
+  message(FATAL_ERROR "evo --help contract failed: ${help_error}${help_output}")
 endif()
 
 execute_process(
-  COMMAND "${EVO2C_BINARY}"
+  COMMAND "${EVO_BINARY}"
   RESULT_VARIABLE invalid_result
   OUTPUT_VARIABLE invalid_output
   ERROR_VARIABLE invalid_error)
 if(invalid_result EQUAL 0)
-  message(FATAL_ERROR "evo2c without arguments silently succeeded")
+  message(FATAL_ERROR "evo without arguments silently succeeded")
 endif()
 if(NOT invalid_error MATCHES "invalid_argument: a nonempty model path is required")
-  message(FATAL_ERROR "evo2c failure was not actionable: ${invalid_error}${invalid_output}")
+  message(FATAL_ERROR "evo failure was not actionable: ${invalid_error}${invalid_output}")
 endif()
 
 execute_process(
-  COMMAND "${EVO2C_BINARY}" -m fake.safetensors -p "Aé" -n 1 --gpu 0,1 --dump-tokens
+  COMMAND "${EVO_BINARY}" -m fake.safetensors -p "Aé" -n 1 --gpu 0,1 --dump-tokens
   RESULT_VARIABLE token_result
   OUTPUT_VARIABLE token_output
   ERROR_VARIABLE token_error)
 string(FIND "${token_error}" "tokens prompt=[65,195,169]" token_position)
-string(FIND "${token_error}" "unsupported: this evo2c binary was built without CUDA support" no_cuda_position)
+string(FIND "${token_error}" "unsupported: this evo binary was built without CUDA support" no_cuda_position)
 string(FIND "${token_error}" "io: open 'fake.safetensors':" cuda_position)
 if(token_result EQUAL 0 OR token_position EQUAL -1 OR
    (no_cuda_position EQUAL -1 AND cuda_position EQUAL -1))
@@ -46,13 +46,13 @@ if(token_result EQUAL 0 OR token_position EQUAL -1 OR
 endif()
 
 execute_process(
-  COMMAND "${EVO2C_INSPECT_BINARY}"
+  COMMAND "${EVO_INSPECT_BINARY}"
   RESULT_VARIABLE inspect_result
   OUTPUT_VARIABLE inspect_output
   ERROR_VARIABLE inspect_error)
 if(inspect_result EQUAL 0)
-  message(FATAL_ERROR "evo2c-inspect without a model silently succeeded")
+  message(FATAL_ERROR "evo-inspect without a model silently succeeded")
 endif()
-if(NOT inspect_error MATCHES "invalid_argument: usage: evo2c-inspect")
-  message(FATAL_ERROR "evo2c-inspect failure was not actionable: ${inspect_error}${inspect_output}")
+if(NOT inspect_error MATCHES "invalid_argument: usage: evo-inspect")
+  message(FATAL_ERROR "evo-inspect failure was not actionable: ${inspect_error}${inspect_output}")
 endif()

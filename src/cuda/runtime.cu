@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "evo2c/cuda/runtime.hpp"
+#include "evo/cuda/runtime.hpp"
 
 #include <string>
 #include <utility>
 
-namespace evo2c::cuda {
+namespace evo::cuda {
 
 Status cuda_status(const cudaError_t error, const char *const operation) {
   if (error == cudaSuccess) {
@@ -327,4 +327,4 @@ void BlasLt::reset() noexcept {
   }
 }
 
-} // namespace evo2c::cuda
+} // namespace evo::cuda

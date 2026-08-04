@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "evo2c/cuda/ops.hpp"
+#include "evo/cuda/ops.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -11,7 +11,7 @@
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
 
-namespace evo2c::cuda {
+namespace evo::cuda {
 namespace {
 
 constexpr int kThreads = 256;
@@ -1244,4 +1244,4 @@ Status bf16_mlp(const BlasLt &handle, const DeviceBuffer &input,
                      &workspace->down_plan);
 }
 
-} // namespace evo2c::cuda
+} // namespace evo::cuda

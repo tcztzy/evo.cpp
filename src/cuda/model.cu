@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "evo2c/cuda/model.hpp"
+#include "evo/cuda/model.hpp"
 
 #include <algorithm>
 #include <array>
@@ -18,13 +18,13 @@
 
 #include <cuda_bf16.h>
 
-#include "evo2c/cuda/attention.hpp"
-#include "evo2c/cuda/hyena.hpp"
-#include "evo2c/cuda/ops.hpp"
-#include "evo2c/cuda/runtime.hpp"
-#include "evo2c/model_registry.hpp"
+#include "evo/cuda/attention.hpp"
+#include "evo/cuda/hyena.hpp"
+#include "evo/cuda/ops.hpp"
+#include "evo/cuda/runtime.hpp"
+#include "evo/model_registry.hpp"
 
-namespace evo2c::cuda {
+namespace evo::cuda {
 namespace {
 
 constexpr int kThreads = 256;
@@ -2414,4 +2414,4 @@ bool PipelineModel::uses_q8_kv_cache() const noexcept {
   return impl_->q8_kv_cache;
 }
 
-} // namespace evo2c::cuda
+} // namespace evo::cuda

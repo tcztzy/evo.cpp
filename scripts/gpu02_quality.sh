@@ -3,13 +3,13 @@
 set -euo pipefail
 
 run_remote_worker() {
-  local start_index="${EVO2C_QUALITY_START_INDEX:-0}"
-  local limit="${EVO2C_QUALITY_LIMIT:-}"
-  local source_dir="$HOME/evo2c"
-  local image="$HOME/evo2c-cuda12.8-rocky8.sif"
+  local start_index="${EVO_QUALITY_START_INDEX:-0}"
+  local limit="${EVO_QUALITY_LIMIT:-}"
+  local source_dir="$HOME/evo.cpp"
+  local image="$HOME/evo.cpp-cuda12.8-rocky8.sif"
   local nix_root="$HOME/.local/share/nix-root"
   local python_bin="/nix/store/flbw79qdmvzbdrafd93avy5a7d29m2vb-python3-3.12.12/bin/python3"
-  local artifact_root="$HOME/evo2c-artifacts"
+  local artifact_root="$HOME/evo.cpp-artifacts"
   local complete
   local generated
   local model
@@ -17,17 +17,17 @@ run_remote_worker() {
   local output
   local -a quality_args
 
-  export HF_HOME="${EVO2C_HF_HOME:-/build/grp_icg/users/tang/.cache}"
+  export HF_HOME="${EVO_HF_HOME:-/build/grp_icg/users/tang/.cache}"
   export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
-  model="$HOME/evo2c-models/evo2-40b-e4m3sw.safetensors.index.json"
+  model="$HOME/evo.cpp-models/evo2-40b-e4m3sw.safetensors.index.json"
   test -f "$model"
   model_sha256="$(sha256sum "$model" | cut -d' ' -f1)"
   output="$artifact_root/t13-native-quality-4x500.json"
   quality_args=(
-    --binary "$source_dir/build-gpu/evo2c"
+    --binary "$source_dir/build-gpu/evo"
     --model "$model"
     --model-sha256 "$model_sha256"
-    --prompts "$HOME/evo2c-vortex-reference/test/data/prompts.csv"
+    --prompts "$HOME/evo.cpp-vortex-reference/test/data/prompts.csv"
     --output "$output"
     --num-tokens 500
     --ctx 8192
@@ -44,8 +44,8 @@ run_remote_worker() {
 
   mkdir -p "$artifact_root"
   test -f "$image"
-  test -x "$source_dir/build-gpu/evo2c"
-  test -f "$HOME/evo2c-vortex-reference/test/data/prompts.csv"
+  test -x "$source_dir/build-gpu/evo"
+  test -f "$HOME/evo.cpp-vortex-reference/test/data/prompts.csv"
   apptainer exec --nv -B "$nix_root:/nix:ro" "$image" \
     "$python_bin" "$source_dir/tools/evo2_quality_gate.py" \
     "${quality_args[@]}"
@@ -59,32 +59,32 @@ run_remote_worker() {
   if test "$complete" = "1"; then
     apptainer exec --nv -B "$nix_root:/nix:ro" "$image" \
       "$python_bin" "$source_dir/tools/evo2_quality_gate.py" \
-      --binary "$source_dir/build-gpu/evo2c" \
+      --binary "$source_dir/build-gpu/evo" \
       --model "$model" \
       --model-sha256 "$model_sha256" \
-      --prompts "$HOME/evo2c-vortex-reference/test/data/prompts.csv" \
+      --prompts "$HOME/evo.cpp-vortex-reference/test/data/prompts.csv" \
       --output "$output" --num-tokens 500 --ctx 8192 --gpu 0,1,2,3 \
       --force-prompt-threshold 3000 --summarize-existing
   fi
   sha256sum "$output"
 }
 
-if test "${EVO2C_REMOTE_QUALITY_WORKER:-0}" = "1"; then
+if test "${EVO_REMOTE_QUALITY_WORKER:-0}" = "1"; then
   run_remote_worker
   exit 0
 fi
 
-remote_host="${EVO2C_GPU02_HOST:-gpu02}"
-start_index="${EVO2C_QUALITY_START_INDEX:-0}"
-limit="${EVO2C_QUALITY_LIMIT:-}"
+remote_host="${EVO_GPU02_HOST:-gpu02}"
+start_index="${EVO_QUALITY_START_INDEX:-0}"
+limit="${EVO_QUALITY_LIMIT:-}"
 if [[ ! "$start_index" =~ ^[0-3]$ ]]; then
-  echo "gpu02_quality: EVO2C_QUALITY_START_INDEX must be in [0,3]" >&2
+  echo "gpu02_quality: EVO_QUALITY_START_INDEX must be in [0,3]" >&2
   exit 2
 fi
 if test -n "$limit" &&
    { [[ ! "$limit" =~ ^[1-4]$ ]] ||
      test "$((start_index + limit))" -gt 4; }; then
-  echo "gpu02_quality: EVO2C_QUALITY_LIMIT selects outside four prompts" >&2
+  echo "gpu02_quality: EVO_QUALITY_LIMIT selects outside four prompts" >&2
   exit 2
 fi
 
@@ -100,10 +100,10 @@ until launch_output="$(
 set -euo pipefail
 start_index="$1"
 limit="$2"
-worker="$HOME/evo2c/scripts/gpu02_quality.sh"
+worker="$HOME/evo.cpp/scripts/gpu02_quality.sh"
 worker_sha256="$(sha256sum "$worker" | cut -d' ' -f1)"
 job_key="${worker_sha256}-start${start_index}-limit${limit:-all}"
-job_dir="$HOME/evo2c-artifacts/.quality-jobs/$job_key"
+job_dir="$HOME/evo.cpp-artifacts/.quality-jobs/$job_key"
 pid_file="$job_dir/pid"
 status_file="$job_dir/status"
 log_file="$job_dir/output.log"
@@ -115,7 +115,7 @@ if test -f "$pid_file"; then
   pid="$(cat "$pid_file")"
   if test -n "$pid" && kill -0 "$pid" 2>/dev/null; then
     command_line="$(tr '\0' ' ' <"/proc/$pid/cmdline")"
-    if [[ "$command_line" == *evo2c-quality-runner* ]]; then
+    if [[ "$command_line" == *evo-quality-runner* ]]; then
       running=1
     fi
   fi
@@ -128,15 +128,15 @@ if test "$running" = "0" && ! test -f "$status_file"; then
     status_file="$3"
     start_index="$4"
     limit="$5"
-    EVO2C_REMOTE_QUALITY_WORKER=1 \
-      EVO2C_QUALITY_START_INDEX="$start_index" \
-      EVO2C_QUALITY_LIMIT="$limit" \
+    EVO_REMOTE_QUALITY_WORKER=1 \
+      EVO_QUALITY_START_INDEX="$start_index" \
+      EVO_QUALITY_LIMIT="$limit" \
       bash "$worker" >"$log_file" 2>&1
     code=$?
     status_partial="${status_file}.$$.partial"
     printf "%s\n" "$code" >"$status_partial"
     mv -- "$status_partial" "$status_file"
-  ' evo2c-quality-runner "$worker" "$log_file" "$status_file" \
+  ' evo-quality-runner "$worker" "$log_file" "$status_file" \
     "$start_index" "$limit" </dev/null >/dev/null 2>&1 &
   pid="$!"
   printf '%s\n' "$pid" >"$pid_file"

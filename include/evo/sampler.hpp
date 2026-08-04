@@ -6,10 +6,10 @@
 #include <random>
 #include <vector>
 
-#include "evo2c/status.hpp"
-#include "evo2c/tokenizer.hpp"
+#include "evo/status.hpp"
+#include "evo/tokenizer.hpp"
 
-namespace evo2c {
+namespace evo {
 
 struct SamplingConfig final {
   float temperature{1.0F};
@@ -31,4 +31,4 @@ class Sampler final {
   std::mt19937_64 random_;
 };
 
-}  // namespace evo2c
+}  // namespace evo

@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "source": {
+    "repo_id": "arcinstitute/evo2_7b",
+    "revision": "bda0089f92582d5baabf0f22d9fc85f3588f6b58",
+    "filename": "evo2_7b.pt",
+    "size": 13766621200,
+    "sha256": "c66645929dc1b9c631f5be656da8726f38946315dc9167000a615dd626fcecf4"
+  },
+  "conversion": {
+    "tool": "evo.cpp",
+    "repository": "https://github.com/tcztzy/evo.cpp",
+    "format": "safetensors",
+    "profile": "evo2-runtime-v1",
+    "runtime_abi": "evo2-safetensors-v1",
+    "tensor_count": 345,
+    "tensor_payload_bytes": 13170533120,
+    "max_shard_payload_bytes": 4294967296,
+    "sharding": "greedy_physical_order_without_tensor_splitting",
+    "source_weight_dtype": "BF16",
+    "exact_widen_norm_to_f32": true,
+    "exact_widen_rope_to_f32": true
+  },
+  "files": {
+    "model-00001-of-00004.safetensors": {
+      "size": 4255982560,
+      "sha256": "44762fbe5ad09b559aafedfd18be890de52274fd525e90b6a99c60285b9338f7"
+    },
+    "model-00002-of-00004.safetensors": {
+      "size": 4205609112,
+      "sha256": "51286417e09312f9925e8640a9acd617a6275edfe7f742f5955f6a57b3652556"
+    },
+    "model-00003-of-00004.safetensors": {
+      "size": 4205609112,
+      "sha256": "3152fb3744af88fa8df80fcee00c02c48effa5ad3789a39c99f0ae784dae9375"
+    },
+    "model-00004-of-00004.safetensors": {
+      "size": 503377680,
+      "sha256": "9de08f0d7087a5862e379ac73166b5784b7c7f6fe7e8c9a0a1d1c018bf849273"
+    },
+    "model.safetensors.index.json": {
+      "size": 22902,
+      "sha256": "ee1757566fdf8616f706ebcce3ae65487beab6fab3246cff1762c799d7951e1e"
+    }
+  }
+}

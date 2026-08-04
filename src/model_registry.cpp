@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "evo2c/model_registry.hpp"
+#include "evo/model_registry.hpp"
 
 #include <algorithm>
 #include <utility>
 
-namespace evo2c {
+namespace evo {
 namespace {
 
 OfficialModelSpec spec(
@@ -86,4 +86,4 @@ find_official_model(const std::string_view model_id) noexcept {
   return found == specs.end() ? nullptr : &*found;
 }
 
-} // namespace evo2c
+} // namespace evo

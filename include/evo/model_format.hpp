@@ -8,10 +8,10 @@
 #include <string_view>
 #include <vector>
 
-#include "evo2c/mapped_file.hpp"
-#include "evo2c/status.hpp"
+#include "evo/mapped_file.hpp"
+#include "evo/status.hpp"
 
-namespace evo2c {
+namespace evo {
 
 inline constexpr std::string_view kModelProfile = "evo2-runtime-v1";
 inline constexpr std::size_t kMaximumSafetensorsHeaderSize =
@@ -107,4 +107,4 @@ private:
 [[nodiscard]] const char *tensor_dtype_name(TensorDType dtype) noexcept;
 [[nodiscard]] std::string metadata_value_text(const MetadataEntry &entry);
 
-} // namespace evo2c
+} // namespace evo

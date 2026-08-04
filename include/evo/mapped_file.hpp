@@ -5,9 +5,9 @@
 #include <cstdint>
 #include <string>
 
-#include "evo2c/status.hpp"
+#include "evo/status.hpp"
 
-namespace evo2c {
+namespace evo {
 
 class MappedFile final {
  public:
@@ -34,5 +34,5 @@ class MappedFile final {
   std::size_t size_{0};
 };
 
-}  // namespace evo2c
+}  // namespace evo
 

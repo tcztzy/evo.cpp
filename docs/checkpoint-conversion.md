@@ -33,8 +33,8 @@ PYTHONPATH=tools python3 tools/convert_checkpoint.py \
   --source-sha256 CHECKPOINT_SHA256
 ```
 
-设置 `EVO2C_SOURCE_SHA256` 可通过 wrapper 记录已验证的源 hash；
-`EVO2C_DRY_RUN=1` 只验证而不写出。split checkpoint 必须先按 `.part0`,
+设置 `EVO_SOURCE_SHA256` 可通过 wrapper 记录已验证的源 hash；
+`EVO_DRY_RUN=1` 只验证而不写出。split checkpoint 必须先按 `.part0`,
 `.part1`, … 数字顺序合并，直接传入 part 会被拒绝。
 
 转换器固定使用：
@@ -71,8 +71,8 @@ PYTHONPATH=tools python3 tools/convert_bionemo_checkpoint.py \
 ## 检查与运行
 
 ```sh
-build/evo2c-inspect MODEL.safetensors.index.json
-build/evo2c-inspect MODEL.safetensors.index.json --tensor norm.scale
+build/evo-inspect MODEL.safetensors.index.json
+build/evo-inspect MODEL.safetensors.index.json --tensor norm.scale
 
 scripts/validate_model.sh MODEL.safetensors.index.json 0,1 8192
 ```

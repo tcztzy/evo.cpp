@@ -4,10 +4,10 @@
 #include <cstddef>
 #include <memory>
 
-#include "evo2c/cuda/runtime.hpp"
-#include "evo2c/status.hpp"
+#include "evo/cuda/runtime.hpp"
+#include "evo/status.hpp"
 
-namespace evo2c::cuda {
+namespace evo::cuda {
 
 inline constexpr std::size_t kDefaultBlasWorkspaceBytes = 32U * 1024U * 1024U;
 
@@ -140,4 +140,4 @@ bf16_mlp(const BlasLt &handle, const DeviceBuffer &input,
          std::size_t inner_width, GatedActivation activation,
          MlpWorkspace *workspace, DeviceBuffer *output, const Stream &stream);
 
-} // namespace evo2c::cuda
+} // namespace evo::cuda

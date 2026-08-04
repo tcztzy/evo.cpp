@@ -40,11 +40,11 @@ def identity(generated: bytes, target: str) -> float:
 
 
 def parse_metrics(stderr: bytes) -> dict[str, object]:
-    prefix = b"evo2c_metrics "
+    prefix = b"evo_metrics "
     for line in reversed(stderr.splitlines()):
         if line.startswith(prefix):
             return json.loads(line[len(prefix) :])
-    raise RuntimeError("evo2c did not emit its metrics record")
+    raise RuntimeError("evo did not emit its metrics record")
 
 
 def write_json_atomic(path: Path, payload: dict[str, object]) -> None:
@@ -106,7 +106,7 @@ def generate(
     )
     if result.returncode != 0:
         raise RuntimeError(
-            f"evo2c generation failed ({result.returncode}):\n"
+            f"evo generation failed ({result.returncode}):\n"
             f"{result.stderr.decode(errors='replace')}"
         )
     if len(result.stdout) != token_count:
@@ -257,7 +257,7 @@ def main() -> int:
         and (deterministic is None or bool(deterministic["byte_exact"]))
     )
     report = {
-        "schema": "evo2c.quality_gate.v1",
+        "schema": "evo.quality_gate.v1",
         "binary": str(args.binary),
         "binary_sha256": sha256_file(args.binary),
         "model": str(args.model),

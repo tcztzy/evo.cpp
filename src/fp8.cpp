@@ -1,10 +1,10 @@
-#include "evo2c/fp8.hpp"
+#include "evo/fp8.hpp"
 
 #include <cmath>
 #include <cstdint>
 #include <limits>
 
-namespace evo2c::fp8 {
+namespace evo::fp8 {
 namespace {
 
 [[nodiscard]] float decode_positive(const std::uint8_t magnitude) noexcept {
@@ -76,4 +76,4 @@ float scaled_e4m3fn_roundtrip(const float value,
   return quantized * (1.0F / scale);
 }
 
-}  // namespace evo2c::fp8
+}  // namespace evo::fp8

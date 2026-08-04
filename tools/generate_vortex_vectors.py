@@ -231,9 +231,9 @@ def install_software_fp8_projections(
         quantized_weight = software_e4m3_quantize(weight, weight_scale).to(
             torch.bfloat16
         )
-        projection._evo2c_software_fp8_weight = quantized_weight
-        projection._evo2c_software_fp8_input_scale = input_scale
-        projection._evo2c_software_fp8_output_scale = (
+        projection._evo_software_fp8_weight = quantized_weight
+        projection._evo_software_fp8_input_scale = input_scale
+        projection._evo_software_fp8_output_scale = (
             software_fp8_output_scale(scale_inv)
         )
 
@@ -243,34 +243,34 @@ def install_software_fp8_projections(
         ) -> torch.Tensor | tuple[torch.Tensor, None]:
             rounded = software_e4m3_quantize(
                 value,
-                module._evo2c_software_fp8_input_scale,
+                module._evo_software_fp8_input_scale,
             ).to(torch.bfloat16)
             if accumulator == "fp32":
                 import torch.nn.functional as functional
 
                 output = functional.linear(
                     rounded.float(),
-                    module._evo2c_software_fp8_weight.float(),
-                ).mul_(module._evo2c_software_fp8_output_scale)
+                    module._evo_software_fp8_weight.float(),
+                ).mul_(module._evo_software_fp8_output_scale)
             elif accumulator.startswith("e8m13-"):
-                from evo2c.triton_fp8 import e8m13_linear
+                from evo.triton_fp8 import e8m13_linear
 
                 output = e8m13_linear(
                     rounded.contiguous(),
-                    module._evo2c_software_fp8_weight,
-                    module._evo2c_software_fp8_output_scale,
+                    module._evo_software_fp8_weight,
+                    module._evo_software_fp8_output_scale,
                     rounding=accumulator.removeprefix("e8m13-"),
                     promotion_interval=(
                         None if promotion_interval == 0 else promotion_interval
                     ),
                 )
             else:
-                from evo2c.triton_fp8 import h100_qgmma_linear
+                from evo.triton_fp8 import h100_qgmma_linear
 
                 output = h100_qgmma_linear(
                     rounded.contiguous(),
-                    module._evo2c_software_fp8_weight,
-                    module._evo2c_software_fp8_output_scale,
+                    module._evo_software_fp8_weight,
+                    module._evo_software_fp8_output_scale,
                 )
             if module.bias is not None:
                 output.add_(module.bias.float())
@@ -286,7 +286,7 @@ def install_software_fp8_projections(
                 "layer": layer,
                 "input_scale": input_scale,
                 "weight_scale": weight_scale,
-                "output_scale": projection._evo2c_software_fp8_output_scale,
+                "output_scale": projection._evo_software_fp8_output_scale,
                 "weight_amax": weight_amax,
                 "history_weight_amax": history_weight_amax,
             }

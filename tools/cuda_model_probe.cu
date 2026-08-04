@@ -15,17 +15,17 @@
 #include <string>
 #include <vector>
 
-#include "evo2c/cuda/model.hpp"
-#include "evo2c/model_format.hpp"
-#include "evo2c/status.hpp"
-#include "evo2c/tokenizer.hpp"
+#include "evo/cuda/model.hpp"
+#include "evo/model_format.hpp"
+#include "evo/status.hpp"
+#include "evo/tokenizer.hpp"
 
 namespace {
 
-void require(const evo2c::Status &status, const std::string &operation) {
+void require(const evo::Status &status, const std::string &operation) {
   if (!status.ok()) {
     throw std::runtime_error(operation + ": " +
-                             evo2c::error_code_name(status.code()) + ": " +
+                             evo::error_code_name(status.code()) + ": " +
                              status.message());
   }
 }
@@ -103,7 +103,7 @@ std::vector<int> parse_devices(const std::string &value) {
 
 int main(const int argc, char **argv) {
   if (argc < 4 || argc > 7) {
-    std::cerr << "usage: evo2c-cuda-probe MODEL PROMPT OUTPUT_DIR "
+    std::cerr << "usage: evo-cuda-probe MODEL PROMPT OUTPUT_DIR "
                  "[DEBUG_LAYER|- [GPU_LIST [GENERATE_TOKENS]]]\n";
     return 2;
   }
@@ -131,15 +131,15 @@ int main(const int argc, char **argv) {
       generate_tokens = static_cast<std::size_t>(parsed);
     }
     const std::string prompt{argv[2]};
-    const auto tokens = evo2c::encode_bytes(prompt);
+    const auto tokens = evo::encode_bytes(prompt);
     if (tokens.empty())
       throw std::runtime_error("prompt must not be empty");
     const std::filesystem::path output_dir{argv[3]};
     std::filesystem::create_directories(output_dir);
 
-    evo2c::ModelFile file;
+    evo::ModelFile file;
     require(file.open(argv[1]), "open model");
-    evo2c::cuda::PipelineModel model;
+    evo::cuda::PipelineModel model;
     if (generate_tokens >
         std::numeric_limits<std::size_t>::max() - tokens.size()) {
       throw std::runtime_error("generation context capacity overflows");
@@ -150,37 +150,37 @@ int main(const int argc, char **argv) {
       throw std::runtime_error("DEBUG_LAYER exceeds the model layer count");
     }
 
-    std::vector<evo2c::cuda::LayerDump> dumps;
+    std::vector<evo::cuda::LayerDump> dumps;
     dumps.reserve(model.config().layers + (debug_layer.has_value() ? 10 : 0));
     for (std::size_t layer = 0; layer < model.config().layers; ++layer) {
       dumps.push_back({layer, (output_dir / layer_filename(layer)).string()});
     }
     if (debug_layer.has_value()) {
-      const std::array<std::pair<evo2c::cuda::LayerDumpPoint, const char *>, 19>
+      const std::array<std::pair<evo::cuda::LayerDumpPoint, const char *>, 19>
           points{{
-              {evo2c::cuda::LayerDumpPoint::kPreNorm, "pre_norm"},
-              {evo2c::cuda::LayerDumpPoint::kMixerInputProjection,
+              {evo::cuda::LayerDumpPoint::kPreNorm, "pre_norm"},
+              {evo::cuda::LayerDumpPoint::kMixerInputProjection,
                "mixer_input_projection"},
-              {evo2c::cuda::LayerDumpPoint::kMixerShortFilter,
+              {evo::cuda::LayerDumpPoint::kMixerShortFilter,
                "mixer_short_filter"},
-              {evo2c::cuda::LayerDumpPoint::kMixerX2, "mixer_x2"},
-              {evo2c::cuda::LayerDumpPoint::kMixerX1, "mixer_x1"},
-              {evo2c::cuda::LayerDumpPoint::kMixerValue, "mixer_value"},
-              {evo2c::cuda::LayerDumpPoint::kMixerPregate, "mixer_pregate"},
-              {evo2c::cuda::LayerDumpPoint::kMixerState, "mixer_state"},
-              {evo2c::cuda::LayerDumpPoint::kMixerFilter, "mixer_filter"},
-              {evo2c::cuda::LayerDumpPoint::kMixerConvolution,
+              {evo::cuda::LayerDumpPoint::kMixerX2, "mixer_x2"},
+              {evo::cuda::LayerDumpPoint::kMixerX1, "mixer_x1"},
+              {evo::cuda::LayerDumpPoint::kMixerValue, "mixer_value"},
+              {evo::cuda::LayerDumpPoint::kMixerPregate, "mixer_pregate"},
+              {evo::cuda::LayerDumpPoint::kMixerState, "mixer_state"},
+              {evo::cuda::LayerDumpPoint::kMixerFilter, "mixer_filter"},
+              {evo::cuda::LayerDumpPoint::kMixerConvolution,
                "mixer_convolution"},
-              {evo2c::cuda::LayerDumpPoint::kMixerOutput, "mixer_output"},
-              {evo2c::cuda::LayerDumpPoint::kMixerProjection,
+              {evo::cuda::LayerDumpPoint::kMixerOutput, "mixer_output"},
+              {evo::cuda::LayerDumpPoint::kMixerProjection,
                "mixer_projection"},
-              {evo2c::cuda::LayerDumpPoint::kMixerResidual, "mixer_residual"},
-              {evo2c::cuda::LayerDumpPoint::kPostNorm, "post_norm"},
-              {evo2c::cuda::LayerDumpPoint::kMlpL1, "mlp_l1"},
-              {evo2c::cuda::LayerDumpPoint::kMlpL2, "mlp_l2"},
-              {evo2c::cuda::LayerDumpPoint::kMlpActivation, "mlp_activation"},
-              {evo2c::cuda::LayerDumpPoint::kMlpGated, "mlp_gated"},
-              {evo2c::cuda::LayerDumpPoint::kMlpOutput, "mlp_output"},
+              {evo::cuda::LayerDumpPoint::kMixerResidual, "mixer_residual"},
+              {evo::cuda::LayerDumpPoint::kPostNorm, "post_norm"},
+              {evo::cuda::LayerDumpPoint::kMlpL1, "mlp_l1"},
+              {evo::cuda::LayerDumpPoint::kMlpL2, "mlp_l2"},
+              {evo::cuda::LayerDumpPoint::kMlpActivation, "mlp_activation"},
+              {evo::cuda::LayerDumpPoint::kMlpGated, "mlp_gated"},
+              {evo::cuda::LayerDumpPoint::kMlpOutput, "mlp_output"},
           }};
       for (const auto &[point, suffix] : points) {
         const std::string filename =
@@ -203,7 +203,7 @@ int main(const int argc, char **argv) {
                 model.config().vocab_size);
       std::vector<float> generation_logits;
       generation_logits.reserve(generate_tokens * model.config().vocab_size);
-      std::vector<evo2c::TokenId> generated;
+      std::vector<evo::TokenId> generated;
       generated.reserve(generate_tokens);
       std::vector<float> current(
           logits.end() - static_cast<std::ptrdiff_t>(model.config().vocab_size),
@@ -213,7 +213,7 @@ int main(const int argc, char **argv) {
                                  current.end());
         const auto maximum = std::max_element(current.begin(), current.end());
         const auto token =
-            static_cast<evo2c::TokenId>(maximum - current.begin());
+            static_cast<evo::TokenId>(maximum - current.begin());
         if (static_cast<std::size_t>(token) > 255)
           throw std::runtime_error(
               "generated token has no byte representation");
@@ -228,7 +228,7 @@ int main(const int argc, char **argv) {
                                      std::ios::binary | std::ios::trunc);
       if (!generated_output)
         throw std::runtime_error("cannot open generated-token output");
-      for (const evo2c::TokenId token : generated)
+      for (const evo::TokenId token : generated)
         generated_output.put(static_cast<char>(token));
       if (!generated_output)
         throw std::runtime_error("failed to write generated-token output");
@@ -270,7 +270,7 @@ int main(const int argc, char **argv) {
     }
     std::cout << '\n';
   } catch (const std::exception &error) {
-    std::cerr << "evo2c-cuda-probe: " << error.what() << '\n';
+    std::cerr << "evo-cuda-probe: " << error.what() << '\n';
     return 1;
   }
   return 0;

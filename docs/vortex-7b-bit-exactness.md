@@ -1,6 +1,6 @@
 # Vortex 7B bit-exact inference audit
 
-This document records the white-box numerical audit of evo2c's BF16
+This document records the white-box numerical audit of evo.cpp's BF16
 `evo2_7b` path. “Exact” here means equality of the stored BF16/F32 bit
 patterns. Cosine similarity, top-1 agreement, and tolerance checks are not
 accepted as evidence of equality.
@@ -57,7 +57,7 @@ inside that block. A change was accepted only when the first unequal primitive
 became equal and every downstream block and logit remained equal. The relevant
 source paths are:
 
-| Contract | Pinned Vortex/PyTorch implementation | evo2c implementation |
+| Contract | Pinned Vortex/PyTorch implementation | evo.cpp implementation |
 |---|---|---|
 | Exact GELU and the following BF16 gate | `vortex/model/layers.py::ParallelGatedMLP.forward`; PyTorch `aten/src/ATen/native/cuda/ActivationGeluKernel.cu::GeluCUDAKernelImpl` | [`pytorch_gelu_bf16`, `gated_kernel`, and `gelu_kernel`](../src/cuda/ops.cu) |
 | Hyena short/medium/long convolution and state | `vortex/model/engine.py::fftconv_func`, `parallel_iir`, `prefill_via_modal_fft`, `step_iir`; `vortex/model/model.py::HyenaCascade.compute_filter` | [`hcl_filter_kernel`, modal-state FFT kernels, `hcl_decode_kernel`, and the `bf16_hc*` dispatchers](../src/cuda/hyena.cu) |

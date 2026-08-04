@@ -14,11 +14,11 @@
 
 #include <cuda_runtime_api.h>
 
-#include "evo2c/cuda/model.hpp"
-#include "evo2c/cuda/runtime.hpp"
-#include "evo2c/model_format.hpp"
-#include "evo2c/status.hpp"
-#include "evo2c/tokenizer.hpp"
+#include "evo/cuda/model.hpp"
+#include "evo/cuda/runtime.hpp"
+#include "evo/model_format.hpp"
+#include "evo/status.hpp"
+#include "evo/tokenizer.hpp"
 
 namespace {
 
@@ -31,7 +31,7 @@ void check(const bool condition, const std::string_view description) {
   }
 }
 
-void require(const evo2c::Status &status, const std::string_view operation) {
+void require(const evo::Status &status, const std::string_view operation) {
   if (!status.ok())
     throw std::runtime_error(std::string{operation} + ": " + status.message());
 }
@@ -110,7 +110,7 @@ float cosine(const std::vector<float> &left, const std::vector<float> &right) {
 }
 
 int requested_device() {
-  const char *environment = std::getenv("EVO2C_TEST_DEVICE");
+  const char *environment = std::getenv("EVO_TEST_DEVICE");
   return environment == nullptr ? 0 : std::stoi(environment);
 }
 
@@ -126,58 +126,58 @@ int main(const int argc, char **argv) {
       return 2;
     }
     const int device = requested_device();
-    require(evo2c::cuda::select_device(device), "select CUDA device");
+    require(evo::cuda::select_device(device), "select CUDA device");
     cudaDeviceProp properties{};
     require(
-        evo2c::cuda::cuda_status(cudaGetDeviceProperties(&properties, device),
+        evo::cuda::cuda_status(cudaGetDeviceProperties(&properties, device),
                                  "cudaGetDeviceProperties"),
         "query CUDA device");
     std::cout << "GPU=" << properties.name << " sm=" << properties.major
               << properties.minor << '\n';
 
-    evo2c::cuda::RuntimeModelConfig warmup_config;
+    evo::cuda::RuntimeModelConfig warmup_config;
     warmup_config.model_id = "evo2_7b";
-    check(evo2c::cuda::backend_warmup_tokens(warmup_config, 128) == 128,
+    check(evo::cuda::backend_warmup_tokens(warmup_config, 128) == 128,
           "7B backend warmup policy selects 128 tokens");
     warmup_config.model_id = "evo2_7b_262k";
-    check(evo2c::cuda::backend_warmup_tokens(warmup_config, 8192) == 128,
+    check(evo::cuda::backend_warmup_tokens(warmup_config, 8192) == 128,
           "7B variants share the backend warmup policy");
-    check(evo2c::cuda::backend_warmup_tokens(warmup_config, 127) == 0,
+    check(evo::cuda::backend_warmup_tokens(warmup_config, 127) == 0,
           "undersized activation arena disables backend warmup");
     warmup_config.test_fixture = true;
-    check(evo2c::cuda::backend_warmup_tokens(warmup_config, 8192) == 0,
+    check(evo::cuda::backend_warmup_tokens(warmup_config, 8192) == 0,
           "synthetic fixtures never run production backend warmup");
     warmup_config.test_fixture = false;
     warmup_config.model_id = "evo2_40b";
-    check(evo2c::cuda::backend_warmup_tokens(warmup_config, 8192) == 0,
+    check(evo::cuda::backend_warmup_tokens(warmup_config, 8192) == 0,
           "non-7B profiles do not inherit the 7B warmup policy");
 
-    evo2c::ModelFile file;
+    evo::ModelFile file;
     require(file.open(argv[1]), "open synthetic model");
-    evo2c::cuda::RuntimeModelConfig config;
-    check(!evo2c::cuda::read_runtime_model_config(file, false, &config).ok(),
+    evo::cuda::RuntimeModelConfig config;
+    check(!evo::cuda::read_runtime_model_config(file, false, &config).ok(),
           "synthetic model is rejected without explicit permission");
-    require(evo2c::cuda::read_runtime_model_config(file, true, &config),
+    require(evo::cuda::read_runtime_model_config(file, true, &config),
             "read synthetic config");
     check(config.layers == 50, "synthetic topology contains 50 blocks");
     check(config.mixer_types.size() == 50,
           "every synthetic block has a mixer type");
     check(std::count(config.mixer_types.begin(), config.mixer_types.end(),
-                     evo2c::cuda::MixerType::kAttention) == 8,
+                     evo::cuda::MixerType::kAttention) == 8,
           "synthetic topology contains eight attention blocks");
     check(config.hyena_projection_dtype ==
-              evo2c::cuda::HyenaProjectionDType::kBF16,
+              evo::cuda::HyenaProjectionDType::kBF16,
           "synthetic model selects native BF16 Hyena projections");
-    check(config.hcm_filter_dtype == evo2c::cuda::HcmFilterDType::kF32,
+    check(config.hcm_filter_dtype == evo::cuda::HcmFilterDType::kF32,
           "synthetic model selects BioNeMo F32 medium-Hyena filters");
 
     const auto check_rejected_config = [](const char *const path,
                                           const std::string_view expected) {
-      evo2c::ModelFile invalid;
+      evo::ModelFile invalid;
       require(invalid.open(path), "open invalid synthetic model");
-      evo2c::cuda::RuntimeModelConfig ignored;
+      evo::cuda::RuntimeModelConfig ignored;
       const auto rejected =
-          evo2c::cuda::read_runtime_model_config(invalid, true, &ignored);
+          evo::cuda::read_runtime_model_config(invalid, true, &ignored);
       check(!rejected.ok() &&
                 rejected.message().find(expected) != std::string::npos,
             "invalid precision metadata is rejected before CUDA load");
@@ -186,7 +186,7 @@ int main(const int argc, char **argv) {
     check_rejected_config(argv[8], "unsupported Hyena projection dtype");
     check_rejected_config(argv[9], "unknown tensor");
 
-    evo2c::cuda::SingleGpuModel model;
+    evo::cuda::SingleGpuModel model;
     require(model.load(file, device, 12, true), "load single-GPU model");
     check(model.activation_capacity() == 8,
           "test model exposes its fixed eight-token activation arena");
@@ -199,7 +199,7 @@ int main(const int argc, char **argv) {
         "one-token prefill produces finite vocabulary logits");
     check(model.position() == 1, "one-token prefill records its position");
 
-    const std::vector<evo2c::TokenId> prompt{2, 5, 7, 3};
+    const std::vector<evo::TokenId> prompt{2, 5, 7, 3};
     std::vector<float> stateless_logits;
     require(model.prefill_stateless(prompt, &stateless_logits),
             "stateless model prefill");
@@ -211,7 +211,7 @@ int main(const int argc, char **argv) {
     check(!invalid_stateless_decode.ok(),
           "stateless prefill cannot be followed by cached decode");
     std::vector<float> logits;
-    const evo2c::cuda::LayerDump dump{17, argv[5]};
+    const evo::cuda::LayerDump dump{17, argv[5]};
     require(model.prefill(prompt, &logits, dump), "50-layer model prefill");
     const auto expected_logits = read_f32(argv[2]);
     check(all_close(logits, expected_logits, 0.08F, 0.06F),
@@ -238,9 +238,9 @@ int main(const int argc, char **argv) {
     check(model.position() == prompt.size() + 1,
           "decode advances the model position");
 
-    const std::vector<evo2c::TokenId> long_prompt{2,  5,  7,  3, 9,
+    const std::vector<evo::TokenId> long_prompt{2,  5,  7,  3, 9,
                                                   11, 13, 17, 19};
-    const std::vector<evo2c::TokenId> initial_chunk(long_prompt.begin(),
+    const std::vector<evo::TokenId> initial_chunk(long_prompt.begin(),
                                                     long_prompt.begin() + 8);
     std::vector<float> first_chunk;
     std::vector<float> final_chunk;

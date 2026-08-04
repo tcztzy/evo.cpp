@@ -13,7 +13,7 @@ import unittest
 from collections import Counter
 from pathlib import Path
 
-from evo2c.format import (
+from evo.format import (
     DEFAULT_MAX_SHARD_SIZE,
     BytesTensorSource,
     FormatError,
@@ -21,7 +21,7 @@ from evo2c.format import (
     plan_shards,
     write_model,
 )
-from evo2c.model_config import (
+from evo.model_config import (
     EXPECTED_BF16_TENSOR_COUNT,
     EXPECTED_F32_TENSOR_COUNT,
     EXPECTED_TENSOR_BYTES,

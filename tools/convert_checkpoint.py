@@ -8,14 +8,14 @@ import re
 import sys
 from pathlib import Path
 
-from evo2c.checkpoint import (
+from evo.checkpoint import (
     CheckpointError,
     load_checkpoint,
     prepare_runtime_image_sources,
     prepare_runtime_sources,
 )
-from evo2c.format import FormatError, TensorSource, write_model
-from evo2c.model_config import (
+from evo.format import FormatError, TensorSource, write_model
+from evo.model_config import (
     checkpoint_manifest,
     container_manifest,
     config_metadata,

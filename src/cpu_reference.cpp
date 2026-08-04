@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "evo2c/cpu_reference.hpp"
+#include "evo/cpu_reference.hpp"
 
 #include <algorithm>
 #include <array>
@@ -7,7 +7,7 @@
 #include <limits>
 #include <string>
 
-namespace evo2c::cpu {
+namespace evo::cpu {
 namespace {
 
 bool product(const std::size_t left, const std::size_t right, std::size_t* const result) {
@@ -453,4 +453,4 @@ Status causal_attention(const std::vector<float>& query,
   return Status::Ok();
 }
 
-}  // namespace evo2c::cpu
+}  // namespace evo::cpu

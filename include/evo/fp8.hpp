@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-namespace evo2c::fp8 {
+namespace evo::fp8 {
 
 inline constexpr float kE4m3fnMaximum = 448.0F;
 
@@ -15,4 +15,4 @@ inline constexpr float kE4m3fnMaximum = 448.0F;
 // Equivalent to dequantize(E4M3FN(value * scale)) with a float32 reciprocal.
 [[nodiscard]] float scaled_e4m3fn_roundtrip(float value, float scale) noexcept;
 
-}  // namespace evo2c::fp8
+}  // namespace evo::fp8

@@ -7,9 +7,9 @@
 #include <cublas_v2.h>
 #include <cuda_runtime_api.h>
 
-#include "evo2c/status.hpp"
+#include "evo/status.hpp"
 
-namespace evo2c::cuda {
+namespace evo::cuda {
 
 [[nodiscard]] Status cuda_status(cudaError_t error, const char *operation);
 [[nodiscard]] Status cublas_status(cublasStatus_t error, const char *operation);
@@ -111,4 +111,4 @@ private:
   cublasLtHandle_t handle_{nullptr};
 };
 
-} // namespace evo2c::cuda
+} // namespace evo::cuda

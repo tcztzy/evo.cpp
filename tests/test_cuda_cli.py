@@ -70,13 +70,13 @@ def run_checked(command: list[str]) -> subprocess.CompletedProcess[bytes]:
             f"command failed ({result.returncode}): {' '.join(command)}\n"
             f"stdout={result.stdout!r}\nstderr={result.stderr.decode(errors='replace')}"
         )
-    if b"evo2c_metrics {" not in result.stderr:
+    if b"evo_metrics {" not in result.stderr:
         raise AssertionError("successful CUDA CLI command omitted metrics")
     return result
 
 
 def metrics(result: subprocess.CompletedProcess[bytes]) -> dict[str, object]:
-    prefix = b"evo2c_metrics "
+    prefix = b"evo_metrics "
     for line in result.stderr.splitlines():
         if line.startswith(prefix):
             return json.loads(line[len(prefix) :])

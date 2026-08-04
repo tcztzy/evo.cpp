@@ -9,7 +9,7 @@ from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
-from evo2c.model_config import EXPECTED_EXTRA_STATE_COUNT, TensorSpec
+from evo.model_config import EXPECTED_EXTRA_STATE_COUNT, TensorSpec
 
 
 class CheckpointError(ValueError):
