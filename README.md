@@ -52,18 +52,26 @@ scripts/convert_arc_checkpoint.sh \
   evo2_7b /models/evo2_7b.pt /models/evo2-7b.safetensors
 ```
 
-Build and run:
+After creating a Conan 2 default profile once with `conan profile detect`,
+build and run:
 
 ```sh
-cmake -S . -B build -DEVO_CUDA=ON -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_CUDA_ARCHITECTURES=80
-cmake --build build -j
+conan install . --build=missing -s build_type=Release
+cmake --preset conan-release -DEVO_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=80
+cmake --build --preset conan-release
 
 MODEL=/models/evo2-7b.safetensors.index.json
-build/evo-inspect "$MODEL"
-build/evo -m "$MODEL" -p ACGT -n 32 --ctx 8192 --gpu 0
-build/evo -m "$MODEL" --score sequences.fa --ctx 8192 --gpu 0
+build/Release/evo-inspect "$MODEL"
+build/Release/evo -m "$MODEL" -p ACGT -n 32 --ctx 8192 --gpu 0
+build/Release/evo -m "$MODEL" --score sequences.fa --ctx 8192 --gpu 0
 ```
+
+This requires Conan 2. The checked-in `conan.lock` fixes libnpy 1.0.1 and its
+Conan recipe revision. CUDA's pinned FlashAttention and CUTLASS source trees
+remain under CMake `FetchContent`; offline builds can supply all three source
+trees through the documented `EVO_*_SOURCE_DIR` cache variables. A CPU-only
+build (`-DEVO_CUDA=OFF`) leaves the NPY module disabled by default and can
+still be configured directly with CMake.
 
 Start with the [model-size exactness record](docs/model-size-validation.md),
 then see the [7B first-divergence audit](docs/vortex-7b-bit-exactness.md),

@@ -62,8 +62,20 @@ Megatron Core 0.17.0rc0, PyTorch
 9,530,638,336 bytes with SHA256
 `1df753c08c3169357e5ecfb9497873250f78efbf1080494550b59d9ce5fe0943`.
 Because gpu02 cannot reach GitHub, all source dependencies are pinned to local
-mirrors; no Evo2 runtime code is patched. Triton is pointed at the driver
-mounted by Apptainer through `TRITON_LIBCUDA_PATH=/.singularity.d/libs`.
+mirrors, including libnpy commit
+`890ea4fcda302a580e633c624c6a63e2a5d422f6`; no Evo2 runtime code is patched.
+The libnpy commit archive has SHA256
+`c7b275c6cb8e46df43a20271e65010bdf63945831f2c0931ea6f2eda6a842acd`.
+Triton is pointed at the driver mounted by Apptainer through
+`TRITON_LIBCUDA_PATH=/.singularity.d/libs`.
+
+NPY SHA256 values below identify the archived run artifacts. The current
+libnpy writer uses its native standards-compliant header padding, so
+regenerating an evo.cpp NPY can change the container length and SHA256 without
+changing its shape, row-major F32 type, or raw payload bits. The validation
+tools use the declared NPY header length and compare parsed array data; hashes
+for external oracle files and generated raw byte outputs retain their stated
+meaning.
 
 The official TP=2 score oracle used `tests/vectors/t13_short.fasta` and emitted
 a finite 16×512 F32 logit matrix. Its NPY SHA256 is

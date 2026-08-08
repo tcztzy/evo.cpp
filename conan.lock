@@ -1,0 +1,9 @@
+{
+    "version": "0.5",
+    "requires": [
+        "libnpy/1.0.1#6a1e1c5ed60b2d8ff7cfb33091293bde%1696186025.327"
+    ],
+    "build_requires": [],
+    "python_requires": [],
+    "config_requires": []
+}

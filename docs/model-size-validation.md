@@ -38,14 +38,19 @@ code paths and, for the multi-GPU checks, different physical GPU pairs.
 | 20B 1M | `979b345dc700a9cae6b63f570d9b3f438e31a68dd8dc0bc0d8d2a0fcd3caf791` | `b8016e06cd84e93cc40b5a3ab3d7e647a9cbfd6d2720e9efd756af4c2f6a5ad9` |
 | 40B 1M | `dd299612b1c1cdded0dfdcaf4d16f98fc97458261d80f4d662429f0ccb316bc3` | `1ab089a52a8efd06bf6f2d84cfd9f613c3910af6db9ba7c6312fffb801199e7c` |
 
-Representative native output file hashes are:
+Representative native output file hashes from the archived writer are:
 
 - 1B cached logits: `9e80bc8dd98820526d6e916755467d6ae7e2cf2538d0ee9e6e69b51b2cff5442`
 - 7B cached logits: `85e7c73e675dc3557e35bd5ccdf442bc524b919d3a9167739452e731ca6d1d24`
 - 20B cached logits: `c93ee3704be992b3fb61e44a7cde365de46ced80dae73d0a9d926afe67f1bbd2`
 - 40B cached logits: `21307db220a1700b784dcd732c5c3dc9979ed817afad882ea38cd1a320018848`
 
-The matching reference files have the same hashes.
+For those archived runs, the matching reference files have the same hashes.
+The current libnpy writer uses different standards-compliant NPY header
+padding, so regenerated container hashes can differ while shape, dtype, and raw
+array bits remain exact. The maintained acceptance gate parses the declared
+header length and compares those array bits rather than requiring cross-writer
+container hashes to match.
 
 ## Differences found and resolved
 

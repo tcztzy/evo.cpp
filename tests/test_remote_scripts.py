@@ -18,6 +18,7 @@ def main() -> int:
         "with 'apptainer exec --nv'"
     )
     assert 'ctest_bin="' in text
+    assert 'store/*-cmake-[3-9]*/bin/ctest' in text
     assert 'test -x "$ctest_bin"' not in text, (
         "V18: /nix is mounted only inside Apptainer, so container-only "
         "executables must not be preflighted on the gpu02 host"
@@ -51,9 +52,18 @@ def main() -> int:
     assert 'export APPTAINER_TMPDIR="/tmp/evo.cpp-apptainer-$UID"' in gpu01_build
     assert 'if test "$cuda_release" != "$expected_cuda_release"' in gpu01_build
     assert 'ctest_bin="${cmake_bin%/cmake}/ctest"' in gpu01_build
-    assert "-R '^(cuda_smoke|cuda_ops)$'" in gpu01_build
+    assert "-R '^(npy|cuda_smoke|cuda_ops)$'" in gpu01_build
     assert "-DCMAKE_CUDA_ARCHITECTURES=80" in gpu01_build
     assert "-DEVO_WARNINGS_AS_ERRORS=ON" in gpu01_build
+    assert "-DEVO_NPY=ON" in gpu01_build
+    assert "-DBUILD_TESTING=ON" in gpu01_build
+    assert "-DEVO_LIBNPY_SOURCE_DIR=" in gpu01_build
+    for excluded in (
+        "'/CMakeUserPresets.json'",
+        "'/.pytest_cache/'",
+        "'/.ruff_cache/'",
+    ):
+        assert f"--exclude {excluded}" in gpu01_build
 
     gpu01_image = (
         args.source_dir / "scripts" / "gpu01_build_image.sh"
@@ -72,6 +82,9 @@ def main() -> int:
     assert "until rsync -az --delay-updates" in build
     assert "-DEVO_FLASH_ATTENTION_SOURCE_DIR=" in build
     assert "-DEVO_CUTLASS_SOURCE_DIR=" in build
+    assert "-DEVO_LIBNPY_SOURCE_DIR=" in build
+    assert "-DEVO_NPY=ON" in build
+    assert "-DBUILD_TESTING=ON" in build
     assert "--delete" not in build, (
         "the source sync must not remove remote models, environments, or "
         "research artifacts that are outside the local checkout"
@@ -79,6 +92,9 @@ def main() -> int:
     for excluded in (
         "'/.cache/'",
         "'/.venv/'",
+        "'/CMakeUserPresets.json'",
+        "'/.pytest_cache/'",
+        "'/.ruff_cache/'",
         "'*.pt'",
         "'*.safetensors'",
         "'*.safetensors.index.json'",
@@ -86,6 +102,8 @@ def main() -> int:
         assert f"--exclude {excluded}" in build
     assert 'if (( rsync_attempt >= rsync_retries ))' in build
     assert 'sleep "$rsync_retry_delay"' in build
+    assert 'store/*-cmake-[3-9]*/bin/cmake' in build
+    assert "dnsh5jd817k0zddr0k6x3zmyl146bbs6" not in build
     configure_index = build.index('  -S "$source_dir"')
     compile_index = build.index('  --build "$build_dir"')
     assert configure_index < compile_index, (

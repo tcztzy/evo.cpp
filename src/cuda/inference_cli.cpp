@@ -2,12 +2,10 @@
 #include "evo/cuda/inference_cli.hpp"
 
 #include <algorithm>
-#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -22,6 +20,7 @@
 #include "evo/cuda/model.hpp"
 #include "evo/cuda/runtime.hpp"
 #include "evo/model_format.hpp"
+#include "evo/npy.hpp"
 #include "evo/sampler.hpp"
 #include "evo/sequence_io.hpp"
 #include "evo/tokenizer.hpp"
@@ -124,54 +123,6 @@ Status validate_devices(const std::vector<int> &devices) {
                   " is unavailable; visible device count is " +
                   std::to_string(count)};
     }
-  }
-  return Status::Ok();
-}
-
-Status write_npy_f32(const std::string &path, const std::vector<float> &values,
-                     const std::size_t rows, const std::size_t columns) {
-  if (rows == 0 || columns == 0 ||
-      rows > std::numeric_limits<std::size_t>::max() / columns ||
-      rows * columns != values.size()) {
-    return {ErrorCode::kInvalidArgument,
-            "logit dump dimensions do not match its F32 payload"};
-  }
-  std::string header = "{'descr': '<f4', 'fortran_order': False, 'shape': (" +
-                       std::to_string(rows) + ", " + std::to_string(columns) +
-                       "), }";
-  constexpr std::size_t prefix_size = 10;
-  const std::size_t padding =
-      (64 - ((prefix_size + header.size() + 1) % 64)) % 64;
-  header.append(padding, ' ');
-  header.push_back('\n');
-  if (header.size() > std::numeric_limits<std::uint16_t>::max()) {
-    return {ErrorCode::kInternal, "NPY header exceeds version-1 capacity"};
-  }
-  if (values.size() >
-      static_cast<std::size_t>(std::numeric_limits<std::streamsize>::max()) /
-          sizeof(float)) {
-    return {ErrorCode::kInvalidArgument,
-            "logit dump exceeds the platform stream size"};
-  }
-
-  std::ofstream output(path, std::ios::binary | std::ios::trunc);
-  if (!output) {
-    return {ErrorCode::kIo, "cannot open logit dump '" + path + "'"};
-  }
-  const std::array<char, 8> magic{
-      static_cast<char>(0x93), 'N', 'U', 'M', 'P', 'Y', 1, 0};
-  output.write(magic.data(), static_cast<std::streamsize>(magic.size()));
-  const auto header_size = static_cast<std::uint16_t>(header.size());
-  const std::array<char, 2> encoded_size{
-      static_cast<char>(header_size & 0xffU),
-      static_cast<char>((header_size >> 8U) & 0xffU)};
-  output.write(encoded_size.data(),
-               static_cast<std::streamsize>(encoded_size.size()));
-  output.write(header.data(), static_cast<std::streamsize>(header.size()));
-  output.write(reinterpret_cast<const char *>(values.data()),
-               static_cast<std::streamsize>(values.size() * sizeof(float)));
-  if (!output) {
-    return {ErrorCode::kIo, "failed to write logit dump '" + path + "'"};
   }
   return Status::Ok();
 }
@@ -457,8 +408,8 @@ Status run_generate(const CliOptions &options, PipelineModel *const model,
     return status;
   }
   if (options.dump_logits_path.has_value()) {
-    status = write_npy_f32(*options.dump_logits_path, dumped_logits,
-                           options.generated_tokens, vocab_size);
+    status = npy::write_f32(*options.dump_logits_path, dumped_logits,
+                            options.generated_tokens, vocab_size);
     if (!status.ok()) {
       return status;
     }
@@ -516,8 +467,8 @@ Status run_score(const CliOptions &options, PipelineModel *const model,
               "score prefill returned an incomplete logit matrix"};
     }
     if (options.dump_logits_path.has_value()) {
-      status = write_npy_f32(*options.dump_logits_path, logits, tokens.size(),
-                             vocab_size);
+      status = npy::write_f32(*options.dump_logits_path, logits, tokens.size(),
+                              vocab_size);
       if (!status.ok()) {
         return status;
       }

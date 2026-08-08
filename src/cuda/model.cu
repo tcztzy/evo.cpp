@@ -7,7 +7,6 @@
 #include <cstdint>
 #include <cstring>
 #include <exception>
-#include <fstream>
 #include <future>
 #include <initializer_list>
 #include <limits>
@@ -23,6 +22,7 @@
 #include "evo/cuda/ops.hpp"
 #include "evo/cuda/runtime.hpp"
 #include "evo/model_registry.hpp"
+#include "evo/npy.hpp"
 
 namespace evo::cuda {
 namespace {
@@ -395,37 +395,6 @@ Status expand_grouped_filter(const int device, const std::size_t channels,
   // The upload and expansion are ordered on this stream. Synchronize before
   // the checkpoint-order source allocation is released.
   return stream.synchronize();
-}
-
-Status write_npy(const std::string &path, const std::vector<float> &values,
-                 const std::size_t rows, const std::size_t columns) {
-  std::string header = "{'descr': '<f4', 'fortran_order': False, 'shape': (" +
-                       std::to_string(rows) + ", " + std::to_string(columns) +
-                       "), }";
-  const std::size_t prefix = 10;
-  const std::size_t padding = (64 - ((prefix + header.size() + 1) % 64)) % 64;
-  header.append(padding, ' ');
-  header.push_back('\n');
-  if (header.size() > std::numeric_limits<std::uint16_t>::max())
-    return {ErrorCode::kInternal, "NPY header is too large"};
-  std::ofstream output(path, std::ios::binary | std::ios::trunc);
-  if (!output)
-    return {ErrorCode::kIo, "cannot open layer dump: " + path};
-  const std::array<char, 8> magic{
-      static_cast<char>(0x93), 'N', 'U', 'M', 'P', 'Y', 1, 0};
-  output.write(magic.data(), static_cast<std::streamsize>(magic.size()));
-  const auto header_size = static_cast<std::uint16_t>(header.size());
-  const std::array<char, 2> encoded_size{
-      static_cast<char>(header_size & 0xffU),
-      static_cast<char>((header_size >> 8U) & 0xffU)};
-  output.write(encoded_size.data(),
-               static_cast<std::streamsize>(encoded_size.size()));
-  output.write(header.data(), static_cast<std::streamsize>(header.size()));
-  output.write(reinterpret_cast<const char *>(values.data()),
-               static_cast<std::streamsize>(values.size() * sizeof(float)));
-  if (!output)
-    return {ErrorCode::kIo, "failed to write layer dump: " + path};
-  return Status::Ok();
 }
 
 struct Layer final {
@@ -1546,7 +1515,7 @@ struct SingleGpuModel::Impl final {
     values.reserve(raw.size());
     for (const auto value : raw)
       values.push_back(__bfloat162float(value));
-    return write_npy(dump.path, values, rows, columns);
+    return npy::write_f32(dump.path, values, rows, columns);
   }
 
   [[nodiscard]] Status dump_f32(const DeviceBuffer &buffer,
@@ -1560,7 +1529,7 @@ struct SingleGpuModel::Impl final {
     status = stream.synchronize();
     if (!status.ok())
       return status;
-    return write_npy(dump.path, values, rows, columns);
+    return npy::write_f32(dump.path, values, rows, columns);
   }
 
   [[nodiscard]] Status dump_f32_matching(const std::vector<LayerDump> &dumps,
@@ -1609,7 +1578,7 @@ struct SingleGpuModel::Impl final {
                     active.begin() +
                         static_cast<std::ptrdiff_t>(row * active_columns));
       }
-      status = write_npy(dump.path, active, rows, active_columns);
+      status = npy::write_f32(dump.path, active, rows, active_columns);
       if (!status.ok())
         return status;
     }
@@ -1636,7 +1605,7 @@ struct SingleGpuModel::Impl final {
             channel_major[channel * stride + time];
       }
     }
-    return write_npy(dump.path, time_major, length, channels);
+    return npy::write_f32(dump.path, time_major, length, channels);
   }
 
   [[nodiscard]] Status dump_channel_time_f32_matching(

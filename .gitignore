@@ -1,5 +1,6 @@
 /build*/
 /cmake-build-*/
+/CMakeUserPresets.json
 /.cache/
 /.clangd/
 /.venv/
@@ -10,4 +11,3 @@ __pycache__/
 *.npy
 *.prof
 .DS_Store
-

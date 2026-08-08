@@ -12,7 +12,19 @@ source_dir="$HOME/evo.cpp"
 build_dir="$source_dir/build-gpu"
 image="$HOME/evo.cpp-cuda12.8-rocky8.sif"
 nix_root="$HOME/.local/share/nix-root"
-ctest_bin="/nix/store/dnsh5jd817k0zddr0k6x3zmyl146bbs6-profile/bin/ctest"
+
+ctest_host=""
+for candidate in "$nix_root"/store/*-cmake-[3-9]*/bin/ctest; do
+  if test -x "$candidate"; then
+    ctest_host="$candidate"
+    break
+  fi
+done
+test -n "$ctest_host" || {
+  echo "gpu02_smoke: no CTest >=3 was found in $nix_root/store" >&2
+  exit 2
+}
+ctest_bin="/nix/store/${ctest_host#"$nix_root/store/"}"
 
 test -x "$build_dir/evo-cuda-pipeline-tests"
 nvidia-smi --query-gpu=index,name,driver_version,memory.total,memory.used \

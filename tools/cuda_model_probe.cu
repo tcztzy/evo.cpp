@@ -17,6 +17,7 @@
 
 #include "evo/cuda/model.hpp"
 #include "evo/model_format.hpp"
+#include "evo/npy.hpp"
 #include "evo/status.hpp"
 #include "evo/tokenizer.hpp"
 
@@ -28,43 +29,6 @@ void require(const evo::Status &status, const std::string &operation) {
                              evo::error_code_name(status.code()) + ": " +
                              status.message());
   }
-}
-
-void write_npy(const std::filesystem::path &path,
-               const std::vector<float> &values, const std::size_t rows,
-               const std::size_t columns) {
-  if (rows == 0 || columns == 0 ||
-      rows > std::numeric_limits<std::size_t>::max() / columns ||
-      rows * columns != values.size()) {
-    throw std::runtime_error("invalid NPY dimensions");
-  }
-  std::string header = "{'descr': '<f4', 'fortran_order': False, 'shape': (" +
-                       std::to_string(rows) + ", " + std::to_string(columns) +
-                       "), }";
-  constexpr std::size_t prefix = 10;
-  const std::size_t padding = (64 - ((prefix + header.size() + 1) % 64)) % 64;
-  header.append(padding, ' ');
-  header.push_back('\n');
-  if (header.size() > std::numeric_limits<std::uint16_t>::max())
-    throw std::runtime_error("NPY header is too large");
-
-  std::ofstream output(path, std::ios::binary | std::ios::trunc);
-  if (!output)
-    throw std::runtime_error("cannot open NPY output: " + path.string());
-  const std::array<char, 8> magic{
-      static_cast<char>(0x93), 'N', 'U', 'M', 'P', 'Y', 1, 0};
-  output.write(magic.data(), static_cast<std::streamsize>(magic.size()));
-  const auto header_size = static_cast<std::uint16_t>(header.size());
-  const std::array<char, 2> encoded_size{
-      static_cast<char>(header_size & 0xffU),
-      static_cast<char>((header_size >> 8U) & 0xffU)};
-  output.write(encoded_size.data(),
-               static_cast<std::streamsize>(encoded_size.size()));
-  output.write(header.data(), static_cast<std::streamsize>(header.size()));
-  output.write(reinterpret_cast<const char *>(values.data()),
-               static_cast<std::streamsize>(values.size() * sizeof(float)));
-  if (!output)
-    throw std::runtime_error("failed to write NPY output: " + path.string());
 }
 
 std::string layer_filename(const std::size_t layer) {
@@ -199,11 +163,15 @@ int main(const int argc, char **argv) {
             generate_tokens == 0 ? "prefill and dump layers"
                                  : "cached prefill and dump layers");
     if (generate_tokens == 0) {
-      write_npy(output_dir / "logits.npy", logits, tokens.size(),
-                model.config().vocab_size);
+      require(evo::npy::write_f32((output_dir / "logits.npy").string(),
+                                  logits, tokens.size(),
+                                  model.config().vocab_size),
+              "write prefill logits");
     } else {
-      write_npy(output_dir / "prefill_logits.npy", logits, tokens.size(),
-                model.config().vocab_size);
+      require(evo::npy::write_f32(
+                  (output_dir / "prefill_logits.npy").string(), logits,
+                  tokens.size(), model.config().vocab_size),
+              "write prefill logits");
       std::vector<float> generation_logits;
       generation_logits.reserve(generate_tokens * model.config().vocab_size);
       std::vector<evo::TokenId> generated;
@@ -225,8 +193,10 @@ int main(const int argc, char **argv) {
           require(model.decode_with_dumps(token, &current, dumps),
                   "cached decode and dump layers");
       }
-      write_npy(output_dir / "logits.npy", generation_logits, generate_tokens,
-                model.config().vocab_size);
+      require(evo::npy::write_f32((output_dir / "logits.npy").string(),
+                                  generation_logits, generate_tokens,
+                                  model.config().vocab_size),
+              "write generation logits");
       std::ofstream generated_output(output_dir / "generated.bin",
                                      std::ios::binary | std::ios::trunc);
       if (!generated_output)

@@ -10,8 +10,13 @@ include(CTest)
 include(CheckLanguage)
 
 option(EVO_CUDA "Build the CUDA backend" ON)
+option(EVO_NPY "Build the NPY output module" ${EVO_CUDA})
 option(EVO_SANITIZE "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 option(EVO_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+
+if(EVO_CUDA AND NOT EVO_NPY)
+  message(FATAL_ERROR "EVO_CUDA requires EVO_NPY=ON")
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -58,6 +63,41 @@ target_include_directories(
   evo_core
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 evo_configure_target(evo_core)
+
+if(EVO_NPY)
+  set(EVO_LIBNPY_SOURCE_DIR "" CACHE PATH
+      "Existing libnpy source tree (optional offline override)")
+  if(EVO_LIBNPY_SOURCE_DIR)
+    if(NOT EXISTS "${EVO_LIBNPY_SOURCE_DIR}/include/npy.hpp")
+      message(FATAL_ERROR
+        "EVO_LIBNPY_SOURCE_DIR does not contain include/npy.hpp")
+    endif()
+    add_library(evo_libnpy_headers INTERFACE)
+    add_library(libnpy::libnpy ALIAS evo_libnpy_headers)
+    target_include_directories(
+      evo_libnpy_headers SYSTEM INTERFACE
+        $<BUILD_INTERFACE:${EVO_LIBNPY_SOURCE_DIR}/include>)
+  else()
+    find_package(libnpy 1.0.1 CONFIG QUIET)
+    if(NOT TARGET libnpy::libnpy)
+      message(FATAL_ERROR
+        "EVO_NPY=ON requires libnpy/1.0.1. "
+        "Run 'conan install . --build=missing -s build_type=Release', then "
+        "configure CMake with the generated Conan preset.")
+    endif()
+  endif()
+
+  add_library(evo_npy STATIC src/npy.cpp)
+  add_library(evo::npy ALIAS evo_npy)
+  target_include_directories(
+    evo_npy
+    PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+  target_link_libraries(
+    evo_npy
+    PUBLIC evo_core
+    PRIVATE libnpy::libnpy)
+  evo_configure_target(evo_npy)
+endif()
 
 add_executable(evo src/main.cpp)
 target_link_libraries(evo PRIVATE evo_core)
@@ -151,6 +191,7 @@ if(EVO_CUDA)
       CUDA::cublas
       CUDA::cublasLt
       CUDA::cufft)
+  target_link_libraries(evo_cuda PRIVATE evo::npy)
   set_target_properties(
     evo_cuda
     PROPERTIES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
@@ -162,7 +203,7 @@ if(EVO_CUDA)
   endif()
 
   target_sources(evo PRIVATE src/cuda/inference_cli.cpp)
-  target_link_libraries(evo PRIVATE evo_cuda)
+  target_link_libraries(evo PRIVATE evo_cuda evo::npy)
   target_compile_definitions(evo PRIVATE EVO_HAS_CUDA=1)
 
   add_executable(evo-cuda-smoke src/cuda/smoke.cu)
@@ -177,7 +218,7 @@ if(EVO_CUDA)
     PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>)
 
   add_executable(evo-cuda-probe tools/cuda_model_probe.cu)
-  target_link_libraries(evo-cuda-probe PRIVATE evo_cuda)
+  target_link_libraries(evo-cuda-probe PRIVATE evo_cuda evo::npy)
   set_target_properties(
     evo-cuda-probe
     PROPERTIES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
@@ -262,7 +303,8 @@ if(EVO_CUDA)
       evo-cuda-cli-test-bin
       src/main.cpp
       src/cuda/inference_cli.cpp)
-    target_link_libraries(evo-cuda-cli-test-bin PRIVATE evo_cuda)
+    target_link_libraries(
+      evo-cuda-cli-test-bin PRIVATE evo_cuda evo::npy)
     target_compile_definitions(
       evo-cuda-cli-test-bin
       PRIVATE EVO_HAS_CUDA=1 EVO_ALLOW_TEST_FIXTURE=1)
@@ -272,6 +314,13 @@ endif()
 
 if(BUILD_TESTING)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+  if(EVO_NPY)
+    add_executable(evo-npy-tests tests/test_npy.cpp)
+    target_link_libraries(evo-npy-tests PRIVATE evo::npy)
+    evo_configure_target(evo-npy-tests)
+    add_test(NAME npy COMMAND evo-npy-tests)
+  endif()
 
   add_executable(evo-core-tests tests/test_core.cpp)
   target_link_libraries(evo-core-tests PRIVATE evo_core)

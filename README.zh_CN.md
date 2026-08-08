@@ -49,18 +49,24 @@ scripts/convert_arc_checkpoint.sh \
   evo2_7b /models/evo2_7b.pt /models/evo2-7b.safetensors
 ```
 
-构建并运行：
+先在本机执行一次 `conan profile detect` 创建 Conan 2 默认 profile，然后构建并运行：
 
 ```sh
-cmake -S . -B build -DEVO_CUDA=ON -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_CUDA_ARCHITECTURES=80
-cmake --build build -j
+conan install . --build=missing -s build_type=Release
+cmake --preset conan-release -DEVO_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=80
+cmake --build --preset conan-release
 
 MODEL=/models/evo2-7b.safetensors.index.json
-build/evo-inspect "$MODEL"
-build/evo -m "$MODEL" -p ACGT -n 32 --ctx 8192 --gpu 0
-build/evo -m "$MODEL" --score sequences.fa --ctx 8192 --gpu 0
+build/Release/evo-inspect "$MODEL"
+build/Release/evo -m "$MODEL" -p ACGT -n 32 --ctx 8192 --gpu 0
+build/Release/evo -m "$MODEL" --score sequences.fa --ctx 8192 --gpu 0
 ```
+
+构建依赖 Conan 2。仓库内的 `conan.lock` 固定了 libnpy 1.0.1 及其 Conan
+recipe revision。CUDA 使用的 FlashAttention 与 CUTLASS 仍由 CMake
+`FetchContent` 固定源码；离线环境可通过对应的 `EVO_*_SOURCE_DIR` cache
+变量提供三份本地源码。CPU-only 构建（`-DEVO_CUDA=OFF`）默认不会启用 NPY
+模块，仍可直接用 CMake 配置。
 
 建议先读[各尺寸 exactness 记录](docs/model-size-validation.md)，再看
 [7B first-divergence 审计](docs/vortex-7b-bit-exactness.md)、

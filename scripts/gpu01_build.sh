@@ -34,6 +34,9 @@ until rsync -az --delay-updates \
     --exclude '/build*/' \
     --exclude '/.cache/' \
     --exclude '/.venv/' \
+    --exclude '/CMakeUserPresets.json' \
+    --exclude '/.pytest_cache/' \
+    --exclude '/.ruff_cache/' \
     --exclude '/.evo2-7b-hf-upload/' \
     --exclude __pycache__ \
     --exclude '*.pt' \
@@ -80,6 +83,7 @@ test -f "$image" || {
 test -d "$nix_root/store"
 test -f "$deps_dir/flash-attention-628452c73a4fab560189a7caa8702642c6a38235/csrc/flash_attn/src/flash_fwd_kernel.h"
 test -f "$deps_dir/cutlass-7127592069c2fe01b041e174ba4345ef9b279671/include/cute/tensor.hpp"
+test -f "$deps_dir/libnpy-890ea4fcda302a580e633c624c6a63e2a5d422f6/include/npy.hpp"
 
 cmake_host=""
 for candidate in "$nix_root"/store/*-cmake-[3-9]*/bin/cmake; do
@@ -112,14 +116,17 @@ fi
   -S "$source_dir" \
   -B "$build_dir" \
   -DEVO_CUDA=ON \
+  -DEVO_NPY=ON \
+  -DBUILD_TESTING=ON \
   -DCMAKE_CUDA_ARCHITECTURES=80 \
   -DEVO_WARNINGS_AS_ERRORS=ON \
   -DCMAKE_BUILD_TYPE=Release \
   -DCUDAToolkit_rt_LIBRARY=/usr/lib64/librt.so \
+  -DEVO_LIBNPY_SOURCE_DIR="$deps_dir/libnpy-890ea4fcda302a580e633c624c6a63e2a5d422f6" \
   -DEVO_FLASH_ATTENTION_SOURCE_DIR="$deps_dir/flash-attention-628452c73a4fab560189a7caa8702642c6a38235" \
   -DEVO_CUTLASS_SOURCE_DIR="$deps_dir/cutlass-7127592069c2fe01b041e174ba4345ef9b279671"
 "$apptainer" exec -B "$nix_root:/nix:ro" "$image" "$cmake_bin" \
   --build "$build_dir" -j4
 "$apptainer" exec --nv -B "$nix_root:/nix:ro" "$image" "$ctest_bin" \
-  --test-dir "$build_dir" --output-on-failure -R '^(cuda_smoke|cuda_ops)$'
+  --test-dir "$build_dir" --output-on-failure -R '^(npy|cuda_smoke|cuda_ops)$'
 REMOTE

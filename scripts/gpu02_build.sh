@@ -24,6 +24,9 @@ until rsync -az --delay-updates \
     --exclude '/build*/' \
     --exclude '/.cache/' \
     --exclude '/.venv/' \
+    --exclude '/CMakeUserPresets.json' \
+    --exclude '/.pytest_cache/' \
+    --exclude '/.ruff_cache/' \
     --exclude __pycache__ \
     --exclude '*.pt' \
     --exclude '*.pt.part*' \
@@ -50,13 +53,26 @@ image="$HOME/evo.cpp-cuda12.8-rocky8.sif"
 definition="$source_dir/containers/evo.cpp-cuda12.8-rocky8.def"
 nix_root="$HOME/.local/share/nix-root"
 deps_dir="$HOME/evo.cpp-deps"
-cmake_bin="/nix/store/dnsh5jd817k0zddr0k6x3zmyl146bbs6-profile/bin/cmake"
+
+cmake_host=""
+for candidate in "$nix_root"/store/*-cmake-[3-9]*/bin/cmake; do
+  if test -x "$candidate"; then
+    cmake_host="$candidate"
+    break
+  fi
+done
+test -n "$cmake_host" || {
+  echo "gpu02_build: no CMake >=3 was found in $nix_root/store" >&2
+  exit 2
+}
+cmake_bin="/nix/store/${cmake_host#"$nix_root/store/"}"
 
 test -d "$source_dir"
 test -f "$definition"
 test -d "$nix_root/store"
 test -f "$deps_dir/flash-attention-628452c73a4fab560189a7caa8702642c6a38235/csrc/flash_attn/src/flash_fwd_kernel.h"
 test -f "$deps_dir/cutlass-7127592069c2fe01b041e174ba4345ef9b279671/include/cute/tensor.hpp"
+test -f "$deps_dir/libnpy-890ea4fcda302a580e633c624c6a63e2a5d422f6/include/npy.hpp"
 if ! test -f "$image"; then
   image_partial="$HOME/.evo.cpp-cuda12.8-rocky8.sif.partial"
   rm -f -- "$image_partial"
@@ -78,10 +94,13 @@ apptainer exec -B "$nix_root:/nix:ro" "$image" "$cmake_bin" \
   -S "$source_dir" \
   -B "$build_dir" \
   -DEVO_CUDA=ON \
+  -DEVO_NPY=ON \
+  -DBUILD_TESTING=ON \
   -DCMAKE_CUDA_ARCHITECTURES=80 \
   -DEVO_WARNINGS_AS_ERRORS=ON \
   -DCMAKE_BUILD_TYPE=Release \
   -DCUDAToolkit_rt_LIBRARY=/usr/lib64/librt.so \
+  -DEVO_LIBNPY_SOURCE_DIR="$deps_dir/libnpy-890ea4fcda302a580e633c624c6a63e2a5d422f6" \
   -DEVO_FLASH_ATTENTION_SOURCE_DIR="$deps_dir/flash-attention-628452c73a4fab560189a7caa8702642c6a38235" \
   -DEVO_CUTLASS_SOURCE_DIR="$deps_dir/cutlass-7127592069c2fe01b041e174ba4345ef9b279671"
 apptainer exec -B "$nix_root:/nix:ro" "$image" "$cmake_bin" \
