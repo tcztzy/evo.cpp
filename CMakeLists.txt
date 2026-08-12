@@ -142,6 +142,10 @@ if(EVO_NPY)
     evo_npy
     PUBLIC evo_core
     PRIVATE libnpy::libnpy)
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
+     CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
+    target_link_libraries(evo_npy PUBLIC stdc++fs)
+  endif()
   set_target_properties(
     evo_npy
     PROPERTIES

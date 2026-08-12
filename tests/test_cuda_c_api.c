@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -66,10 +67,13 @@ int main(int argc, char **argv) {
   evo_model *model = NULL;
   evo_context *first = NULL;
   evo_context *second = NULL;
+  evo_context *embedding_context = NULL;
   evo_batch *batch = NULL;
   capture first_capture = {0};
   capture second_capture = {0};
+  capture embedding_capture = {0};
   const size_t capture_elements = 9 * 512;
+  const size_t embedding_elements = 9 * 8;
 
   if (argc != 2) {
     fprintf(stderr, "usage: test_cuda_c_api MODEL\n");
@@ -77,12 +81,17 @@ int main(int argc, char **argv) {
   }
   first_capture.values = (float *)malloc(capture_elements * sizeof(float));
   second_capture.values = (float *)malloc(capture_elements * sizeof(float));
+  embedding_capture.values =
+      (float *)malloc(embedding_elements * sizeof(float));
   first_capture.capacity = capture_elements;
   second_capture.capacity = capture_elements;
-  if (first_capture.values == NULL || second_capture.values == NULL) {
+  embedding_capture.capacity = embedding_elements;
+  if (first_capture.values == NULL || second_capture.values == NULL ||
+      embedding_capture.values == NULL) {
     fprintf(stderr, "capture allocation failed\n");
     free(first_capture.values);
     free(second_capture.values);
+    free(embedding_capture.values);
     return 1;
   }
 
@@ -94,6 +103,9 @@ int main(int argc, char **argv) {
         "CUDA model handle records backend");
   check(model != NULL && evo_model_vocab_size(model) == 512,
         "CUDA model exposes vocabulary width");
+  check(model != NULL && evo_model_embedding_width(model) == 8 &&
+            evo_model_layer_count(model) == 50,
+        "CUDA model exposes embedding topology");
   check(model != NULL &&
             strcmp(evo_model_architecture(model), "StripedHyena2Test") == 0,
         "CUDA model exposes architecture metadata");
@@ -104,11 +116,14 @@ int main(int argc, char **argv) {
           "first context loads from shared model artifact");
     check(evo_context_create(model, &context_params, &second) == EVO_STATUS_OK,
           "second context loads from shared model artifact");
+    check(evo_context_create(model, &context_params, &embedding_context) ==
+              EVO_STATUS_OK,
+          "embedding context loads from shared model artifact");
   }
   evo_model_free(model);
   model = NULL;
-  check(first != NULL && second != NULL,
-        "two mutable contexts coexist after model handle release");
+  check(first != NULL && second != NULL && embedding_context != NULL,
+        "three mutable contexts coexist after model handle release");
 
   check(evo_batch_create(1, &batch) == EVO_STATUS_OK,
         "CUDA test batch allocation succeeds");
@@ -116,6 +131,21 @@ int main(int argc, char **argv) {
             EVO_STATUS_OK,
         "CUDA test sequence is added");
   if (first != NULL && second != NULL && batch != NULL) {
+    check(evo_context_embed(embedding_context, batch, 50, capture_logits,
+                            &embedding_capture) == EVO_STATUS_INVALID_ARGUMENT,
+          "embedding rejects a layer outside the model");
+    check(evo_context_embed(embedding_context, batch, 17, capture_logits,
+                            &embedding_capture) == EVO_STATUS_OK,
+          "embedding streams an intermediate layer through the C ABI");
+    check(embedding_capture.rows == 9 && embedding_capture.columns == 8 &&
+              embedding_capture.count == embedding_elements,
+          "embedding C ABI preserves chunked row and width metadata");
+    for (size_t index = 0; index < embedding_capture.count; ++index) {
+      if (!isfinite(embedding_capture.values[index])) {
+        check(0, "embedding C ABI returns only finite F32 values");
+        break;
+      }
+    }
     check(evo_context_prefill(first, batch, capture_logits, &first_capture) ==
               EVO_STATUS_OK,
           "first context prefill succeeds");
@@ -155,8 +185,10 @@ int main(int argc, char **argv) {
   evo_batch_free(batch);
   evo_context_free(first);
   evo_context_free(second);
+  evo_context_free(embedding_context);
   free(first_capture.values);
   free(second_capture.values);
+  free(embedding_capture.values);
   if (failures != 0) {
     fprintf(stderr, "%d CUDA C API test(s) failed\n", failures);
     return 1;

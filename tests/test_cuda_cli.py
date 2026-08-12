@@ -143,6 +143,88 @@ def main() -> int:
     if npy_shape(generation_layer) != (2, 8):
         raise AssertionError("generation layer dump has the wrong shape")
 
+    embed_input = args.work_dir / "embed.txt"
+    embed_input.write_bytes(b"AC")
+    embed_output = args.work_dir / "embed-none"
+    shutil.rmtree(embed_output, ignore_errors=True)
+    embed_result = run_checked(
+        [
+            str(args.binary),
+            "embed",
+            "-m",
+            str(model),
+            "--input",
+            str(embed_input),
+            "--output",
+            str(embed_output),
+            "--layer",
+            "17",
+            "--pooling",
+            "none",
+            "--ctx",
+            "8",
+            "--gpu",
+            gpu_list,
+        ]
+    )
+    embed_shape, embed_values = npy_f32(embed_output / "000000.npy")
+    layer_shape, layer_values = npy_f32(generation_layer)
+    if embed_shape != layer_shape or embed_values != layer_values:
+        raise AssertionError(
+            "first-class embedding differs from the exact block-output dump"
+        )
+    embed_metadata = json.loads(embed_result.stdout)
+    manifest_metadata = json.loads((embed_output / "embeddings.jsonl").read_text())
+    if embed_metadata != manifest_metadata or any(
+        (
+            embed_metadata["shape"] != [2, 8],
+            embed_metadata["source_tokens"] != 2,
+            embed_metadata["layer"] != 17,
+            embed_metadata["point"] != "block_output",
+            embed_metadata["pooling"] != "none",
+            embed_metadata["dtype"] != "float32",
+            embed_metadata["backend"] != "cuda",
+            embed_metadata["profile"] != "test_fixture",
+        )
+    ):
+        raise AssertionError("embedding manifest omitted required metadata")
+
+    pooled_input = args.work_dir / "embed-multi.fasta"
+    pooled_input.write_text(">short\nACGT\n>chunked\nACGTACGTA\n")
+    pooled_output = args.work_dir / "embed-mean"
+    shutil.rmtree(pooled_output, ignore_errors=True)
+    pooled_result = run_checked(
+        [
+            str(args.binary),
+            "embed",
+            "-m",
+            str(model),
+            "--input",
+            str(pooled_input),
+            "--output",
+            str(pooled_output),
+            "--layer",
+            "17",
+            "--pooling",
+            "mean",
+            "--ctx",
+            "12",
+            "--gpu",
+            gpu_list,
+        ]
+    )
+    pooled_metadata = [json.loads(line) for line in pooled_result.stdout.splitlines()]
+    if (
+        [item["name"] for item in pooled_metadata] != ["short", "chunked"]
+        or [item["source_tokens"] for item in pooled_metadata] != [4, 9]
+        or any(item["shape"] != [1, 8] for item in pooled_metadata)
+        or any(item["pooling"] != "mean" for item in pooled_metadata)
+        or npy_shape(pooled_output / "000000.npy") != (1, 8)
+        or npy_shape(pooled_output / "000001.npy") != (1, 8)
+        or metrics(pooled_result)["prefill_tokens"] != 13
+    ):
+        raise AssertionError("multi-record pooled embedding contract failed")
+
     full_prompt_logits = args.work_dir / "full-prompt-logits.npy"
     forced_prompt_logits = args.work_dir / "forced-prompt-logits.npy"
     prompt_command = [

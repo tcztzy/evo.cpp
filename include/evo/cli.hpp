@@ -13,7 +13,9 @@
 
 namespace evo {
 
-enum class RunMode { kGenerate, kScore };
+enum class RunMode { kGenerate, kScore, kEmbed };
+
+enum class EmbeddingPooling { kNone, kMean, kLast };
 
 struct DumpLayerSpec final {
   std::size_t layer{0};
@@ -25,6 +27,10 @@ struct CliOptions final {
   std::string model_path;
   std::string prompt;
   std::string score_path;
+  std::string embed_path;
+  std::string embed_output_dir;
+  std::size_t embed_layer{0};
+  EmbeddingPooling embedding_pooling{EmbeddingPooling::kNone};
   std::size_t generated_tokens{0};
   std::size_t context_size{8192};
   std::optional<std::size_t> force_prompt_threshold;
@@ -36,6 +42,7 @@ struct CliOptions final {
 };
 
 [[nodiscard]] std::string_view cli_usage() noexcept;
-[[nodiscard]] Status parse_cli(int argc, char* const argv[], CliOptions* options);
+[[nodiscard]] Status parse_cli(int argc, char *const argv[],
+                               CliOptions *options);
 
-}  // namespace evo
+} // namespace evo

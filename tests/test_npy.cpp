@@ -29,7 +29,7 @@ void check(const bool condition, const std::string_view description) {
 }
 
 class TemporaryPath final {
- public:
+public:
   TemporaryPath() {
     const char *temporary_directory = std::getenv("TMPDIR");
     std::string pattern =
@@ -57,7 +57,7 @@ class TemporaryPath final {
 
   [[nodiscard]] const std::string &path() const noexcept { return path_; }
 
- private:
+private:
   std::string path_;
 };
 
@@ -68,7 +68,8 @@ std::vector<char> read_bytes(const std::string &path) {
 }
 
 void check_file(const std::string &path, const std::vector<float> &expected,
-                const std::string_view expected_shape) {
+                const std::string_view expected_shape,
+                const bool libnpy_header = true) {
   const auto bytes = read_bytes(path);
   constexpr std::array<char, 8> magic{
       static_cast<char>(0x93), 'N', 'U', 'M', 'P', 'Y', 1, 0};
@@ -86,8 +87,7 @@ void check_file(const std::string &path, const std::vector<float> &expected,
     check(false, "NPY output contains its complete header");
     return;
   }
-  const std::string header(bytes.data() + 10,
-                           bytes.data() + payload_offset);
+  const std::string header(bytes.data() + 10, bytes.data() + payload_offset);
   check(header.find("'descr': '<f4'") != std::string::npos,
         "NPY output declares little-endian F32");
   check(header.find("'fortran_order': False") != std::string::npos,
@@ -95,17 +95,22 @@ void check_file(const std::string &path, const std::vector<float> &expected,
   check(header.find("'shape': " + std::string{expected_shape}) !=
             std::string::npos,
         "NPY output preserves its matrix shape");
-  std::string expected_header =
-      "{'descr': '<f4', 'fortran_order': False, 'shape': " +
-      std::string{expected_shape} + ", }";
-  const std::size_t expected_padding =
-      16U - ((10U + expected_header.size() + 1U) % 16U);
-  expected_header.append(expected_padding, ' ');
-  expected_header.push_back('\n');
-  check(header == expected_header,
-        "NPY header matches libnpy's native version-1 encoding");
-  check(payload_offset % 16U == 0,
-        "NPY header satisfies libnpy's version-1 alignment contract");
+  if (libnpy_header) {
+    std::string expected_header =
+        "{'descr': '<f4', 'fortran_order': False, 'shape': " +
+        std::string{expected_shape} + ", }";
+    const std::size_t expected_padding =
+        16U - ((10U + expected_header.size() + 1U) % 16U);
+    expected_header.append(expected_padding, ' ');
+    expected_header.push_back('\n');
+    check(header == expected_header,
+          "NPY header matches libnpy's native version-1 encoding");
+    check(payload_offset % 16U == 0,
+          "NPY header satisfies libnpy's version-1 alignment contract");
+  } else {
+    check(payload_offset % 64U == 0,
+          "streaming NPY header has NumPy-compatible 64-byte alignment");
+  }
   if (bytes.size() != payload_offset + expected.size() * sizeof(float)) {
     check(false, "NPY payload length matches its shape");
     return;
@@ -117,19 +122,18 @@ void check_file(const std::string &path, const std::vector<float> &expected,
 
 void test_write_and_overwrite() {
   TemporaryPath output;
-  const std::vector<float> matrix{1.0F, -2.5F, 3.25F,
-                                  0.0F, 42.5F, -0.125F};
+  const std::vector<float> matrix{1.0F, -2.5F, 3.25F, 0.0F, 42.5F, -0.125F};
   auto status = evo::npy::write_f32(output.path(), matrix, 2, 3);
-  check(status.ok(), std::string{"2x3 NPY write succeeds: "} +
-                         status.message());
+  check(status.ok(),
+        std::string{"2x3 NPY write succeeds: "} + status.message());
   if (status.ok()) {
     check_file(output.path(), matrix, "(2, 3)");
   }
 
   const std::vector<float> scalar_matrix{7.0F};
   status = evo::npy::write_f32(output.path(), scalar_matrix, 1, 1);
-  check(status.ok(), std::string{"shorter NPY overwrite succeeds: "} +
-                         status.message());
+  check(status.ok(),
+        std::string{"shorter NPY overwrite succeeds: "} + status.message());
   if (status.ok()) {
     check_file(output.path(), scalar_matrix, "(1, 1)");
   }
@@ -157,6 +161,34 @@ void test_validation_precedes_output() {
         "all validation failures leave the output unchanged");
 }
 
+void test_streaming_writer() {
+  TemporaryPath output;
+  const std::vector<float> matrix{1.0F, -2.5F, 3.25F, 0.0F, 42.5F, -0.125F};
+  evo::npy::F32MatrixWriter writer;
+  auto status = writer.open(output.path(), 2, 3);
+  check(status.ok(), "streaming NPY opens a declared matrix");
+  if (status.ok())
+    status = writer.append(matrix.data(), 2);
+  if (status.ok())
+    status = writer.append(matrix.data() + 2, matrix.size() - 2);
+  if (status.ok())
+    status = writer.close();
+  check(status.ok(), "streaming NPY accepts bounded row-major chunks");
+  if (status.ok())
+    check_file(output.path(), matrix, "(2, 3)", false);
+
+  TemporaryPath incomplete;
+  {
+    evo::npy::F32MatrixWriter partial;
+    status = partial.open(incomplete.path(), 2, 3);
+    if (status.ok())
+      status = partial.append(matrix.data(), 3);
+    check(status.ok(), "partial streaming NPY writes a bounded prefix");
+  }
+  check(read_bytes(incomplete.path()).empty(),
+        "incomplete streaming NPY is removed on destruction");
+}
+
 void test_io_error() {
   TemporaryPath regular_file;
   const std::string path = regular_file.path() + "/child.npy";
@@ -167,11 +199,12 @@ void test_io_error() {
         "NPY I/O error identifies its output path");
 }
 
-}  // namespace
+} // namespace
 
 int main() {
   test_write_and_overwrite();
   test_validation_precedes_output();
+  test_streaming_writer();
   test_io_error();
   if (failures != 0) {
     std::cerr << failures << " NPY test(s) failed\n";

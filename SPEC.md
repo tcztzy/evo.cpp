@@ -63,7 +63,7 @@ id|status|task|cites
 T1|x|stream FASTA/raw records；移除 CLI 双重读取；保持 parser contract|V3,V5,V6,V15,V16,V17,V18,V19,I1,I5
 T2|x|stream scoring chunk logits；默认⊥累计完整 logits matrix|V1,V4,V6,V15,V16,I1,I6
 T3|x|抽离 backend-neutral model/context/batch；发布稳定 C ABI + install package|V1,V2,V8,V10,V14,V15,V16,I3,I8
-T4|.|实现 first-class intermediate embedding API/CLI + metadata|V1,V7,V11,V15,V16,I2,I6
+T4|x|实现 first-class intermediate embedding API/CLI + metadata|V1,V7,V11,V15,V16,I2,I6
 T5|.|实现 strand/coordinate-aware variant scoring CLI|V1,V6,V7,V12,V16,I2,I5,I6
 T6|.|实现 HF revision/hash/cache 获取、CI 与预编译 release pipeline|V2,V10,V16,I2,I4,I8
 T7|.|实现共享 model 的 scheduler、dynamic batching 与 bio-native server|V8,V10,V13,V16,I7
@@ -80,3 +80,4 @@ B1|2026-08-12|gpu02 缺 pinned libnpy 时 build 静默退出；test 未校验 bu
 B2|2026-08-12|CUDA static archive 的默认可见符号绕过 shared-target visibility→C++/CUDA internals 泄漏进 C ABI DSO|V14
 B3|2026-08-12|初版 C API context 仅共享 mmap artifact、重复上传 GPU weights→大模型 multi-context 显存不可扩展|V8
 B4|2026-08-12|纯 CLI contract 写死 GPU 0,1；单卡 CUDA_VISIBLE_DEVICES 映射下逻辑 1 不存在→环境相关失败|V15,V16
+B5|2026-08-12|GCC 8 的 std::filesystem 仍在独立 stdc++fs；streaming NPY cleanup 首次引入该依赖→link 失败|V16

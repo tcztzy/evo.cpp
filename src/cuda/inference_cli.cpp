@@ -6,12 +6,15 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <iomanip>
 #include <iostream>
 #include <limits>
 #include <optional>
 #include <ostream>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -234,6 +237,78 @@ void print_score_record(const SequenceRecord &record,
     std::cout << token_scores[index];
   }
   std::cout << "]}\n";
+}
+
+const char *pooling_name(const EmbeddingPooling pooling) noexcept {
+  switch (pooling) {
+  case EmbeddingPooling::kNone:
+    return "none";
+  case EmbeddingPooling::kMean:
+    return "mean";
+  case EmbeddingPooling::kLast:
+    return "last";
+  }
+  return "unknown";
+}
+
+void write_embedding_metadata(
+    std::ostream &output, const SequenceRecord &record,
+    const std::size_t record_index, const std::string_view filename,
+    const std::size_t source_tokens, const std::size_t rows,
+    const std::size_t columns, const std::size_t layer,
+    const EmbeddingPooling pooling, const RuntimeModelConfig &config) {
+  output << "{\"record_index\":" << record_index << ",\"name\":";
+  write_json_string(output, record.name);
+  output << ",\"file\":";
+  write_json_string(output, filename);
+  output << ",\"source_tokens\":" << source_tokens << ",\"shape\":[" << rows
+         << ',' << columns << "],\"layer\":" << layer
+         << ",\"point\":\"block_output\",\"pooling\":\""
+         << pooling_name(pooling)
+         << "\",\"dtype\":\"float32\",\"backend\":\"cuda\",\"profile\":\""
+         << (config.test_fixture ? "test_fixture" : "exact")
+         << "\",\"model_id\":";
+  if (config.model_id.empty()) {
+    output << "null";
+  } else {
+    write_json_string(output, config.model_id);
+  }
+  output << "}\n";
+}
+
+Status prepare_embedding_output(const std::string &path,
+                                std::ofstream *const manifest) {
+  if (manifest == nullptr)
+    return {ErrorCode::kInvalidArgument, "embedding manifest output is null"};
+  const std::filesystem::path directory{path};
+  std::error_code error;
+  if (std::filesystem::exists(directory, error)) {
+    if (error || !std::filesystem::is_directory(directory, error)) {
+      return {ErrorCode::kInvalidArgument,
+              "embedding output exists and is not a directory: '" + path + "'"};
+    }
+    const std::filesystem::directory_iterator begin{directory, error};
+    if (error)
+      return {ErrorCode::kIo,
+              "cannot inspect embedding output directory '" + path + "'"};
+    if (begin != std::filesystem::directory_iterator{}) {
+      return {ErrorCode::kInvalidArgument,
+              "embedding output directory must be empty: '" + path + "'"};
+    }
+  } else {
+    if (error || !std::filesystem::create_directories(directory, error) ||
+        error) {
+      return {ErrorCode::kIo,
+              "cannot create embedding output directory '" + path + "'"};
+    }
+  }
+  const auto manifest_path = directory / "embeddings.jsonl";
+  manifest->open(manifest_path, std::ios::binary | std::ios::trunc);
+  if (!*manifest) {
+    return {ErrorCode::kIo,
+            "cannot open embedding manifest '" + manifest_path.string() + "'"};
+  }
+  return Status::Ok();
 }
 
 Status prefill_in_chunks(
@@ -538,6 +613,153 @@ Status run_score(const CliOptions &options, PipelineModel *const model,
   return Status::Ok();
 }
 
+Status run_embed(const CliOptions &options, PipelineModel *const model,
+                 MemoryTracker *const memory, Metrics *const metrics) {
+  if (options.embed_layer >= model->config().layers) {
+    return {ErrorCode::kInvalidArgument,
+            "embedding layer " + std::to_string(options.embed_layer) +
+                " is outside [0, " + std::to_string(model->config().layers) +
+                ")"};
+  }
+  std::ofstream manifest;
+  auto status = prepare_embedding_output(options.embed_output_dir, &manifest);
+  if (!status.ok())
+    return status;
+  const std::filesystem::path output_directory{options.embed_output_dir};
+  std::size_t record_index = 0;
+  status = stream_sequence_file(
+      options.embed_path, options.context_size,
+      [&](const SequenceRecord &record) -> Status {
+        if (options.dump_tokens) {
+          const auto dumped = encode_bytes(record.bytes);
+          std::cerr << "tokens " << record.name << "=[";
+          for (std::size_t index = 0; index < dumped.size(); ++index) {
+            if (index != 0)
+              std::cerr.put(',');
+            std::cerr << dumped[index];
+          }
+          std::cerr << "]\n";
+        }
+        const auto tokens = encode_bytes(record.bytes);
+        if (tokens.empty()) {
+          return {ErrorCode::kInvalidArgument,
+                  "embedding record '" + record.name + "' is empty"};
+        }
+        std::ostringstream filename_builder;
+        filename_builder << std::setw(6) << std::setfill('0') << record_index
+                         << ".npy";
+        const std::string filename = filename_builder.str();
+        const auto output_path = output_directory / filename;
+        npy::F32MatrixWriter writer;
+        const std::size_t width = model->config().width;
+        std::vector<double> mean;
+        std::vector<float> last;
+        if (options.embedding_pooling == EmbeddingPooling::kNone) {
+          auto writer_status =
+              writer.open(output_path.string(), tokens.size(), width);
+          if (!writer_status.ok())
+            return writer_status;
+        } else if (options.embedding_pooling == EmbeddingPooling::kMean) {
+          mean.assign(width, 0.0);
+        } else {
+          last.assign(width, 0.0F);
+        }
+
+        std::size_t offset = 0;
+        bool first = true;
+        while (offset < tokens.size()) {
+          const std::size_t rows =
+              std::min(model->activation_capacity(), tokens.size() - offset);
+          const std::vector<TokenId> chunk(
+              tokens.begin() + static_cast<std::ptrdiff_t>(offset),
+              tokens.begin() + static_cast<std::ptrdiff_t>(offset + rows));
+          std::vector<float> embedding;
+          const auto start = Clock::now();
+          auto chunk_status =
+              first ? model->prefill_embedding(chunk, options.embed_layer,
+                                               &embedding)
+                    : model->prefill_chunk_embedding(chunk, options.embed_layer,
+                                                     &embedding);
+          metrics->prefill_seconds += seconds_since(start);
+          metrics->prefill_tokens += rows;
+          if (!chunk_status.ok()) {
+            return {chunk_status.code(),
+                    "embed record '" + record.name + "' at token " +
+                        std::to_string(offset) + ": " + chunk_status.message()};
+          }
+          if (embedding.size() != rows * width) {
+            return {ErrorCode::kInternal,
+                    "embedding chunk has an incomplete matrix"};
+          }
+          if (options.embedding_pooling == EmbeddingPooling::kNone) {
+            chunk_status = writer.append(embedding.data(), embedding.size());
+            if (!chunk_status.ok())
+              return chunk_status;
+          } else if (options.embedding_pooling == EmbeddingPooling::kMean) {
+            for (std::size_t row = 0; row < rows; ++row) {
+              for (std::size_t column = 0; column < width; ++column) {
+                mean[column] += embedding[row * width + column];
+              }
+            }
+          } else {
+            std::copy_n(embedding.end() - static_cast<std::ptrdiff_t>(width),
+                        width, last.begin());
+          }
+          offset += rows;
+          first = false;
+        }
+
+        if (options.embedding_pooling != EmbeddingPooling::kNone) {
+          std::vector<float> pooled(width);
+          if (options.embedding_pooling == EmbeddingPooling::kMean) {
+            for (std::size_t column = 0; column < width; ++column) {
+              pooled[column] = static_cast<float>(
+                  mean[column] / static_cast<double>(tokens.size()));
+            }
+          } else {
+            pooled = std::move(last);
+          }
+          auto writer_status = writer.open(output_path.string(), 1, width);
+          if (writer_status.ok())
+            writer_status = writer.append(pooled.data(), pooled.size());
+          if (!writer_status.ok())
+            return writer_status;
+        }
+        auto writer_status = writer.close();
+        if (!writer_status.ok())
+          return writer_status;
+        auto observe_status = memory->observe();
+        if (!observe_status.ok())
+          return observe_status;
+
+        const std::size_t output_rows =
+            options.embedding_pooling == EmbeddingPooling::kNone ? tokens.size()
+                                                                 : 1;
+        write_embedding_metadata(manifest, record, record_index, filename,
+                                 tokens.size(), output_rows, width,
+                                 options.embed_layer, options.embedding_pooling,
+                                 model->config());
+        manifest.flush();
+        if (!manifest) {
+          return {ErrorCode::kIo,
+                  "failed to write embedding manifest for record '" +
+                      record.name + "'"};
+        }
+        write_embedding_metadata(std::cout, record, record_index, filename,
+                                 tokens.size(), output_rows, width,
+                                 options.embed_layer, options.embedding_pooling,
+                                 model->config());
+        std::cout.flush();
+        if (!std::cout) {
+          return {ErrorCode::kIo,
+                  "failed to write embedding metadata to stdout"};
+        }
+        ++record_index;
+        return Status::Ok();
+      });
+  return status;
+}
+
 void print_metrics(const Metrics &metrics, const MemoryTracker &memory,
                    const std::vector<StageAssignment> &stages,
                    const bool q8_kv_cache) {
@@ -631,8 +853,10 @@ Status run_inference_cli(const CliOptions &options,
 
   if (options.mode == RunMode::kGenerate) {
     status = run_generate(options, &model, &memory, &metrics);
-  } else {
+  } else if (options.mode == RunMode::kScore) {
     status = run_score(options, &model, &memory, &metrics);
+  } else {
+    status = run_embed(options, &model, &memory, &metrics);
   }
   if (!status.ok()) {
     return status;

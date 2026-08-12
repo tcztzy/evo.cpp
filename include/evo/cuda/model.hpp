@@ -127,6 +127,12 @@ public:
                             const std::vector<LayerDump> &dumps);
   [[nodiscard]] Status prefill_chunk(const std::vector<TokenId> &tokens,
                                      std::vector<float> *logits);
+  [[nodiscard]] Status prefill_embedding(const std::vector<TokenId> &tokens,
+                                         std::size_t layer,
+                                         std::vector<float> *embedding);
+  [[nodiscard]] Status
+  prefill_chunk_embedding(const std::vector<TokenId> &tokens, std::size_t layer,
+                          std::vector<float> *embedding);
   [[nodiscard]] Status decode(TokenId token, std::vector<float> *logits);
   [[nodiscard]] Status decode_with_dumps(TokenId token,
                                          std::vector<float> *logits,
@@ -179,6 +185,12 @@ public:
                             const std::vector<LayerDump> &dumps);
   [[nodiscard]] Status prefill_chunk(const std::vector<TokenId> &tokens,
                                      std::vector<float> *logits);
+  [[nodiscard]] Status prefill_embedding(const std::vector<TokenId> &tokens,
+                                         std::size_t layer,
+                                         std::vector<float> *embedding);
+  [[nodiscard]] Status
+  prefill_chunk_embedding(const std::vector<TokenId> &tokens, std::size_t layer,
+                          std::vector<float> *embedding);
   [[nodiscard]] Status decode(TokenId token, std::vector<float> *logits);
   [[nodiscard]] Status decode_with_dumps(TokenId token,
                                          std::vector<float> *logits,

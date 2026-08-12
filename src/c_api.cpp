@@ -119,6 +119,8 @@ struct ModelState final {
   std::string architecture;
   std::size_t vocab_size{0};
   std::size_t max_context{0};
+  std::size_t embedding_width{0};
+  std::size_t layer_count{0};
   bool allow_synthetic{false};
 #if defined(EVO_HAS_CUDA)
   std::unique_ptr<evo::cuda::PipelineModel> cuda_weights;
@@ -259,6 +261,8 @@ evo_status evo_model_load(const char *const path,
         metadata_string(state->file, "model.architecture", "unknown");
     state->vocab_size = metadata_size(state->file, "config.vocab_size");
     state->max_context = metadata_size(state->file, "config.max_seqlen");
+    state->embedding_width = metadata_size(state->file, "config.hidden_size");
+    state->layer_count = metadata_size(state->file, "config.num_layers");
     if (state->max_context == 0 &&
         metadata_bool(state->file, "fixture.synthetic")) {
       state->max_context = std::numeric_limits<std::size_t>::max();
@@ -308,6 +312,14 @@ size_t evo_model_vocab_size(const evo_model *const model) {
 
 size_t evo_model_max_context(const evo_model *const model) {
   return model == nullptr || !model->state ? 0 : model->state->max_context;
+}
+
+size_t evo_model_embedding_width(const evo_model *const model) {
+  return model == nullptr || !model->state ? 0 : model->state->embedding_width;
+}
+
+size_t evo_model_layer_count(const evo_model *const model) {
+  return model == nullptr || !model->state ? 0 : model->state->layer_count;
 }
 
 evo_status evo_context_create(const evo_model *const model,
@@ -490,6 +502,78 @@ evo_status evo_context_decode(evo_context *const context, const uint32_t token,
       return publish(valid_status(callback_status) ? callback_status
                                                    : EVO_STATUS_INTERNAL,
                      "callback: logits consumer aborted decode");
+    }
+    context->failed = false;
+    return publish(evo::Status::Ok());
+#else
+    (void)user_data;
+    return publish(EVO_STATUS_UNSUPPORTED,
+                   "unsupported: this evo library was built without CUDA");
+#endif
+  });
+}
+
+evo_status evo_context_embed(evo_context *const context,
+                             const evo_batch *const batch, const size_t layer,
+                             const evo_embedding_callback callback,
+                             void *const user_data) {
+  return protect([&]() -> evo_status {
+    if (context == nullptr || batch == nullptr || callback == nullptr) {
+      return publish(EVO_STATUS_INVALID_ARGUMENT,
+                     "invalid_argument: embedding argument is null");
+    }
+    if (context->failed) {
+      return publish(EVO_STATUS_INVALID_ARGUMENT,
+                     "invalid_argument: context is invalid after a prior "
+                     "failure");
+    }
+    if (!context->state || layer >= context->state->layer_count) {
+      return publish(EVO_STATUS_INVALID_ARGUMENT,
+                     "invalid_argument: embedding layer is outside the model");
+    }
+    if (batch->sequences.size() != 1) {
+      return publish(EVO_STATUS_UNSUPPORTED,
+                     "unsupported: exact backend currently requires batch "
+                     "size one");
+    }
+    const auto &tokens = batch->sequences.front();
+    if (tokens.empty() || tokens.size() > context->capacity ||
+        evo_context_position(context) != 0) {
+      return publish(EVO_STATUS_INVALID_ARGUMENT,
+                     "invalid_argument: embedding requires a fresh context and "
+                     "a nonempty sequence within capacity");
+    }
+    context->failed = true;
+#if defined(EVO_HAS_CUDA)
+    const std::size_t chunk_capacity = context->cuda->activation_capacity();
+    const std::size_t columns = context->cuda->config().width;
+    std::size_t offset = 0;
+    bool first = true;
+    while (offset < tokens.size()) {
+      const std::size_t rows = std::min(chunk_capacity, tokens.size() - offset);
+      const std::vector<evo::TokenId> chunk(
+          tokens.begin() + static_cast<std::ptrdiff_t>(offset),
+          tokens.begin() + static_cast<std::ptrdiff_t>(offset + rows));
+      std::vector<float> embedding;
+      const auto status =
+          first ? context->cuda->prefill_embedding(chunk, layer, &embedding)
+                : context->cuda->prefill_chunk_embedding(chunk, layer,
+                                                         &embedding);
+      if (!status.ok())
+        return publish(status);
+      if (embedding.size() != rows * columns) {
+        return publish(EVO_STATUS_INTERNAL,
+                       "internal: backend returned incomplete embeddings");
+      }
+      const evo_status callback_status =
+          callback(embedding.data(), rows, columns, offset, user_data);
+      if (callback_status != EVO_STATUS_OK) {
+        return publish(valid_status(callback_status) ? callback_status
+                                                     : EVO_STATUS_INTERNAL,
+                       "callback: embedding consumer aborted inference");
+      }
+      offset += rows;
+      first = false;
     }
     context->failed = false;
     return publish(evo::Status::Ok());

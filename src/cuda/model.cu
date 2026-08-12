@@ -988,6 +988,11 @@ Status read_runtime_model_config(const ModelFile &model,
   return Status::Ok();
 }
 
+struct LayerCapture final {
+  std::size_t layer{0};
+  std::vector<float> *values{nullptr};
+};
+
 struct SingleGpuModel::Impl final {
   RuntimeModelConfig config;
   int device{-1};
@@ -1579,6 +1584,27 @@ struct SingleGpuModel::Impl final {
     return npy::write_f32(dump.path, values, rows, columns);
   }
 
+  [[nodiscard]] Status capture_buffer(const DeviceBuffer &buffer,
+                                      const std::size_t rows,
+                                      const std::size_t columns,
+                                      std::vector<float> *const values) {
+    if (values == nullptr)
+      return {ErrorCode::kInvalidArgument, "layer capture output is null"};
+    std::vector<__nv_bfloat16> raw(rows * columns);
+    auto status =
+        buffer.copy_to_host(raw.data(), raw.size() * sizeof(raw[0]), stream);
+    if (!status.ok())
+      return status;
+    status = stream.synchronize();
+    if (!status.ok())
+      return status;
+    values->clear();
+    values->reserve(raw.size());
+    for (const auto value : raw)
+      values->push_back(__bfloat162float(value));
+    return Status::Ok();
+  }
+
   [[nodiscard]] Status dump_f32(const DeviceBuffer &buffer,
                                 const LayerDump &dump, const std::size_t rows,
                                 const std::size_t columns) {
@@ -1701,7 +1727,8 @@ struct SingleGpuModel::Impl final {
 
   [[nodiscard]] Status run_blocks(const std::size_t rows,
                                   const ForwardMode mode,
-                                  const std::vector<LayerDump> &dumps = {}) {
+                                  const std::vector<LayerDump> &dumps = {},
+                                  LayerCapture *const capture = nullptr) {
     auto status = Status::Ok();
     for (std::size_t local_index = 0; local_index < layers.size();
          ++local_index) {
@@ -1812,6 +1839,12 @@ struct SingleGpuModel::Impl final {
                              arena.hidden, rows, config.width);
       if (!status.ok())
         break;
+      if (capture != nullptr && capture->layer == index) {
+        status =
+            capture_buffer(arena.hidden, rows, config.width, capture->values);
+        if (!status.ok())
+          break;
+      }
     }
     if (!status.ok())
       return {status.code(), "model block forward: " + status.message()};
@@ -1821,7 +1854,8 @@ struct SingleGpuModel::Impl final {
   [[nodiscard]] Status forward(const std::vector<TokenId> &tokens,
                                const ForwardMode mode,
                                std::vector<float> *const logits,
-                               const std::vector<LayerDump> &dumps) {
+                               const std::vector<LayerDump> &dumps,
+                               LayerCapture *const capture = nullptr) {
     if (!loaded || logits == nullptr || tokens.empty() ||
         tokens.size() > arena_capacity) {
       return {ErrorCode::kInvalidArgument,
@@ -1844,13 +1878,18 @@ struct SingleGpuModel::Impl final {
         return {ErrorCode::kInvalidArgument,
                 "layer dump index or path is invalid"};
     }
+    if (capture != nullptr &&
+        (capture->layer >= config.layers || capture->values == nullptr)) {
+      return {ErrorCode::kInvalidArgument,
+              "layer capture index or output is invalid"};
+    }
     auto status = embed(tokens);
     if (!status.ok()) {
       state_valid = false;
       return status;
     }
     const std::size_t rows = tokens.size();
-    status = run_blocks(rows, mode, dumps);
+    status = run_blocks(rows, mode, dumps, capture);
     if (!status.ok()) {
       state_valid = false;
       return status;
@@ -2016,6 +2055,45 @@ Status SingleGpuModel::prefill_chunk(const std::vector<TokenId> &tokens,
   return impl_->forward(tokens, ForwardMode::kContinue, logits, {});
 }
 
+Status SingleGpuModel::prefill_embedding(const std::vector<TokenId> &tokens,
+                                         const std::size_t layer,
+                                         std::vector<float> *const embedding) {
+  if (embedding == nullptr)
+    return {ErrorCode::kInvalidArgument, "embedding output is null"};
+  embedding->clear();
+  std::vector<float> logits;
+  LayerCapture capture{layer, embedding};
+  auto status =
+      impl_->forward(tokens, ForwardMode::kPrefill, &logits, {}, &capture);
+  if (status.ok() && embedding->size() != tokens.size() * impl_->config.width) {
+    return {ErrorCode::kInternal,
+            "model returned an incomplete intermediate embedding"};
+  }
+  return status;
+}
+
+Status
+SingleGpuModel::prefill_chunk_embedding(const std::vector<TokenId> &tokens,
+                                        const std::size_t layer,
+                                        std::vector<float> *const embedding) {
+  if (impl_->cached_attention) {
+    return {ErrorCode::kInvalidArgument,
+            "cached prefill can only be continued with exact token decode"};
+  }
+  if (embedding == nullptr)
+    return {ErrorCode::kInvalidArgument, "embedding output is null"};
+  embedding->clear();
+  std::vector<float> logits;
+  LayerCapture capture{layer, embedding};
+  auto status =
+      impl_->forward(tokens, ForwardMode::kContinue, &logits, {}, &capture);
+  if (status.ok() && embedding->size() != tokens.size() * impl_->config.width) {
+    return {ErrorCode::kInternal,
+            "model returned an incomplete intermediate embedding"};
+  }
+  return status;
+}
+
 Status SingleGpuModel::decode(const TokenId token,
                               std::vector<float> *const logits) {
   const auto mode = impl_->cached_attention ? ForwardMode::kCachedDecode
@@ -2106,7 +2184,8 @@ struct PipelineModel::Impl final {
   [[nodiscard]] Status forward(const std::vector<TokenId> &tokens,
                                const ForwardMode mode,
                                std::vector<float> *const logits,
-                               const std::vector<LayerDump> &dumps) {
+                               const std::vector<LayerDump> &dumps,
+                               LayerCapture *const capture = nullptr) {
     if (!loaded || logits == nullptr || tokens.empty() ||
         tokens.size() > arena_capacity) {
       return {ErrorCode::kInvalidArgument,
@@ -2135,6 +2214,11 @@ struct PipelineModel::Impl final {
         return {ErrorCode::kInvalidArgument,
                 "layer dump index or path is invalid"};
     }
+    if (capture != nullptr &&
+        (capture->layer >= config.layers || capture->values == nullptr)) {
+      return {ErrorCode::kInvalidArgument,
+              "layer capture index or output is invalid"};
+    }
 
     auto status = stages.front()->embed(tokens);
     if (!status.ok()) {
@@ -2150,7 +2234,7 @@ struct PipelineModel::Impl final {
         if (!status.ok())
           break;
       }
-      status = stages[stage_index]->run_blocks(rows, mode, dumps);
+      status = stages[stage_index]->run_blocks(rows, mode, dumps, capture);
       if (!status.ok()) {
         status = {status.code(),
                   "pipeline stage " + std::to_string(stage_index) + " [" +
@@ -2545,6 +2629,45 @@ Status PipelineModel::prefill_chunk(const std::vector<TokenId> &tokens,
             "cached prefill can only be continued with exact token decode"};
   }
   return impl_->forward(tokens, ForwardMode::kContinue, logits, {});
+}
+
+Status PipelineModel::prefill_embedding(const std::vector<TokenId> &tokens,
+                                        const std::size_t layer,
+                                        std::vector<float> *const embedding) {
+  if (embedding == nullptr)
+    return {ErrorCode::kInvalidArgument, "embedding output is null"};
+  embedding->clear();
+  std::vector<float> logits;
+  LayerCapture capture{layer, embedding};
+  auto status =
+      impl_->forward(tokens, ForwardMode::kPrefill, &logits, {}, &capture);
+  if (status.ok() && embedding->size() != tokens.size() * impl_->config.width) {
+    return {ErrorCode::kInternal,
+            "pipeline returned an incomplete intermediate embedding"};
+  }
+  return status;
+}
+
+Status
+PipelineModel::prefill_chunk_embedding(const std::vector<TokenId> &tokens,
+                                       const std::size_t layer,
+                                       std::vector<float> *const embedding) {
+  if (impl_->cached_attention) {
+    return {ErrorCode::kInvalidArgument,
+            "cached prefill can only be continued with exact token decode"};
+  }
+  if (embedding == nullptr)
+    return {ErrorCode::kInvalidArgument, "embedding output is null"};
+  embedding->clear();
+  std::vector<float> logits;
+  LayerCapture capture{layer, embedding};
+  auto status =
+      impl_->forward(tokens, ForwardMode::kContinue, &logits, {}, &capture);
+  if (status.ok() && embedding->size() != tokens.size() * impl_->config.width) {
+    return {ErrorCode::kInternal,
+            "pipeline returned an incomplete intermediate embedding"};
+  }
+  return status;
 }
 
 Status PipelineModel::decode(const TokenId token,

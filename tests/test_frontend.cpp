@@ -272,6 +272,30 @@ void test_cli() {
   check(status.ok() && options.mode == evo::RunMode::kScore,
         "score CLI accepts one GPU and no sampling options");
 
+  status = parse({"evo", "embed", "-m", "model.safetensors", "--input",
+                  "input.fa", "--output", "embeddings", "--layer", "17",
+                  "--pooling", "mean", "--ctx", "4096", "--gpu", "0,1"},
+                 &options);
+  check(status.ok() && options.mode == evo::RunMode::kEmbed &&
+            options.embed_path == "input.fa" &&
+            options.embed_output_dir == "embeddings" &&
+            options.embed_layer == 17 &&
+            options.embedding_pooling == evo::EmbeddingPooling::kMean,
+        "embedding subcommand retains input, layer, pooling, and output");
+  status = parse({"evo", "embed", "-m", "model.safetensors", "--input",
+                  "input.fa", "--output", "embeddings", "--layer", "17",
+                  "--pooling", "median", "--gpu", "0"},
+                 &options);
+  check(!status.ok() && status.message().find("pooling") != std::string::npos,
+        "embedding rejects an unknown pooling mode");
+  status = parse({"evo", "embed", "-m", "model.safetensors", "--input",
+                  "input.fa", "--output", "embeddings", "--layer", "17",
+                  "--gpu", "0", "--top-k", "1"},
+                 &options);
+  check(!status.ok() &&
+            status.message().find("generation/scoring") != std::string::npos,
+        "embedding rejects sampling and generation options");
+
   status =
       parse({"evo", "-m", "a", "-m", "b", "-p", "A", "-n", "1", "--gpu", "0"},
             &options);

@@ -22,7 +22,7 @@ extern "C" {
 #endif
 
 #define EVO_ABI_VERSION_MAJOR 1u
-#define EVO_ABI_VERSION_MINOR 0u
+#define EVO_ABI_VERSION_MINOR 1u
 #define EVO_ABI_VERSION_PATCH 0u
 #define EVO_ABI_VERSION_ENCODE(major, minor, patch)                            \
   ((((uint32_t)(major) & 0xffu) << 24u) |                                      \
@@ -85,6 +85,10 @@ typedef struct evo_sampler_params {
 typedef evo_status (*evo_logits_callback)(const float *logits, size_t rows,
                                           size_t columns, size_t token_offset,
                                           void *user_data);
+typedef evo_status (*evo_embedding_callback)(const float *embedding,
+                                             size_t rows, size_t columns,
+                                             size_t token_offset,
+                                             void *user_data);
 
 EVO_API uint32_t evo_abi_version(void);
 EVO_API const char *evo_version_string(void);
@@ -109,6 +113,8 @@ EVO_API const char *evo_model_architecture(const evo_model *model);
 EVO_API const char *evo_model_profile(const evo_model *model);
 EVO_API size_t evo_model_vocab_size(const evo_model *model);
 EVO_API size_t evo_model_max_context(const evo_model *model);
+EVO_API size_t evo_model_embedding_width(const evo_model *model);
+EVO_API size_t evo_model_layer_count(const evo_model *model);
 
 // Contexts retain the immutable model artifact, so the model handle may be
 // freed after context creation. A context itself is single-threaded.
@@ -125,6 +131,10 @@ EVO_API evo_status evo_context_prefill(evo_context *context,
 EVO_API evo_status evo_context_decode(evo_context *context, uint32_t token,
                                       evo_logits_callback callback,
                                       void *user_data);
+EVO_API evo_status evo_context_embed(evo_context *context,
+                                     const evo_batch *batch, size_t layer,
+                                     evo_embedding_callback callback,
+                                     void *user_data);
 
 EVO_API evo_status evo_batch_create(size_t sequence_capacity,
                                     evo_batch **batch_out);

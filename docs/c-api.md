@@ -48,6 +48,12 @@ chunk callback. The callback view is borrowed and valid only during that call;
 this keeps host memory bounded by the backend activation chunk. Returning a
 non-OK status aborts inference and invalidates the mutable context.
 
+`evo_context_embed()` uses the same bounded callback model for the F32 block
+output of a zero-based intermediate layer. Query
+`evo_model_embedding_width()` and `evo_model_layer_count()` before creating
+downstream tensor storage. Pooling is deliberately caller-controlled in the C
+ABI; the CLI supplies exact `none`, `mean`, and `last` policies.
+
 The exact CUDA backend currently accepts one sequence per batch. Larger batch
 objects are ABI-valid but return `EVO_STATUS_UNSUPPORTED` at execution time,
 rather than silently changing semantics. CPU artifact loading and metadata are

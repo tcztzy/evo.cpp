@@ -140,6 +140,14 @@ int main(const int argc, char **argv) {
       check(all_close(one_gpu_logits, expected_logits, 0.08F, 0.06F) &&
                 cosine(one_gpu_logits, expected_logits) >= 0.999F,
             "one-GPU pipeline logits match independent oracle");
+      std::vector<float> embedding;
+      require(one_gpu_model.prefill_embedding({2, 5, 7, 3}, 17, &embedding),
+              "capture first-class intermediate embedding");
+      const auto expected_embedding = read_f32(argv[4]);
+      check(all_close(embedding, expected_embedding, 0.06F, 0.05F),
+            "first-class embedding matches the independent layer oracle");
+      check(!one_gpu_model.prefill_embedding({2}, 50, &embedding).ok(),
+            "embedding rejects a layer outside the architecture");
       evo::cuda::PipelineModel shared_model;
       require(shared_model.initialize_shared(one_gpu_model, 12),
               "initialize shared-weight pipeline context");
