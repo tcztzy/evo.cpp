@@ -146,3 +146,4 @@ B25|2026-08-12|初版 ESMC 规范沿用旧 ESM SDK hidden-state convention，未
 B26|2026-08-12|ESMC softmax kernel 使用未由当前 include graph 暴露的 CUDA 私有 infinity macro→gpu02 CUDA 12.8 编译失败|V30
 B27|2026-08-12|全量回归发现 legacy converter/documentation contracts 假设 registry.models 全是 Evo 2：新增 ESMC profile 后索引不存在的 `config` 并漏报三模型 exact 支持|V24,V31
 B28|2026-08-12|ESMC 验收脚本假设 gpu02 同步目录含 `.git`，但标准 build 明确排除 VCS metadata→真实远端在运行前失败|V16,V30
+B29|2026-08-12|ESMC oracle 从 receipt 首文件父目录推断 HF snapshot，但 cached symlink 返回 resolved `blobs/` 路径→官方 loader 找不到同目录制品|V28,V30

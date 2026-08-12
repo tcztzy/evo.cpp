@@ -575,6 +575,10 @@ def main() -> int:
     assert "convert_esmc_checkpoint.py" in esmc_validation
     assert "generate_esmc_official_oracle.py" in esmc_validation
     assert "compare_esmc_oracle.py" in esmc_validation
+    assert 'r["repo"].replace("/", "--")' in esmc_validation
+    assert '["files"][0]["path"]' not in esmc_validation, (
+        "HF receipt paths may resolve a snapshot symlink into the blobs directory"
+    )
     assert esmc_validation.count("--profile exact") == 2
     assert "--pooling none" in esmc_validation
     assert 'models="${EVO_ESMC_MODELS:-esmc_300m esmc_600m esmc_6b}"' in esmc_validation

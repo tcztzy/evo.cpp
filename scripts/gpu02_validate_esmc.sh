@@ -80,8 +80,8 @@ for model_id in $models; do
     'import json,sys; print(json.load(open(sys.argv[1]))["receipt"])' \
     "$fetch_json"; })"
   upstream_dir="$({ container_python -c \
-    'import json,os,sys; print(os.path.dirname(json.load(open(sys.argv[1]))["files"][0]["path"]))' \
-    "$fetch_json"; })"
+    'import json,os,sys; r=json.load(open(sys.argv[1])); print(os.path.join(sys.argv[2], "models--" + r["repo"].replace("/", "--"), "snapshots", r["resolved_revision"]))' \
+    "$fetch_json" "$cache_dir"; })"
 
   if ! test -f "$runtime_output" && ! test -f "$runtime_output.index.json"; then
     /usr/bin/apptainer exec \
@@ -129,7 +129,7 @@ nvidia-smi --query-gpu=index,name,driver_version,memory.total,memory.used \
 find "$artifact_dir" -type f \
   ! -name artifact-sha256.txt -print0 | sort -z | xargs -0 sha256sum \
   >"$artifact_dir/artifact-sha256.txt"
-printf 'all three canonical ESMC official-oracle gates passed\n' \
+printf 'requested canonical ESMC official-oracle gates passed: %s\n' "$models" \
   >"$artifact_dir/complete"
 echo "artifact_dir=$artifact_dir"
 for model_id in $models; do
