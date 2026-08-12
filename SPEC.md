@@ -59,6 +59,7 @@ R5|OpenGenome2 IO|raw 数据为大规模异构 FASTA；流式 record 处理优�
 - V20: public sequence IO ∀ multi-record path → only streaming callback API；⊥暴露全量 `vector<SequenceRecord>` 聚合 helper。
 - V21: bench ∀ report → architecture、artifact/profile、backend、input identity、warmup、repetitions、token count、timing statistic !显式；失败/unsupported → typed nonzero。
 - V22: ∀ production exact model ID → pinned real-checkpoint raw-bit gate evidence !存在；缺证据 ID !显式 experimental/unsupported，⊥继承同 family 证据。
+- V23: ∀ maintained runner 使用 exact-unsupported model ID → !显式 non-exact profile 或断言 typed unsupported；⊥依赖默认 `exact`。
 
 ## §T TASKS
 
@@ -103,6 +104,7 @@ B17|2026-08-12|model-format fixture 增加 registry metadata 后仍写死旧 met
 B18|2026-08-12|HyenaDNA acceptance fixture 依赖 NumPy，但 gpu02 的可复现 Nix Python 不含该包→CUDA 门无法运行独立 oracle|V2,V16,V19
 B19|2026-08-12|FASTQ quality 范围循环隐式把 signed char 转 unsigned char→AppleClang `-Werror` 拒绝构建|V16
 B20|2026-08-12|VCF callback 混用显式 `Status{}` 与推导 initializer-list return，且 variant helper 参数名被反向链局部变量遮蔽→严格编译失败|V16
+B21|2026-08-12|BioNeMo behavioral gate 省略 profile→model ID 降级后仍隐式请求 default exact|V23
 B21|2026-08-12|gpu02 CUDA image 只有 versioned `libz.so.1` runtime、没有 zlib-devel headers/unversioned linker name→标准 FindZLIB 配置失败|V2,V16,V19
 B22|2026-08-12|预先把 `EVO_ZLIB_LIBRARY` 缓存变量定义为空会让 `find_library` 视为用户已赋值而跳过搜索→本机 link 未携带 zlib|V16
 B23|2026-08-12|AppleClang 未报告 lambda 参数遮蔽外层 helper 参数，GCC 8 `-Wshadow -Werror` 在 gpu02 拒绝构建|V16,V19

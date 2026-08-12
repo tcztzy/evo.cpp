@@ -548,6 +548,10 @@ def main() -> int:
     assert "--dump-logits" in bionemo_validation
     assert "tools/compare_logits.py" in bionemo_validation
     assert "--minimum-cosine 0.999" in bionemo_validation
+    assert bionemo_validation.count("--profile fast-q8-kv") == 2, (
+        "V23: exact-unsupported BioNeMo validation must select its explicit "
+        "experimental profile for score and generation"
+    )
     assert "--reference-bytes" in bionemo_validation
     assert bionemo_validation.count("apptainer exec --nv") == 2
     assert "nohup setsid" in bionemo_validation

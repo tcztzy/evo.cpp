@@ -73,13 +73,14 @@ run_remote_worker() {
 
   apptainer exec --nv -B "$nix_root:/nix:ro" "$image" \
     "$binary" -m "$model" --score "$score_input" --ctx 8192 \
-    --gpu "$gpu_list" --dump-logits "$artifact_dir/native-score-logits.npy" \
+    --gpu "$gpu_list" --profile fast-q8-kv \
+    --dump-logits "$artifact_dir/native-score-logits.npy" \
     >"$artifact_dir/native-score.jsonl" \
     2>"$artifact_dir/native-score-metrics.log"
 
   apptainer exec --nv -B "$nix_root:/nix:ro" "$image" \
     "$binary" -m "$model" -p "$prompt" -n 8 --ctx 8192 \
-    --gpu "$gpu_list" --top-k 1 --seed 1 \
+    --gpu "$gpu_list" --profile fast-q8-kv --top-k 1 --seed 1 \
     --dump-logits "$artifact_dir/native-greedy-logits.npy" \
     >"$artifact_dir/native-greedy.bin" \
     2>"$artifact_dir/native-greedy-metrics.log"

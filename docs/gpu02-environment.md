@@ -99,6 +99,13 @@ evo.cpp split the 50 layers evenly and reported peak allocation deltas of
 45,392,855,040 and 45,376,077,824 bytes, so both processes remained well
 below the 80 GiB physical limit even under contention.
 
+This BioNeMo comparison is a tolerance/top-1/generated-byte behavioral record,
+not a zero-unequal raw-bit Vortex record. Following the model-ID exact-support
+audit, the maintained runner selects `--profile fast-q8-kv` explicitly and the
+artifact remains exact-unsupported. The archived measurements below predate
+that profile-label correction and do not promote `evo2_40b_bionemo_bf16` to
+production exact support.
+
 | Native phase | Work | Seconds | Throughput |
 |---|---:|---:|---:|
 | Score load | 40B model | 55.172 | — |
