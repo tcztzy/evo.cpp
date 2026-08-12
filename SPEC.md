@@ -34,7 +34,7 @@ evo.cpp !成为本地、可嵌入、可移植的生物序列基础模型推理�
 - I9 esmc-source: `evo_fetch.py source esmc_{300m,600m,6b}` 获取 pinned config/tokenizer/checkpoint；`convert_esmc_checkpoint.py --receipt ...` 离线产出严格 runtime artifact。
 - I10 esmc-cli: `evo logits -m MODEL --input INPUT --output DIR` 输出逐 token 64-way F32 NPY；既有 `evo embed ...` 输出选定 hidden layer，蛋白质输入默认添加 `<cls>`/`<eos>`。
 - I11 esmc-artifact: metadata 至少含 architecture/profile/model-id/revision、layers/width/heads/vocab/context、tokenizer identity、tensor manifest 与 source receipt hash。
-- I12 esmc-c-api: `evo_context_prefill` callback 返回全部 encoded positions logits；`evo_context_embed` 的 layer `0..n-1` 为逐 block hidden state、layer `n` 为官方 post-final-LayerNorm embedding；`decode/generate/causal score` → typed unsupported。
+- I12 esmc-c-api: `evo_context_prefill` callback 返回全部 encoded positions logits；`evo_context_embed` layer `0` 为 token embedding、`1..n-1` 为前一 block 输出、`n` 为官方 post-final-LayerNorm embedding；`decode/generate/causal score` → typed unsupported。
 
 ## §R RESEARCH
 
@@ -82,10 +82,11 @@ R12|ESMC weights|当前 300M/600M revision 分别为 `a59b831…`/`a7e8201…` �
 - V26: ESMC forward ∀ backend → R8 operation order、epsilon、RoPE positions、residual scale、exact GELU 与 F32 source semantics !固定；同输入 logits/final embedding 对官方 oracle 满足 `max_abs≤5e-3,mean_abs≤5e-4,cosine≥0.99999`，否则 fail。
 - V27: ESMC capability !仅 `logits|embed`；generation/decode/causal score/variant → typed unsupported，⊥借用 Evo 2 sampling/scoring path。
 - V28: ESMC conversion ∀ canonical size → pinned receipt/config/tokenizer、完整 tensor names/shapes/dtypes/sizes/hashes !先验证；缺失/多余 real tensor、非 F32、zero-byte extra-state 之外异常或 hash mismatch → 原子失败。
-- V29: ESMC ∀ forward/embed → 单次完整 encoded sequence 执行双向 attention；⊥跨 chunk 复用 prefix state；embedding layer `0..n-1` 映射 block outputs、`n` 映射 final LayerNorm，metadata !记录该 point。
+- V29: ESMC ∀ forward/embed → 单次完整 encoded sequence 执行双向 attention；⊥跨 chunk 复用 prefix state；embedding metadata !记录 point。
 - V30: ESMC tests !含 tiny deterministic CPU/CUDA fixture、tokenizer vectors、converter corruption gates；gpu02 ∀三 canonical artifacts → conversion/load + short-sequence official logits/last-hidden oracle gate。
 - V31: ESMC change 后 full CPU suite 与既有相关 gpu02 Evo 2/HyenaDNA gates !green；⊥修改已有模型生成/token/logit semantics。
 - V32: ESMC CUDA v1 ∀ device selection → exactly one CUDA device；0/2+ devices 或 unsupported compute/runtime → typed fail，且失败前⊥部分输出。
+- V33: ESMC hidden index !bit-exact 对齐 pinned Transformers `layers_to_collect`：`0=token_embedding`、`i∈[1,n-1]=block(i-1)_output`、`n=final_layer_norm`；⊥沿用旧 ESM SDK 的逐 block-output convention。
 
 ## §T TASKS
 
@@ -108,7 +109,7 @@ T15|x|实现 `-hf/--hf-repo REPO[@REV]` 已验证本地 cache artifact 解析|V2
 T16|x|审计 production exact model ID；补真实 checkpoint raw-bit 证据或显式降级为 experimental/unsupported|V1,V10,V16,V22,I4
 T17|x|核实官方 ESMC IDs/架构/tokenizer/权重/license/reference；审计扩展点并固化兼容边界|C9,C10,C12,C14,R6,R7,R8,R9,R10,R11,R12,V24,V27
 T18|x|注册三尺寸；实现 pinned HF source fetch/receipt、`esmc-runtime-v1` converter/loader 与 corruption tests|C8,C9,C11,V10,V24,V28,I4,I9,I11
-T19| |实现 bit-exact protein tokenizer 与 CPU F32 forward/logits/embedding；tiny oracle tests|C10,C12,V11,V25,V26,V27,V29,V30,I10,I12
+T19|x|实现 bit-exact protein tokenizer 与 CPU F32 forward/logits/embedding；tiny oracle tests|C10,C12,V11,V25,V26,V27,V29,V30,I10,I12
 T20| |实现单卡 CUDA F32 ESMC forward/logits/embedding 与 typed unsupported 边界|C10,C12,C13,V26,V27,V29,V30,V32,I10,I12
 T21| |接入 C API/CLI/HF offline artifact validation；补 logits/embedding metadata、能力 gate 与用户文档|C9,C12,C14,V24,V25,V27,V29,I2,I6,I10,I11,I12
 T22| |生成 pinned 官方 oracle；gpu02 验证三尺寸；跑 full regression、记录证据并清理非制品文件|C8,C10,C14,V16,V26,V28,V30,V31
@@ -141,3 +142,4 @@ B21|2026-08-12|gpu02 CUDA image 只有 versioned `libz.so.1` runtime、没有 zl
 B22|2026-08-12|预先把 `EVO_ZLIB_LIBRARY` 缓存变量定义为空会让 `find_library` 视为用户已赋值而跳过搜索→本机 link 未携带 zlib|V16
 B23|2026-08-12|AppleClang 未报告 lambda 参数遮蔽外层 helper 参数，GCC 8 `-Wshadow -Werror` 在 gpu02 拒绝构建|V16,V19
 B24|2026-08-12|CUDA variant token-dump lambda 同样复用外层 `sequence` 名，CPU-only 本机门未编译该 TU→gpu02 才触发 GCC shadow gate|V16,V19
+B25|2026-08-12|初版 ESMC 规范沿用旧 ESM SDK hidden-state convention，未逐行核对 pinned Transformers `layers_to_collect`→中间层索引整体错位|V33

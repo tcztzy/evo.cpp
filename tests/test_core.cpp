@@ -8,6 +8,7 @@
 
 #include "evo/model_registry.hpp"
 #include "evo/status.hpp"
+#include "evo/tokenizer.hpp"
 #include "evo/version.hpp"
 
 namespace {
@@ -81,6 +82,32 @@ int main() {
   check(!unknown_exact.ok() &&
             unknown_exact.code() == evo::ErrorCode::kUnsupported,
         "unknown exact model IDs fail closed");
+
+  const auto &esmc_models = evo::official_esmc_model_specs();
+  check(esmc_models.size() == 3,
+        "registry contains all three canonical ESMC sizes");
+  std::vector<evo::TokenId> protein;
+  const auto protein_status = evo::encode_sequence(
+      evo::ArchitectureTokenizer::kEsmcProtein,
+      "LAGV<mask>|Z?", &protein);
+  check(protein_status.ok() &&
+            protein == std::vector<evo::TokenId>{0, 4, 5, 6, 7, 32, 31, 27,
+                                                3, 2},
+        "ESMC tokenizer matches the pinned special-token and BPE IDs");
+  std::vector<evo::TokenId> explicit_specials;
+  check(evo::encode_sequence(evo::ArchitectureTokenizer::kEsmcProtein,
+                             "<cls><pad><eos><unk>",
+                             &explicit_specials)
+                .ok() &&
+            explicit_specials ==
+                std::vector<evo::TokenId>{0, 0, 1, 2, 3, 2},
+        "ESMC tokenizer preserves explicit registered special tokens");
+  std::uint8_t residue = 0;
+  check(evo::decode_sequence_token(evo::ArchitectureTokenizer::kEsmcProtein,
+                                   23, &residue)
+                .ok() &&
+            residue == static_cast<std::uint8_t>('C'),
+        "ESMC residue token decodes through the canonical vocabulary");
 
   if (failures != 0) {
     std::cerr << failures << " core test(s) failed\n";

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "evo/tokenizer.hpp"
 
+#include <array>
 #include <limits>
 
 namespace evo {
@@ -33,6 +34,36 @@ Status encode_sequence(const ArchitectureTokenizer tokenizer,
     return {ErrorCode::kInvalidArgument, "token output is null"};
   if (tokenizer == ArchitectureTokenizer::kByteIdentity) {
     *tokens = encode_bytes(sequence);
+    return Status::Ok();
+  }
+  if (tokenizer == ArchitectureTokenizer::kEsmcProtein) {
+    constexpr std::array<std::string_view, 6> special{
+        "<cls>", "<pad>", "<eos>", "<unk>", "|", "<mask>"};
+    constexpr std::array<TokenId, 6> special_ids{0, 1, 2, 3, 31, 32};
+    constexpr std::string_view alphabet = "LAGVSERTIDPKQNFYMHWCXBUZO.-|";
+    tokens->clear();
+    tokens->reserve(sequence.size() + 2);
+    tokens->push_back(0);
+    std::size_t offset = 0;
+    while (offset < sequence.size()) {
+      bool matched = false;
+      for (std::size_t index = 0; index < special.size(); ++index) {
+        if (sequence.substr(offset, special[index].size()) == special[index]) {
+          tokens->push_back(special_ids[index]);
+          offset += special[index].size();
+          matched = true;
+          break;
+        }
+      }
+      if (matched)
+        continue;
+      const auto found = alphabet.find(sequence[offset]);
+      tokens->push_back(found == std::string_view::npos
+                            ? TokenId{3}
+                            : static_cast<TokenId>(4 + found));
+      ++offset;
+    }
+    tokens->push_back(2);
     return Status::Ok();
   }
   tokens->clear();
@@ -70,6 +101,14 @@ Status decode_sequence_token(const ArchitectureTokenizer tokenizer,
     return token_to_byte(token, byte);
   if (byte == nullptr)
     return {ErrorCode::kInvalidArgument, "byte output is null"};
+  if (tokenizer == ArchitectureTokenizer::kEsmcProtein) {
+    constexpr std::string_view alphabet = "LAGVSERTIDPKQNFYMHWCXBUZO.-|";
+    if (token < 4 || token >= 4 + alphabet.size())
+      return {ErrorCode::kModelFormat,
+              "ESMC token has no raw protein byte representation"};
+    *byte = static_cast<std::uint8_t>(alphabet[token - 4]);
+    return Status::Ok();
+  }
   constexpr char alphabet[] = "ACGTN";
   if (token < 7 || token > 11)
     return {ErrorCode::kModelFormat,

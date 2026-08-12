@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "evo/cpu/model.hpp"
 
+#include "esmc_internal.hpp"
 #include "hyenadna_internal.hpp"
 #include "evo/model_registry.hpp"
 
@@ -690,7 +691,8 @@ Model::Model(Model &&) noexcept = default;
 Model &Model::operator=(Model &&) noexcept = default;
 
 Status Model::load(const ModelFile &model, const bool allow_test_fixture) {
-  if ((!impl_ && !hyena_) || (impl_ && impl_->file != nullptr) || hyena_)
+  if ((!impl_ && !hyena_ && !esmc_) ||
+      (impl_ && impl_->file != nullptr) || hyena_ || esmc_)
     return {ErrorCode::kInvalidArgument, "CPU model is already loaded"};
   std::string runtime_abi;
   std::string architecture;
@@ -714,6 +716,15 @@ Status Model::load(const ModelFile &model, const bool allow_test_fixture) {
       return status;
     impl_.reset();
     hyena_ = std::move(candidate);
+    return Status::Ok();
+  }
+  if (registered->tokenizer == ArchitectureTokenizer::kEsmcProtein) {
+    auto candidate = std::make_shared<detail::EsmcModel>();
+    status = candidate->load(model, allow_test_fixture);
+    if (!status.ok())
+      return status;
+    impl_.reset();
+    esmc_ = std::move(candidate);
     return Status::Ok();
   }
   auto candidate = std::make_shared<Impl>();
@@ -932,10 +943,14 @@ Status Model::load(const ModelFile &model, const bool allow_test_fixture) {
 }
 
 const ModelConfig &Model::config() const noexcept {
-  return hyena_ ? hyena_->config() : impl_->public_config;
+  if (hyena_)
+    return hyena_->config();
+  return esmc_ ? esmc_->config() : impl_->public_config;
 }
 const char *Model::kernel_name() const noexcept {
-  return hyena_ ? hyena_->kernel_name() : selected_kernel_name();
+  if (hyena_)
+    return hyena_->kernel_name();
+  return esmc_ ? esmc_->kernel_name() : selected_kernel_name();
 }
 
 Status Model::encode(const std::string_view sequence,
@@ -967,6 +982,19 @@ Status Context::initialize_shared(const Model &model,
       return status;
     impl_.reset();
     hyena_ = std::move(candidate);
+    return Status::Ok();
+  }
+  if (model.esmc_) {
+    if (!impl_ || hyena_ || esmc_ || layer_begin != 0)
+      return {ErrorCode::kInvalidArgument,
+              "ESMC contexts do not support suffix-layer placement"};
+    auto candidate = std::make_unique<detail::EsmcContext>();
+    const auto status =
+        candidate->initialize_shared(*model.esmc_, context_capacity);
+    if (!status.ok())
+      return status;
+    impl_.reset();
+    esmc_ = std::move(candidate);
     return Status::Ok();
   }
   if (!impl_ || impl_->weights || !model.impl_ ||
@@ -1006,6 +1034,8 @@ Status Context::prefill(const std::vector<TokenId> &tokens,
                         std::vector<float> *const logits) {
   if (hyena_)
     return hyena_->prefill(tokens, logits);
+  if (esmc_)
+    return esmc_->prefill(tokens, logits);
   return impl_->forward(tokens, true, logits,
                         std::numeric_limits<std::size_t>::max(), nullptr);
 }
@@ -1014,6 +1044,9 @@ Status Context::prefill_chunk(const std::vector<TokenId> &tokens,
                               std::vector<float> *const logits) {
   if (hyena_)
     return hyena_->prefill_chunk(tokens, logits);
+  if (esmc_)
+    return {ErrorCode::kUnsupported,
+            "ESMC requires one full-sequence bidirectional prefill"};
   return impl_->forward(tokens, false, logits,
                         std::numeric_limits<std::size_t>::max(), nullptr);
 }
@@ -1021,6 +1054,9 @@ Status Context::prefill_chunk(const std::vector<TokenId> &tokens,
 Status Context::decode(const TokenId token, std::vector<float> *const logits) {
   if (hyena_)
     return hyena_->decode(token, logits);
+  if (esmc_)
+    return {ErrorCode::kUnsupported,
+            "ESMC does not support autoregressive decode"};
   return impl_->forward({token}, false, logits,
                         std::numeric_limits<std::size_t>::max(), nullptr);
 }
@@ -1030,6 +1066,8 @@ Status Context::prefill_embedding(const std::vector<TokenId> &tokens,
                                   std::vector<float> *const embedding) {
   if (hyena_)
     return hyena_->prefill_embedding(tokens, layer, embedding);
+  if (esmc_)
+    return esmc_->prefill_embedding(tokens, layer, embedding);
   return impl_->forward(tokens, true, nullptr, layer, embedding);
 }
 
@@ -1038,15 +1076,18 @@ Status Context::prefill_chunk_embedding(const std::vector<TokenId> &tokens,
                                         std::vector<float> *const embedding) {
   if (hyena_)
     return hyena_->prefill_chunk_embedding(tokens, layer, embedding);
+  if (esmc_)
+    return {ErrorCode::kUnsupported,
+            "ESMC requires one full-sequence bidirectional embedding"};
   return impl_->forward(tokens, false, nullptr, layer, embedding);
 }
 
 Status Context::prefill_from_hidden(const std::vector<float> &hidden,
                                     const std::size_t rows,
                                     std::vector<float> *const logits) {
-  if (hyena_)
+  if (hyena_ || esmc_)
     return {ErrorCode::kUnsupported,
-            "HyenaDNA does not support CUDA-prefix hidden input"};
+            "this architecture does not support CUDA-prefix hidden input"};
   return impl_->forward_hidden(hidden, rows, true, logits,
                                std::numeric_limits<std::size_t>::max(),
                                nullptr);
@@ -1055,25 +1096,33 @@ Status Context::prefill_from_hidden(const std::vector<float> &hidden,
 Status Context::prefill_chunk_from_hidden(const std::vector<float> &hidden,
                                           const std::size_t rows,
                                           std::vector<float> *const logits) {
-  if (hyena_)
+  if (hyena_ || esmc_)
     return {ErrorCode::kUnsupported,
-            "HyenaDNA does not support CUDA-prefix hidden input"};
+            "this architecture does not support CUDA-prefix hidden input"};
   return impl_->forward_hidden(hidden, rows, false, logits,
                                std::numeric_limits<std::size_t>::max(),
                                nullptr);
 }
 
 std::size_t Context::position() const noexcept {
-  return hyena_ ? hyena_->position() : impl_->position;
+  if (hyena_)
+    return hyena_->position();
+  return esmc_ ? esmc_->position() : impl_->position;
 }
 std::size_t Context::activation_capacity() const noexcept {
-  return hyena_ ? hyena_->activation_capacity() : impl_->arena_capacity;
+  if (hyena_)
+    return hyena_->activation_capacity();
+  return esmc_ ? esmc_->activation_capacity() : impl_->arena_capacity;
 }
 const ModelConfig &Context::config() const noexcept {
-  return hyena_ ? hyena_->config() : impl_->weights->public_config;
+  if (hyena_)
+    return hyena_->config();
+  return esmc_ ? esmc_->config() : impl_->weights->public_config;
 }
 const char *Context::kernel_name() const noexcept {
-  return hyena_ ? "direct-convolution-f32" : selected_kernel_name();
+  if (hyena_)
+    return "direct-convolution-f32";
+  return esmc_ ? "scalar-f32-bidirectional" : selected_kernel_name();
 }
 
 } // namespace evo::cpu

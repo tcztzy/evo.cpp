@@ -58,6 +58,7 @@ add_library(
   evo_core STATIC
   src/cli.cpp
   src/cpu_reference.cpp
+  src/cpu/esmc.cpp
   src/cpu/hyenadna.cpp
   src/cpu/model.cpp
   src/cpu/inference_cli.cpp
@@ -523,6 +524,20 @@ if(BUILD_TESTING)
   add_executable(evo-cpu-model-tests tests/test_cpu_model.cpp)
   target_link_libraries(evo-cpu-model-tests PRIVATE evo_core)
   evo_configure_target(evo-cpu-model-tests)
+
+  add_executable(evo-esmc-cpu-tests tests/test_esmc_cpu.cpp)
+  target_link_libraries(evo-esmc-cpu-tests PRIVATE evo_core)
+  evo_configure_target(evo-esmc-cpu-tests)
+  add_test(
+    NAME esmc_backend
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_esmc_backend.py
+      --binary $<TARGET_FILE:evo-esmc-cpu-tests>
+      --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_tiny_esmc.py
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/esmc-backend)
+  set_tests_properties(
+    esmc_backend
+    PROPERTIES ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools")
   add_executable(evo-cpu-cli-test-bin src/main.cpp src/server.cpp)
   target_link_libraries(
     evo-cpu-cli-test-bin

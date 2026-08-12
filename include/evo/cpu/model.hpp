@@ -18,6 +18,8 @@ namespace evo::cpu {
 namespace detail {
 class HyenaDnaModel;
 class HyenaDnaContext;
+class EsmcModel;
+class EsmcContext;
 } // namespace detail
 
 struct ModelConfig final {
@@ -53,6 +55,7 @@ private:
   struct Impl;
   std::shared_ptr<Impl> impl_;
   std::shared_ptr<detail::HyenaDnaModel> hyena_;
+  std::shared_ptr<detail::EsmcModel> esmc_;
   friend class Context;
 };
 
@@ -95,6 +98,7 @@ private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
   std::unique_ptr<detail::HyenaDnaContext> hyena_;
+  std::unique_ptr<detail::EsmcContext> esmc_;
 };
 
 } // namespace evo::cpu
