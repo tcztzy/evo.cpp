@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -16,6 +17,7 @@
 #include <unistd.h>
 
 #include "evo/cli.hpp"
+#include "evo/generation_io.hpp"
 #include "evo/sampler.hpp"
 #include "evo/sequence_io.hpp"
 #include "evo/tokenizer.hpp"
@@ -491,6 +493,40 @@ void test_cli() {
         "teacher-forced prompt threshold CLI parses");
   check(options.inference_profile == evo::InferenceProfile::kFastQ8Kv,
         "explicit approximate execution profile parses");
+  status = parse({"evo", "run", "-m", "model.safetensors", "-p", "ACGT",
+                  "-n", "2", "--output-format", "fasta", "--name",
+                  "candidate", "--backend", "cpu"},
+                 &options);
+  check(status.ok() && options.mode == evo::RunMode::kGenerate &&
+            options.generation_output_format ==
+                evo::GenerationOutputFormat::kFasta &&
+            options.generation_name == "candidate",
+        "run subcommand retains FASTA generation output contract");
+  status = parse({"evo", "score", "-m", "model.safetensors", "--input",
+                  "input.fa", "--backend", "cpu"},
+                 &options);
+  check(status.ok() && options.mode == evo::RunMode::kScore &&
+            options.score_path == "input.fa",
+        "score subcommand maps --input to the streaming score path");
+  status = parse({"evo", "bench", "-m", "model.safetensors", "--input",
+                  "input.fa", "--warmup", "2", "--repetitions", "7",
+                  "--backend", "cpu"},
+                 &options);
+  check(status.ok() && options.mode == evo::RunMode::kBench &&
+            options.benchmark_path == "input.fa" &&
+            options.benchmark_warmup == 2 &&
+            options.benchmark_repetitions == 7,
+        "bench subcommand retains input and sample policy");
+  status = parse({"evo", "bench", "-m", "model.safetensors", "--input",
+                  "input.fa", "--repetitions", "0", "--backend", "cpu"},
+                 &options);
+  check(!status.ok() && status.message().find("repetitions") != std::string::npos,
+        "bench rejects an empty measured sample set");
+  status = parse({"evo", "run", "-m", "model.safetensors", "-p", "ACGT",
+                  "-n", "2", "--output-format", "json", "--backend", "cpu"},
+                 &options);
+  check(!status.ok() && status.message().find("output-format") != std::string::npos,
+        "generation rejects an unknown output encoding");
   status = parse({"evo", "-m", "model.safetensors", "--score", "input.fa",
                   "--backend", "cpu"},
                  &options);
@@ -733,6 +769,22 @@ void test_cli() {
       &options);
   check(!status.ok() && status.message().find("evo serve") != std::string::npos,
         "server-only options require the serve subcommand");
+
+  std::ostringstream raw;
+  status = evo::write_generated_sequence(
+      raw, "ACGT", evo::GenerationOutputFormat::kRaw, "ignored");
+  check(status.ok() && raw.str() == "ACGT",
+        "raw generation output is byte exact");
+  std::ostringstream fasta;
+  status = evo::write_generated_sequence(
+      fasta, "ACGTN", evo::GenerationOutputFormat::kFasta, "candidate");
+  check(status.ok() && fasta.str() == ">candidate\nACGTN\n",
+        "FASTA generation output is named and round-trippable");
+  std::ostringstream invalid_fasta;
+  status = evo::write_generated_sequence(
+      invalid_fasta, "AC GT", evo::GenerationOutputFormat::kFasta, "candidate");
+  check(!status.ok() && invalid_fasta.str().empty(),
+        "FASTA generation fails before emitting a partial invalid record");
 }
 
 } // namespace

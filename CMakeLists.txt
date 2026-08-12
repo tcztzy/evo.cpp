@@ -62,7 +62,9 @@ add_library(
   src/cpu/model.cpp
   src/cpu/inference_cli.cpp
   src/backend.cpp
+  src/benchmark.cpp
   src/fp8.cpp
+  src/generation_io.cpp
   src/json.cpp
   src/input_stream.cpp
   src/mapped_file.cpp

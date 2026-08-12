@@ -75,7 +75,7 @@ T9|x|实现向量化 CPU backend 与显式 CPU+GPU offload policy|V2,V7,V9,V10,V
 T10|x|抽象 architecture registry；接入第二个生物序列模型 family|V7,V8,V10,V11,V16,I2,I3,I4
 T11|x|补 FASTQ/gzip/stdin/VCF/reference IO 与坐标输出格式|V3,V5,V6,V12,V16,I5,I6
 T12|x|完善贡献指南、兼容策略、benchmark matrix 与 release 文档|V7,V14,V15,V16,I8
-T13|.|实现 `run|score|bench` CLI hierarchy、内建 reproducible bench 与 generation `raw|fasta` 输出|V7,V9,V10,V15,V16,V21,I1,I2,I6
+T13|x|实现 `run|score|bench` CLI hierarchy、内建 reproducible bench 与 generation `raw|fasta` 输出|V7,V9,V10,V15,V16,V21,I1,I2,I6
 T14|.|移除公共全量 sequence reader；测试与 consumer 统一 streaming API|V3,V16,V17,V20,I5
 T15|.|实现 `-hf/--hf-repo REPO[@REV]` 已验证本地 cache artifact 解析|V2,V10,V16,I2,I4
 T16|.|审计 production exact model ID；补真实 checkpoint raw-bit 证据或显式降级为 experimental/unsupported|V1,V10,V16,V22,I4

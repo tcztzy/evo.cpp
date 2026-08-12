@@ -100,6 +100,10 @@ std::string_view cli_usage() noexcept {
          "Usage:\n"
          "  evo --help\n"
          "  evo --version\n"
+         "  evo run -m MODEL -p DNA -n TOKENS [--output-format raw|fasta]\n"
+         "  evo score -m MODEL --input FASTA_FASTQ_OR_TEXT\n"
+         "  evo bench -m MODEL --input FASTA_FASTQ_OR_TEXT "
+         "[--warmup N --repetitions N]\n"
          "  evo -m MODEL.safetensors[.index.json] -p DNA -n TOKENS --ctx N "
          "--gpu 0,1,2,3 [sampling]\n"
          "  evo -m MODEL.safetensors[.index.json] --score "
@@ -114,6 +118,12 @@ std::string_view cli_usage() noexcept {
          "  evo variant-score -m MODEL --vcf VARIANTS.vcf[.gz] --reference "
          "REFERENCE.fa[.gz] --window N --gpu 0,1,2,3\n\n"
          "  evo serve -m MODEL --ctx N --gpu 0,1,2,3 [server options]\n\n"
+         "Generation output:\n"
+         "  --output-format raw|fasta   Stdout encoding (default: raw)\n"
+         "  --name NAME                 FASTA record name (default: generated)\n\n"
+         "Benchmark:\n"
+         "  --warmup N                  Unmeasured prefill runs (default: 1)\n"
+         "  --repetitions N             Measured prefill runs (default: 5)\n\n"
          "Server:\n"
          "  --host ADDRESS              IPv4 bind address (default: "
          "127.0.0.1)\n"
@@ -157,11 +167,20 @@ Status parse_cli(const int argc, char *const argv[],
     return {ErrorCode::kInvalidArgument, "CLI output pointer is null"};
   }
   *options = CliOptions{};
+  const bool run_command = argc > 1 && std::string_view{argv[1]} == "run";
+  const bool score_command = argc > 1 && std::string_view{argv[1]} == "score";
+  const bool bench_command = argc > 1 && std::string_view{argv[1]} == "bench";
   const bool embed_command = argc > 1 && std::string_view{argv[1]} == "embed";
   const bool variant_command =
       argc > 1 && std::string_view{argv[1]} == "variant-score";
   const bool server_command = argc > 1 && std::string_view{argv[1]} == "serve";
-  if (embed_command) {
+  if (run_command) {
+    options->mode = RunMode::kGenerate;
+  } else if (score_command) {
+    options->mode = RunMode::kScore;
+  } else if (bench_command) {
+    options->mode = RunMode::kBench;
+  } else if (embed_command) {
     options->mode = RunMode::kEmbed;
   } else if (variant_command) {
     options->mode = RunMode::kVariantScore;
@@ -182,6 +201,7 @@ Status parse_cli(const int argc, char *const argv[],
   bool seen_seed = false;
   bool seen_dump_tokens = false;
   bool seen_embed_input = false;
+  bool seen_benchmark_input = false;
   bool seen_embed_output = false;
   bool seen_embed_layer = false;
   bool seen_embedding_pooling = false;
@@ -204,9 +224,16 @@ Status parse_cli(const int argc, char *const argv[],
   bool seen_server_max_embedding = false;
   bool seen_profile = false;
   bool seen_backend = false;
+  bool seen_output_format = false;
+  bool seen_generation_name = false;
+  bool seen_benchmark_warmup = false;
+  bool seen_benchmark_repetitions = false;
 
   const int option_start =
-      embed_command || variant_command || server_command ? 2 : 1;
+      run_command || score_command || bench_command || embed_command ||
+              variant_command || server_command
+          ? 2
+          : 1;
   for (int index = option_start; index < argc; ++index) {
     const std::string_view option{argv[index]};
     std::string_view value;
@@ -236,13 +263,25 @@ Status parse_cli(const int argc, char *const argv[],
         return status;
       options->score_path = value;
     } else if (option == "--input") {
-      if (seen_embed_input)
-        return duplicate(option);
-      seen_embed_input = true;
       status = value_after(argc, argv, &index, option, &value);
       if (!status.ok())
         return status;
-      options->embed_path = value;
+      if (score_command) {
+        if (seen_score)
+          return duplicate(option);
+        seen_score = true;
+        options->score_path = value;
+      } else if (bench_command) {
+        if (seen_benchmark_input)
+          return duplicate(option);
+        seen_benchmark_input = true;
+        options->benchmark_path = value;
+      } else {
+        if (seen_embed_input)
+          return duplicate(option);
+        seen_embed_input = true;
+        options->embed_path = value;
+      }
     } else if (option == "--output") {
       if (seen_embed_output)
         return duplicate(option);
@@ -251,6 +290,57 @@ Status parse_cli(const int argc, char *const argv[],
       if (!status.ok())
         return status;
       options->embed_output_dir = value;
+    } else if (option == "--output-format") {
+      if (seen_output_format)
+        return duplicate(option);
+      seen_output_format = true;
+      status = value_after(argc, argv, &index, option, &value);
+      if (!status.ok())
+        return status;
+      if (value == "raw") {
+        options->generation_output_format = GenerationOutputFormat::kRaw;
+      } else if (value == "fasta") {
+        options->generation_output_format = GenerationOutputFormat::kFasta;
+      } else {
+        return {ErrorCode::kInvalidArgument,
+                "--output-format must be one of raw or fasta"};
+      }
+    } else if (option == "--name") {
+      if (seen_generation_name)
+        return duplicate(option);
+      seen_generation_name = true;
+      status = value_after(argc, argv, &index, option, &value);
+      if (!status.ok())
+        return status;
+      options->generation_name = value;
+      if (value.empty() || value.find_first_of("\r\n") != std::string_view::npos)
+        return {ErrorCode::kInvalidArgument,
+                "--name must be nonempty and single-line"};
+    } else if (option == "--warmup") {
+      if (seen_benchmark_warmup)
+        return duplicate(option);
+      seen_benchmark_warmup = true;
+      status = value_after(argc, argv, &index, option, &value);
+      if (!status.ok())
+        return status;
+      if (!parse_unsigned(value, &options->benchmark_warmup) ||
+          options->benchmark_warmup > 1000) {
+        return {ErrorCode::kInvalidArgument,
+                "--warmup must be an integer in [0, 1000]"};
+      }
+    } else if (option == "--repetitions") {
+      if (seen_benchmark_repetitions)
+        return duplicate(option);
+      seen_benchmark_repetitions = true;
+      status = value_after(argc, argv, &index, option, &value);
+      if (!status.ok())
+        return status;
+      if (!parse_unsigned(value, &options->benchmark_repetitions) ||
+          options->benchmark_repetitions == 0 ||
+          options->benchmark_repetitions > 10000) {
+        return {ErrorCode::kInvalidArgument,
+                "--repetitions must be an integer in [1, 10000]"};
+      }
     } else if (option == "--layer") {
       if (seen_embed_layer)
         return duplicate(option);
@@ -680,7 +770,10 @@ Status parse_cli(const int argc, char *const argv[],
         seen_variant_vcf || seen_variant_reference_path ||
         seen_variant_reference || seen_variant_alternate ||
         seen_variant_window || seen_variant_strand ||
-        seen_variant_normalization || seen_gpu_layers) {
+        seen_variant_normalization || seen_gpu_layers ||
+        seen_benchmark_input || seen_benchmark_warmup ||
+        seen_benchmark_repetitions || seen_output_format ||
+        seen_generation_name) {
       return {ErrorCode::kInvalidArgument,
               "serve accepts server options, --ctx, and --gpu only"};
     }
@@ -709,7 +802,9 @@ Status parse_cli(const int argc, char *const argv[],
         seen_variant_vcf || seen_variant_reference_path ||
         seen_variant_position || seen_variant_reference ||
         seen_variant_alternate || seen_variant_window || seen_variant_strand ||
-        seen_variant_normalization) {
+        seen_variant_normalization || seen_benchmark_input ||
+        seen_benchmark_warmup || seen_benchmark_repetitions ||
+        seen_output_format || seen_generation_name) {
       return {ErrorCode::kInvalidArgument,
               "embed accepts --input/--output/--layer/--pooling, --ctx, "
               "--gpu, and --dump-tokens; generation/scoring options are "
@@ -736,7 +831,9 @@ Status parse_cli(const int argc, char *const argv[],
         seen_top_p || seen_seed || seen_embed_input || seen_embed_output ||
         seen_embed_layer || seen_embedding_pooling ||
         options->dump_logits_path.has_value() ||
-        options->dump_layer.has_value()) {
+        options->dump_layer.has_value() || seen_benchmark_input ||
+        seen_benchmark_warmup || seen_benchmark_repetitions ||
+        seen_output_format || seen_generation_name) {
       return {ErrorCode::kInvalidArgument,
               "variant-score accepts variant arguments, --ctx, --gpu, and "
               "--dump-tokens; generation/scoring/embedding options are "
@@ -784,17 +881,49 @@ Status parse_cli(const int argc, char *const argv[],
     }
     return Status::Ok();
   }
-  if (seen_embed_input || seen_embed_output || seen_embed_layer ||
-      seen_embedding_pooling) {
-    return {ErrorCode::kInvalidArgument,
-            "--input, --output, --layer, and --pooling require 'evo embed'"};
-  }
   if (seen_variant_sequence || seen_variant_position ||
       seen_variant_vcf || seen_variant_reference_path ||
       seen_variant_reference || seen_variant_alternate || seen_variant_window ||
       seen_variant_strand || seen_variant_normalization) {
     return {ErrorCode::kInvalidArgument,
             "variant arguments require 'evo variant-score'"};
+  }
+  if (bench_command) {
+    if (seen_prompt || seen_score || seen_tokens ||
+        seen_force_prompt_threshold || seen_temperature || seen_top_k ||
+        seen_top_p || seen_seed || seen_dump_tokens ||
+        options->dump_logits_path.has_value() || options->dump_layer.has_value() ||
+        seen_embed_input || seen_embed_output || seen_embed_layer ||
+        seen_embedding_pooling || seen_output_format || seen_generation_name) {
+      return {ErrorCode::kInvalidArgument,
+              "bench accepts --input, --warmup, --repetitions, --ctx, "
+              "--backend/profile, and GPU placement only"};
+    }
+    if (!seen_benchmark_input || options->benchmark_path.empty())
+      return {ErrorCode::kInvalidArgument,
+              "bench requires a nonempty --input path"};
+    if (!seen_gpu && requires_gpu)
+      return {ErrorCode::kInvalidArgument, "--gpu is required"};
+    return Status::Ok();
+  }
+  if (seen_benchmark_input || seen_benchmark_warmup ||
+      seen_benchmark_repetitions) {
+    return {ErrorCode::kInvalidArgument,
+            "--warmup and --repetitions require 'evo bench'"};
+  }
+  if (embed_command || seen_embed_input || seen_embed_output ||
+      seen_embed_layer || seen_embedding_pooling) {
+    return {ErrorCode::kInvalidArgument,
+            "--input, --output, --layer, and --pooling require the matching "
+            "score, bench, or embed command"};
+  }
+  if (run_command && seen_score) {
+    return {ErrorCode::kInvalidArgument,
+            "run does not accept a scoring input"};
+  }
+  if (score_command && seen_prompt) {
+    return {ErrorCode::kInvalidArgument,
+            "score does not accept a generation prompt"};
   }
   if (seen_prompt == seen_score) {
     return {ErrorCode::kInvalidArgument,
@@ -829,6 +958,10 @@ Status parse_cli(const int argc, char *const argv[],
     if (seen_force_prompt_threshold) {
       return {ErrorCode::kInvalidArgument,
               "--force-prompt-threshold is only valid for generation"};
+    }
+    if (seen_output_format || seen_generation_name) {
+      return {ErrorCode::kInvalidArgument,
+              "--output-format and --name are only valid for generation"};
     }
   }
   return validate_sampling_config(options->sampling);

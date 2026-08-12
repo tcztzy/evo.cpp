@@ -16,9 +16,11 @@
 
 namespace evo {
 
-enum class RunMode { kGenerate, kScore, kEmbed, kVariantScore, kServe };
+enum class RunMode { kGenerate, kScore, kEmbed, kVariantScore, kServe, kBench };
 
 enum class EmbeddingPooling { kNone, kMean, kLast };
+
+enum class GenerationOutputFormat { kRaw, kFasta };
 
 struct DumpLayerSpec final {
   std::size_t layer{0};
@@ -30,6 +32,11 @@ struct CliOptions final {
   std::string model_path;
   std::string prompt;
   std::string score_path;
+  std::string benchmark_path;
+  std::size_t benchmark_warmup{1};
+  std::size_t benchmark_repetitions{5};
+  GenerationOutputFormat generation_output_format{GenerationOutputFormat::kRaw};
+  std::string generation_name{"generated"};
   std::string embed_path;
   std::string embed_output_dir;
   std::size_t embed_layer{0};

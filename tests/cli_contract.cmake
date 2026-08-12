@@ -19,6 +19,21 @@ execute_process(
 if(NOT help_result EQUAL 0 OR NOT help_output MATCHES "Usage:")
   message(FATAL_ERROR "evo --help contract failed: ${help_error}${help_output}")
 endif()
+foreach(command IN ITEMS run score embed variant-score serve bench)
+  if(NOT help_output MATCHES "evo ${command}")
+    message(FATAL_ERROR "evo --help omitted ${command} command")
+  endif()
+endforeach()
+
+execute_process(
+  COMMAND "${EVO_BINARY}" bench --help
+  RESULT_VARIABLE command_help_result
+  OUTPUT_VARIABLE command_help_output
+  ERROR_VARIABLE command_help_error)
+if(NOT command_help_result EQUAL 0 OR
+   NOT command_help_output MATCHES "--repetitions")
+  message(FATAL_ERROR "subcommand help contract failed: ${command_help_error}${command_help_output}")
+endif()
 
 execute_process(
   COMMAND "${EVO_BINARY}"

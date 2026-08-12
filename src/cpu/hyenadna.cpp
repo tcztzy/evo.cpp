@@ -415,6 +415,7 @@ Status HyenaDnaModel::load(const ModelFile &artifact,
             "artifact is not a registered HyenaDNA CPU architecture"};
   }
   candidate->public_config.architecture = architecture;
+  candidate->public_config.artifact_profile = std::string{artifact.profile()};
   candidate->public_config.tokenizer = registered->tokenizer;
   candidate->public_config.test_fixture = registered->synthetic_fixture;
   if (registered->synthetic_fixture) {

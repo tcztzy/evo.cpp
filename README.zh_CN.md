@@ -64,6 +64,10 @@ cmake --build --preset conan-release
 
 MODEL=/models/evo2-7b.safetensors.index.json
 build/Release/evo-inspect "$MODEL"
+build/Release/evo run -m "$MODEL" -p ACGT -n 32 --ctx 8192 --gpu 0
+build/Release/evo score -m "$MODEL" --input sequences.fa --ctx 8192 --gpu 0
+build/Release/evo bench -m "$MODEL" --input sequences.fa \
+  --warmup 2 --repetitions 10 --ctx 8192 --gpu 0
 build/Release/evo -m "$MODEL" -p ACGT -n 32 --ctx 8192 --gpu 0
 build/Release/evo -m "$MODEL" --score sequences.fa --ctx 8192 --gpu 0
 build/Release/evo embed -m "$MODEL" --input sequences.fa \
@@ -74,6 +78,12 @@ build/Release/evo variant-score -m "$MODEL" --sequence AACCGGTT \
 build/Release/evo serve -m "$MODEL" --ctx 8192 --gpu 0 \
   --host 127.0.0.1 --port 8080 --max-queue 64 --max-batch 4
 ```
+
+`run` 与 `score` 是兼容旧 generation/scoring 写法的 command hierarchy。
+generation 默认向 stdout 写 byte-exact raw；`--output-format fasta --name
+candidate` 写严格具名 FASTA，并在产生非 IUPAC bytes 时于任何 partial record
+写出前失败。`bench` 为每个输入 record 输出一行 JSONL，包含 model/profile/backend
+身份、输入 fingerprint、warmup/repetition、每次 timing、median 与吞吐。
 
 同一 artifact 也可用于可移植 CPU 推理和显式 CUDA 前缀/CPU 后缀放置：
 

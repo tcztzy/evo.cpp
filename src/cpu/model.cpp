@@ -718,6 +718,7 @@ Status Model::load(const ModelFile &model, const bool allow_test_fixture) {
   }
   auto candidate = std::make_shared<Impl>();
   candidate->public_config.architecture = architecture;
+  candidate->public_config.artifact_profile = std::string{model.profile()};
   candidate->public_config.tokenizer = registered->tokenizer;
   if (architecture == "StripedHyena2Test") {
     status = metadata_bool(model, "fixture.synthetic",

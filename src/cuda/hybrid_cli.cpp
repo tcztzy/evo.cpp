@@ -14,6 +14,7 @@
 
 #include "evo/cpu/model.hpp"
 #include "evo/cuda/model.hpp"
+#include "evo/generation_io.hpp"
 #include "evo/model_format.hpp"
 #include "evo/sampler.hpp"
 #include "evo/sequence_io.hpp"
@@ -199,11 +200,9 @@ Status run_generate(const CliOptions &options, const HybridWeights &weights) {
         return status;
     }
   }
-  std::cout.write(generated.data(),
-                  static_cast<std::streamsize>(generated.size()));
-  std::cout.flush();
-  return std::cout ? Status::Ok()
-                   : Status{ErrorCode::kIo, "failed writing hybrid generation"};
+  return write_generated_sequence(std::cout, generated,
+                                  options.generation_output_format,
+                                  options.generation_name);
 }
 
 Status run_score(const CliOptions &options, const HybridWeights &weights) {

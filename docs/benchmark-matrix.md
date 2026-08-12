@@ -34,6 +34,23 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
+For a self-contained runtime measurement, use the built-in command. It shares
+the ordinary FASTA/FASTQ/gzip/stdin reader and writes one machine-readable row
+per record:
+
+```sh
+evo bench -m MODEL --input sequences.fa.gz \
+  --warmup 2 --repetitions 10 --ctx 8192 --gpu 0
+```
+
+Each row declares schema/command, model path and ID, architecture, artifact and
+execution profiles, backend, input path/name/format/FNV-1a identity, context,
+warmup, repetitions, tokens, timing scope, every measured duration, median,
+and median tokens/s. The hash is a fast run-identity check, not an artifact
+authenticity primitive; release claims must still record SHA256 as required
+below. Context/model load is reported separately by runtime metrics and is not
+included in the `prefill_with_host_logits` benchmark scope.
+
 Run the paired approximate-profile evaluator with the exact and candidate NPY
 logits plus biological-score JSON produced by independent executions:
 

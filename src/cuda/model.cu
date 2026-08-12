@@ -528,6 +528,8 @@ Status read_runtime_model_config(const ModelFile &model,
     return {ErrorCode::kUnsupported,
             "unsupported model architecture: " + architecture};
   }
+  candidate.architecture = architecture;
+  candidate.artifact_profile = std::string{model.profile()};
   if (architecture == "StripedHyena2Test") {
     status = metadata_bool(model, "fixture.synthetic", &candidate.test_fixture);
     if (!status.ok())

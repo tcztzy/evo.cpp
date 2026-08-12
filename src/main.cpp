@@ -53,6 +53,17 @@ int main(const int argc, char **argv) {
         return 0;
       }
     }
+    if (argc == 3) {
+      const std::string_view command{argv[1]};
+      const std::string_view argument{argv[2]};
+      if ((command == "run" || command == "score" || command == "embed" ||
+           command == "variant-score" || command == "serve" ||
+           command == "bench") &&
+          (argument == "--help" || argument == "-h")) {
+        print_help();
+        return 0;
+      }
+    }
 
     evo::CliOptions options;
     auto status = evo::parse_cli(argc, argv, &options);

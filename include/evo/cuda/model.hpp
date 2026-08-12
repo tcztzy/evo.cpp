@@ -46,6 +46,8 @@ enum class LayerDumpPoint {
 
 struct RuntimeModelConfig final {
   std::string model_id;
+  std::string architecture;
+  std::string artifact_profile;
   std::size_t vocab_size{0};
   std::size_t width{0};
   std::size_t layers{0};
