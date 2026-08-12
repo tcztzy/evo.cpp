@@ -85,11 +85,11 @@ int main(const int argc, char **const argv) {
   check(std::string_view{model.kernel_name()} == "scalar-f32-bidirectional",
         "ESMC CPU backend reports its bidirectional F32 kernel");
 
-  constexpr std::string_view sequence = "LAG<mask>|Z?";
+  constexpr std::string_view sequence = "LAG<mask>|Z<pad>";
   std::vector<evo::TokenId> tokens;
   status = model.encode(sequence, &tokens);
   check(status.ok() &&
-            tokens == std::vector<evo::TokenId>{0, 4, 5, 6, 32, 31, 27, 3, 2},
+            tokens == std::vector<evo::TokenId>{0, 4, 5, 6, 32, 31, 27, 1, 2},
         "ESMC CPU model uses the official protein tokenizer");
 
   const std::filesystem::path oracle_dir{argv[2]};

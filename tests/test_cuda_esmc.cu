@@ -82,7 +82,7 @@ int main(const int argc, char **const argv) {
 
   std::vector<evo::TokenId> tokens;
   status = evo::encode_sequence(evo::ArchitectureTokenizer::kEsmcProtein,
-                                "LAG<mask>|Z?", &tokens);
+                                "LAG<mask>|Z<pad>", &tokens);
   check(status.ok() && tokens.size() == 9,
         "CUDA ESMC test uses the official protein tokenizer");
   const std::filesystem::path oracle_dir{argv[2]};

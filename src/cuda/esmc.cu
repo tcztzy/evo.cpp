@@ -232,16 +232,12 @@ __global__ void rope_kernel(float *const query, float *const key,
   rotate(key);
 }
 
-__global__ void softmax_kernel(float *const scores, const TokenId *const tokens,
-                               const std::size_t rows) {
+__global__ void softmax_kernel(float *const scores, const std::size_t rows) {
   __shared__ float scratch[kThreads];
   const std::size_t target = blockIdx.x;
-  const bool target_padding = tokens[target] == 1;
   float maximum = -std::numeric_limits<float>::infinity();
   for (std::size_t source = threadIdx.x; source < rows; source += blockDim.x) {
-    const bool visible = target_padding == (tokens[source] == 1);
-    maximum = fmaxf(maximum, visible ? scores[target * rows + source]
-                                     : -std::numeric_limits<float>::infinity());
+    maximum = fmaxf(maximum, scores[target * rows + source]);
   }
   scratch[threadIdx.x] = maximum;
   __syncthreads();
@@ -254,9 +250,7 @@ __global__ void softmax_kernel(float *const scores, const TokenId *const tokens,
   maximum = scratch[0];
   float denominator = 0.0F;
   for (std::size_t source = threadIdx.x; source < rows; source += blockDim.x) {
-    const bool visible = target_padding == (tokens[source] == 1);
-    const float probability =
-        visible ? expf(scores[target * rows + source] - maximum) : 0.0F;
+    const float probability = expf(scores[target * rows + source] - maximum);
     scores[target * rows + source] = probability;
     denominator += probability;
   }
@@ -537,8 +531,7 @@ struct EsmcContext::Impl final {
       if (!status.ok())
         return status;
       softmax_kernel<<<static_cast<unsigned>(rows), kThreads, 0,
-                       stream.get()>>>(
-          head_scores, static_cast<const TokenId *>(tokens.data()), rows);
+                       stream.get()>>>(head_scores, rows);
       status = kernel_status("ESMC attention softmax kernel");
       if (!status.ok())
         return status;

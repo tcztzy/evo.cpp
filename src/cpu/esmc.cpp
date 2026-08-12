@@ -220,11 +220,9 @@ struct EsmcContext::Impl final {
   std::size_t capacity{0};
   std::size_t position{0};
 
-  Status attention(const std::vector<float> &hidden,
-                   const std::vector<TokenId> &tokens,
+  Status attention(const std::vector<float> &hidden, const std::size_t rows,
                    const EsmcModel::Impl::Layer &layer,
                    std::vector<float> *const output) const {
-    const std::size_t rows = tokens.size();
     const std::size_t width = weights->public_config.width;
     const std::size_t head_width = weights->head_width();
     std::vector<float> qkv_normalized;
@@ -282,17 +280,13 @@ struct EsmcContext::Impl final {
       for (std::size_t head = 0; head < weights->heads; ++head) {
         float maximum = -std::numeric_limits<float>::infinity();
         for (std::size_t source = 0; source < rows; ++source) {
-          const bool visible = (tokens[target] == 1) == (tokens[source] == 1);
-          float score = -std::numeric_limits<float>::infinity();
-          if (visible) {
-            score = 0.0F;
-            for (std::size_t dimension = 0; dimension < head_width;
-                 ++dimension) {
-              score += query[target * width + head * head_width + dimension] *
-                       key[source * width + head * head_width + dimension];
-            }
-            score *= score_scale;
+          float score = 0.0F;
+          for (std::size_t dimension = 0; dimension < head_width;
+               ++dimension) {
+            score += query[target * width + head * head_width + dimension] *
+                     key[source * width + head * head_width + dimension];
           }
+          score *= score_scale;
           scores[source] = score;
           maximum = std::max(maximum, score);
         }
@@ -346,7 +340,7 @@ struct EsmcContext::Impl final {
     std::vector<float> gated;
     for (std::size_t index = 0; index < weights->layer.size(); ++index) {
       const auto &layer = weights->layer[index];
-      auto status = attention(hidden, tokens, layer, &update);
+      auto status = attention(hidden, rows, layer, &update);
       if (!status.ok())
         return {status.code(), "ESMC attention block " + std::to_string(index) +
                                    ": " + status.message()};

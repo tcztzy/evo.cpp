@@ -20,8 +20,8 @@ MAX_LENGTH = 16
 EPSILON = 1e-5
 ROPE_BASE = 10000.0
 RESIDUE_SCALE = math.sqrt(LAYERS / 36.0)
-SEQUENCE = "LAG<mask>|Z?"
-TOKENS = [0, 4, 5, 6, 32, 31, 27, 3, 2]
+SEQUENCE = "LAG<mask>|Z<pad>"
+TOKENS = [0, 4, 5, 6, 32, 31, 27, 1, 2]
 
 
 def f32(value: float) -> float:
