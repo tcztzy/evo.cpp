@@ -2,18 +2,24 @@
 
 ## §G GOAL
 
-evo.cpp !成为本地、可嵌入、可移植的生物序列基础模型推理平台；Evo 2 exact inference 为首个且不可回退的参考实现。
+evo.cpp !成为本地、可嵌入、可移植的生物序列基础模型推理平台；Evo 2 exact inference 为首个且不可回退的参考实现，并原生覆盖 Biohub ESMC 300M/600M/6B 蛋白质 encoder inference。
 
 ## §C CONSTRAINTS
 
 - C1: 注册表内 Evo 2 1B/7B/20B/40B exact profile !保持既有 raw-bit gate、确定性与显式失败语义；见 `docs/math-semantics.md`、`docs/model-size-validation.md`。
 - C2: 生产 runtime !为 C++17；⊥ Python、PyTorch、libtorch、Vortex、Transformer Engine 运行时依赖。Python/PyTorch 仅限离线转换与 oracle。
-- C3: exact artifact !继续使用严格 `evo2-runtime-v1` Safetensors；⊥为平台化重写已验证格式。量化/其他容器只能作为显式新 profile 或 adapter。
+- C3: Evo 2 exact artifact !继续使用严格 `evo2-runtime-v1` Safetensors；⊥为平台化重写已验证格式。其他 architecture/量化/容器只能使用显式独立 profile 或 adapter。
 - C4: checkpoint 转换、mmap、manifest、FP8 extra-state 与原子发布契约 !保持 `docs/model-format.md`、`docs/checkpoint-conversion.md` 约束。
 - C5: 训练/微调由 Savanna 或 NVIDIA BioNeMo 负责；本仓库只加载其推理产物与未来 adapter。
 - C6: CUDA/Ampere 仍为 exact 主后端；新后端与 fast profile ⊥冒充 exact。
 - C7: 平台首先覆盖 DNA 序列；多模型架构必须抽象扩展点，⊥在 Evo 2 CUDA 类上继续堆叠公共接口。
 - C8: 大 checkpoint、转换结果、数据集 ⊥提交 Git；下载缓存与 revision/hash !可审计。
+- C9: ESMC canonical source !为 `biohub/ESMC-300M`、`biohub/ESMC-600M`、`biohub/ESMC-6B`；2024-12 HF repos 仅作 deprecated alias/source 说明，⊥隐式混载旧权重布局。
+- C10: ESMC production runtime !为 C++17 CPU/CUDA；Python/PyTorch/官方 Transformers fork 仅限隔离的 converter/oracle，不进入产品依赖图。
+- C11: ESMC v1 artifact !使用独立 `esmc-runtime-v1` strict Safetensors profile、F32 tensors、pinned source receipt；⊥伪装 `evo2-runtime-v1` 或 silent dtype/layout conversion。
+- C12: ESMC 是最大 2048 tokens（含 `<cls>`/`<eos>`）的双向 masked encoder；v1 只承诺 logits/hidden-state embedding，⊥autoregressive generation、causal score、variant likelihood 或 recurrent chunking。
+- C13: ESMC v1 CUDA !先支持单 device exact path；multi-GPU/CPU+GPU offload 必须 typed unsupported，⊥静默退化。
+- C14: ESMC 接入 !保持 Evo 2/HyenaDNA artifact、tokenization、CLI、C ABI 与数值 gate 行为不变。
 
 ## §I INTERFACES
 
@@ -25,6 +31,10 @@ evo.cpp !成为本地、可嵌入、可移植的生物序列基础模型推理�
 - I6 output: scoring/bench JSONL；embedding NPY/Safetensors；generation stdout `raw|fasta`；错误→nonzero + typed status。
 - I7 server: `/v1/generate`、`/v1/score`、`/v1/embeddings`、`/v1/variants`、`/health`、`/metrics`；请求可取消、限长、隔离 context。
 - I8 install: `cmake --install` 提供 library、headers、CLI、CMake package；release 提供校验和与平台元数据。
+- I9 esmc-source: `evo_fetch.py source esmc_{300m,600m,6b}` 获取 pinned config/tokenizer/checkpoint；`convert_esmc_checkpoint.py --receipt ...` 离线产出严格 runtime artifact。
+- I10 esmc-cli: `evo logits -m MODEL --input INPUT --output DIR` 输出逐 token 64-way F32 NPY；既有 `evo embed ...` 输出选定 hidden layer，蛋白质输入默认添加 `<cls>`/`<eos>`。
+- I11 esmc-artifact: metadata 至少含 architecture/profile/model-id/revision、layers/width/heads/vocab/context、tokenizer identity、tensor manifest 与 source receipt hash。
+- I12 esmc-c-api: `evo_context_prefill` callback 返回全部 encoded positions logits；`evo_context_embed` 的 layer `0..n-1` 为逐 block hidden state、layer `n` 为官方 post-final-LayerNorm embedding；`decode/generate/causal score` → typed unsupported。
 
 ## §R RESEARCH
 
@@ -34,6 +44,13 @@ R2|llama.cpp serving|server 提供 parallel decoding、continuous batching、emb
 R3|Evo 2 inference|官方推理面包含 forward scoring、intermediate embeddings、generation；最长 checkpoint context 1M bp|https://github.com/ArcInstitute/evo2
 R4|Evo 2 training|官方把训练/微调交给 Savanna 或 NVIDIA BioNeMo|https://github.com/ArcInstitute/evo2#training-and-finetuning
 R5|OpenGenome2 IO|raw 数据为大规模异构 FASTA；流式 record 处理优先于全量 materialization|https://huggingface.co/datasets/arcinstitute/opengenome2
+R6|ESMC canonical models|Biohub 当前推荐 `ESMC-300M`/`ESMC-600M`/`ESMC-6B`；旧 `*-2024-12` repos 仅保留 backward compatibility|https://huggingface.co/biohub/ESMC-6B
+R7|ESMC topology|三者分别为 `(d_model,heads,layers)=(960,15,30),(1152,18,36),(2560,40,80)`，vocab=64、max positions=2048、F32 source weights|https://huggingface.co/biohub/ESMC-300M/blob/a59b831785f907e96e6a246b1d142bfb76df31ee/config.json
+R8|ESMC forward|官方实现为 pre-LN Transformer：scaled residual、Q/K LayerNorm、non-interleaved RoPE、bidirectional SDPA、SwiGLU、final LayerNorm 与 GELU/LayerNorm LM head|https://github.com/Biohub/transformers/blob/3a8956fb4d4ea16b0ec8e71deef2c2909b6a5cbf/src/transformers/models/esmc/modeling_esmc.py
+R9|ESMC tokenizer|固定 64-slot vocab；33 个已分配 token，`<cls>=0,<pad>=1,<eos>=2,<unk>=3,<mask>=32`，character BPE 自动包围 cls/eos|https://github.com/Biohub/transformers/blob/3a8956fb4d4ea16b0ec8e71deef2c2909b6a5cbf/src/transformers/models/esmc/tokenization_esmc.py
+R10|ESMC outputs|官方 masked-LM 返回 per-token logits、last hidden state 与可选全部 hidden states；⊥causal generation contract|https://huggingface.co/biohub/ESMC-6B
+R11|ESMC license|Biohub ESM code/models 使用 MIT license，并要求遵循 Biohub Acceptable Use Policy|https://github.com/Biohub/esm/blob/26b0bc2b771e3e419ea74f445a5f35cc094a1509b6a5cbf/README.md#license
+R12|ESMC weights|当前 300M/600M revision 分别为 `a59b831…`/`a7e8201…` 单 F32 Safetensors；6B `45b0fa5…` 为 6-shard F32 Safetensors + index|https://huggingface.co/biohub/ESMC-6B/tree/45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a
 
 ## §V INVARIANTS
 
@@ -60,6 +77,15 @@ R5|OpenGenome2 IO|raw 数据为大规模异构 FASTA；流式 record 处理优�
 - V21: bench ∀ report → architecture、artifact/profile、backend、input identity、warmup、repetitions、token count、timing statistic !显式；失败/unsupported → typed nonzero。
 - V22: ∀ production exact model ID → pinned real-checkpoint raw-bit gate evidence !存在；缺证据 ID !显式 experimental/unsupported，⊥继承同 family 证据。
 - V23: ∀ maintained runner 使用 exact-unsupported model ID → !显式 non-exact profile 或断言 typed unsupported；⊥依赖默认 `exact`。
+- V24: ESMC registry ∀ size → canonical HF ID/revision、Biohub hosted alias、topology 与 exact capability !显式；未知/legacy-incompatible source → typed fail。
+- V25: ∀ ESMC protein sequence → tokenizer token IDs 与 R9 bit-exact；默认首尾分别为 0/2，`<mask>`/`|` 与已分配字符按官方 special-token/BPE 规则解析，非法/非词表 byte → 3，`encoded_length ≤ 2048` 在分配/执行前检查。
+- V26: ESMC forward ∀ backend → R8 operation order、epsilon、RoPE positions、residual scale、exact GELU 与 F32 source semantics !固定；同输入 logits/final embedding 对官方 oracle 满足 `max_abs≤5e-3,mean_abs≤5e-4,cosine≥0.99999`，否则 fail。
+- V27: ESMC capability !仅 `logits|embed`；generation/decode/causal score/variant → typed unsupported，⊥借用 Evo 2 sampling/scoring path。
+- V28: ESMC conversion ∀ canonical size → pinned receipt/config/tokenizer、完整 tensor names/shapes/dtypes/sizes/hashes !先验证；缺失/多余 real tensor、非 F32、zero-byte extra-state 之外异常或 hash mismatch → 原子失败。
+- V29: ESMC ∀ forward/embed → 单次完整 encoded sequence 执行双向 attention；⊥跨 chunk 复用 prefix state；embedding layer `0..n-1` 映射 block outputs、`n` 映射 final LayerNorm，metadata !记录该 point。
+- V30: ESMC tests !含 tiny deterministic CPU/CUDA fixture、tokenizer vectors、converter corruption gates；gpu02 ∀三 canonical artifacts → conversion/load + short-sequence official logits/last-hidden oracle gate。
+- V31: ESMC change 后 full CPU suite 与既有相关 gpu02 Evo 2/HyenaDNA gates !green；⊥修改已有模型生成/token/logit semantics。
+- V32: ESMC CUDA v1 ∀ device selection → exactly one CUDA device；0/2+ devices 或 unsupported compute/runtime → typed fail，且失败前⊥部分输出。
 
 ## §T TASKS
 
@@ -80,6 +106,12 @@ T13|x|实现 `run|score|bench` CLI hierarchy、内建 reproducible bench 与 gen
 T14|x|移除公共全量 sequence reader；测试与 consumer 统一 streaming API|V3,V16,V17,V20,I5
 T15|x|实现 `-hf/--hf-repo REPO[@REV]` 已验证本地 cache artifact 解析|V2,V10,V16,I2,I4
 T16|x|审计 production exact model ID；补真实 checkpoint raw-bit 证据或显式降级为 experimental/unsupported|V1,V10,V16,V22,I4
+T17|x|核实官方 ESMC IDs/架构/tokenizer/权重/license/reference；审计扩展点并固化兼容边界|C9,C10,C12,C14,R6,R7,R8,R9,R10,R11,R12,V24,V27
+T18| |注册三尺寸；实现 pinned HF source fetch/receipt、`esmc-runtime-v1` converter/loader 与 corruption tests|C8,C9,C11,V10,V24,V28,I4,I9,I11
+T19| |实现 bit-exact protein tokenizer 与 CPU F32 forward/logits/embedding；tiny oracle tests|C10,C12,V11,V25,V26,V27,V29,V30,I10,I12
+T20| |实现单卡 CUDA F32 ESMC forward/logits/embedding 与 typed unsupported 边界|C10,C12,C13,V26,V27,V29,V30,V32,I10,I12
+T21| |接入 C API/CLI/HF offline artifact validation；补 logits/embedding metadata、能力 gate 与用户文档|C9,C12,C14,V24,V25,V27,V29,I2,I6,I10,I11,I12
+T22| |生成 pinned 官方 oracle；gpu02 验证三尺寸；跑 full regression、记录证据并清理非制品文件|C8,C10,C14,V16,V26,V28,V30,V31
 
 ## §B BUGS
 
