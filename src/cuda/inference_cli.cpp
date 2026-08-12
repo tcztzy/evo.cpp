@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -103,7 +104,11 @@ struct Metrics final {
   std::size_t prefill_tokens{0};
   std::size_t teacher_force_tokens{0};
   std::size_t decode_tokens{0};
+  std::size_t retained_logits_peak_bytes{0};
 };
+
+using LogitsChunkConsumer =
+    std::function<Status(std::size_t offset, const std::vector<float> &logits)>;
 
 Status validate_devices(const std::vector<int> &devices) {
   if (devices.empty() || devices.size() > 4) {
@@ -231,13 +236,12 @@ void print_score_record(const SequenceRecord &record,
   std::cout << "]}\n";
 }
 
-Status
-prefill_in_chunks(const std::vector<TokenId> &tokens,
-                  const std::size_t token_count,
-                  const std::optional<LayerDump> &dump,
-                  const bool collect_all_logits, const bool cached_initial,
-                  const bool stateless_initial, PipelineModel *const model,
-                  std::vector<float> *const logits, Metrics *const metrics) {
+Status prefill_in_chunks(
+    const std::vector<TokenId> &tokens, const std::size_t token_count,
+    const std::optional<LayerDump> &dump, const bool collect_all_logits,
+    const bool cached_initial, const bool stateless_initial,
+    PipelineModel *const model, std::vector<float> *const logits,
+    Metrics *const metrics, const LogitsChunkConsumer &consumer = {}) {
   if (model == nullptr || logits == nullptr || metrics == nullptr ||
       token_count == 0 || token_count > tokens.size() ||
       model->activation_capacity() == 0) {
@@ -306,11 +310,21 @@ prefill_in_chunks(const std::vector<TokenId> &tokens,
       return {ErrorCode::kInternal,
               "chunked prefill returned an incomplete logit matrix"};
     }
+    if (consumer) {
+      const auto consume_status = consumer(offset, chunk_logits);
+      if (!consume_status.ok()) {
+        return {consume_status.code(), "consume logits at token " +
+                                           std::to_string(offset) + ": " +
+                                           consume_status.message()};
+      }
+    }
     if (collect_all_logits) {
       logits->insert(logits->end(), chunk_logits.begin(), chunk_logits.end());
     } else {
       *logits = std::move(chunk_logits);
     }
+    metrics->retained_logits_peak_bytes = std::max(
+        metrics->retained_logits_peak_bytes, logits->size() * sizeof(float));
     offset += chunk_size;
     first = false;
   }
@@ -460,9 +474,32 @@ Status run_score(const CliOptions &options, PipelineModel *const model,
         const auto dump = make_layer_dump(options);
         const bool stateless =
             !dump.has_value() && tokens.size() <= model->activation_capacity();
-        auto record_status =
-            prefill_in_chunks(tokens, tokens.size(), dump, true, false,
-                              stateless, model, &logits, metrics);
+        const bool retain_all_logits = options.dump_logits_path.has_value();
+        std::vector<double> token_scores;
+        token_scores.reserve(tokens.size() - 1);
+        const LogitsChunkConsumer score_chunk =
+            [&](const std::size_t offset,
+                const std::vector<float> &chunk_logits) -> Status {
+          const std::size_t chunk_tokens = chunk_logits.size() / vocab_size;
+          for (std::size_t local = 0; local < chunk_tokens; ++local) {
+            const std::size_t row = offset + local;
+            if (row + 1 >= tokens.size()) {
+              break;
+            }
+            double value = 0.0;
+            const auto score_status =
+                log_probability(chunk_logits.data() + local * vocab_size,
+                                vocab_size, tokens[row + 1], &value);
+            if (!score_status.ok()) {
+              return score_status;
+            }
+            token_scores.push_back(value);
+          }
+          return Status::Ok();
+        };
+        auto record_status = prefill_in_chunks(
+            tokens, tokens.size(), dump, retain_all_logits, false, stateless,
+            model, &logits, metrics, score_chunk);
         if (!record_status.ok()) {
           return {record_status.code(), "score prefill for '" + record.name +
                                             "': " + record_status.message()};
@@ -471,7 +508,7 @@ Status run_score(const CliOptions &options, PipelineModel *const model,
         if (!record_status.ok()) {
           return record_status;
         }
-        if (logits.size() != tokens.size() * vocab_size) {
+        if (retain_all_logits && logits.size() != tokens.size() * vocab_size) {
           return {ErrorCode::kInternal,
                   "score prefill returned an incomplete logit matrix"};
         }
@@ -483,17 +520,9 @@ Status run_score(const CliOptions &options, PipelineModel *const model,
           }
         }
 
-        std::vector<double> token_scores;
-        token_scores.reserve(tokens.size() - 1);
-        for (std::size_t index = 1; index < tokens.size(); ++index) {
-          double value = 0.0;
-          record_status =
-              log_probability(logits.data() + (index - 1) * vocab_size,
-                              vocab_size, tokens[index], &value);
-          if (!record_status.ok()) {
-            return record_status;
-          }
-          token_scores.push_back(value);
+        if (token_scores.size() != tokens.size() - 1) {
+          return {ErrorCode::kInternal,
+                  "score prefill returned incomplete token log likelihoods"};
         }
         print_score_record(record, token_scores);
         ++processed_records;
@@ -539,7 +568,8 @@ void print_metrics(const Metrics &metrics, const MemoryTracker &memory,
             << ",\"decode_tokens_per_second\":" << decode_rate
             << ",\"kv_cache\":\""
             << (q8_kv_cache ? "q8_paged" : "bf16_contiguous")
-            << "\",\"gpus\":[";
+            << "\",\"retained_logits_peak_bytes\":"
+            << metrics.retained_logits_peak_bytes << ",\"gpus\":[";
   for (std::size_t index = 0; index < memory.entries().size(); ++index) {
     if (index != 0) {
       std::cerr.put(',');

@@ -61,7 +61,7 @@ R5|OpenGenome2 IO|raw 数据为大规模异构 FASTA；流式 record 处理优�
 
 id|status|task|cites
 T1|x|stream FASTA/raw records；移除 CLI 双重读取；保持 parser contract|V3,V5,V6,V15,V16,V17,V18,V19,I1,I5
-T2|.|stream scoring chunk logits；默认⊥累计完整 logits matrix|V1,V4,V6,V15,V16,I1,I6
+T2|x|stream scoring chunk logits；默认⊥累计完整 logits matrix|V1,V4,V6,V15,V16,I1,I6
 T3|.|抽离 backend-neutral model/context/batch；发布稳定 C ABI + install package|V1,V2,V8,V10,V14,V15,V16,I3,I8
 T4|.|实现 first-class intermediate embedding API/CLI + metadata|V1,V7,V11,V15,V16,I2,I6
 T5|.|实现 strand/coordinate-aware variant scoring CLI|V1,V6,V7,V12,V16,I2,I5,I6

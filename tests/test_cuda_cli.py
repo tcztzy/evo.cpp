@@ -361,6 +361,31 @@ def main() -> int:
             "score mode did not concatenate logits across activation chunks"
         )
 
+    streamed_long_score_result = run_checked(
+        [
+            str(args.binary),
+            "-m",
+            str(model),
+            "--score",
+            str(long_score_input),
+            "--ctx",
+            "12",
+            "--gpu",
+            gpu_list,
+        ]
+    )
+    if streamed_long_score_result.stdout != long_score_result.stdout:
+        raise AssertionError(
+            "streaming score JSONL differs from retained-logits score JSONL"
+        )
+    retained_metrics = metrics(long_score_result)
+    streaming_metrics = metrics(streamed_long_score_result)
+    full_logits_bytes = 9 * 512 * 4
+    if retained_metrics["retained_logits_peak_bytes"] != full_logits_bytes:
+        raise AssertionError("dump-logits mode did not retain the full logit matrix")
+    if streaming_metrics["retained_logits_peak_bytes"] >= full_logits_bytes:
+        raise AssertionError("streaming score mode retained the full logit matrix")
+
     multi_score_input = args.work_dir / "multi-score.fasta"
     multi_score_input.write_text(">first\nACGT\n>second description\nTGCA\n")
     multi_score_result = run_checked(
