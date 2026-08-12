@@ -228,6 +228,28 @@ def main() -> int:
     ):
         raise AssertionError("offline source snapshot did not fail closed")
     cached_source.write_bytes(source_payload)
+    isolated_receipts = args.work_dir / "isolated-receipts"
+    isolated_result = run_tool(
+        args.tool,
+        python_path,
+        remote,
+        log,
+        source_revision,
+        [
+            "--cache-dir",
+            str(cache),
+            "--receipt-dir",
+            str(isolated_receipts),
+            "--local-files-only",
+            "source",
+            "tiny",
+            "--registry",
+            str(registry),
+        ],
+    )
+    isolated_receipt = require_success(isolated_result)
+    if not Path(isolated_receipt["receipt"]).is_relative_to(isolated_receipts):
+        raise AssertionError("custom receipt escaped its explicit directory")
 
     runtime_revision = "b" * 40
     runtime_root = remote / "owner" / "runtime" / runtime_revision

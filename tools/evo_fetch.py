@@ -243,17 +243,29 @@ def validate_file_entry(value: object, label: str) -> dict[str, object]:
     return {"name": name, "size": size, "sha256": digest.lower()}
 
 
-def receipt_destination(cache_dir: Path, repo: str, revision: str, kind: str) -> Path:
-    directory = cache_dir / "evo-receipts" / safe_repo_path(repo) / revision
+def receipt_destination(
+    cache_dir: Path,
+    repo: str,
+    revision: str,
+    kind: str,
+    receipt_dir: Path | None = None,
+) -> Path:
+    root = receipt_dir if receipt_dir is not None else cache_dir / "evo-receipts"
+    directory = root / safe_repo_path(repo) / revision
     return directory / f"{kind}.json"
 
 
-def write_receipt(cache_dir: Path, receipt: dict[str, object]) -> Path:
+def write_receipt(
+    cache_dir: Path,
+    receipt: dict[str, object],
+    receipt_dir: Path | None = None,
+) -> Path:
     destination = receipt_destination(
         cache_dir,
         str(receipt["repo"]),
         str(receipt["resolved_revision"]),
         str(receipt["kind"]),
+        receipt_dir,
     )
     directory = destination.parent
     directory.mkdir(parents=True, exist_ok=True)
@@ -277,6 +289,7 @@ def fetch_files(
     resolved_revision: str,
     entries: list[dict[str, object]],
     cache_dir: Path,
+    receipt_dir: Path | None,
     endpoint: str | None,
     local_files_only: bool,
     extra: dict[str, object],
@@ -304,7 +317,7 @@ def fetch_files(
         "files": files,
         **extra,
     }
-    receipt_path = write_receipt(cache_dir, receipt)
+    receipt_path = write_receipt(cache_dir, receipt, receipt_dir)
     receipt["receipt"] = str(receipt_path.resolve())
     return receipt
 
@@ -354,6 +367,7 @@ def source_command(args: argparse.Namespace) -> dict[str, object]:
         resolved_revision=resolved,
         entries=entries,
         cache_dir=args.cache_dir,
+        receipt_dir=args.receipt_dir,
         endpoint=args.endpoint,
         local_files_only=args.local_files_only,
         extra={"model_id": args.model, "load_path": None},
@@ -386,7 +400,7 @@ def runtime_command(args: argparse.Namespace) -> dict[str, object]:
     manifest_sha256 = sha256_file(manifest_path)
     if args.local_files_only:
         prior_path = receipt_destination(
-            args.cache_dir, repo, resolved, "runtime-artifact"
+            args.cache_dir, repo, resolved, "runtime-artifact", args.receipt_dir
         )
         prior = load_json(prior_path, "cached runtime receipt")
         if prior.get("manifest_sha256") != manifest_sha256:
@@ -427,6 +441,7 @@ def runtime_command(args: argparse.Namespace) -> dict[str, object]:
         resolved_revision=resolved,
         entries=entries,
         cache_dir=args.cache_dir,
+        receipt_dir=args.receipt_dir,
         endpoint=args.endpoint,
         local_files_only=args.local_files_only,
         extra={
@@ -441,7 +456,7 @@ def runtime_command(args: argparse.Namespace) -> dict[str, object]:
         for entry in receipt["files"]
     }
     receipt["load_path"] = paths[PurePosixPath(load_path)]
-    write_receipt(args.cache_dir, receipt)
+    write_receipt(args.cache_dir, receipt, args.receipt_dir)
     return receipt
 
 
@@ -450,6 +465,11 @@ def parse_args() -> argparse.Namespace:
         description="Fetch hash-verified Evo checkpoints through the Hugging Face cache"
     )
     parser.add_argument("--cache-dir", type=Path, default=default_cache_dir())
+    parser.add_argument(
+        "--receipt-dir",
+        type=Path,
+        help="write verification receipts outside the Hugging Face cache",
+    )
     parser.add_argument("--endpoint", default=os.environ.get("HF_ENDPOINT"))
     parser.add_argument("--local-files-only", action="store_true")
     parser.add_argument("--print-path", action="store_true")
@@ -469,6 +489,8 @@ def main() -> int:
     args = parse_args()
     try:
         args.cache_dir = args.cache_dir.expanduser().resolve()
+        if args.receipt_dir is not None:
+            args.receipt_dir = args.receipt_dir.expanduser().resolve()
         if args.command == "source":
             args.registry = args.registry.expanduser().resolve()
             receipt = source_command(args)

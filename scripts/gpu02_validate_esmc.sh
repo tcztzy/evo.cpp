@@ -17,6 +17,7 @@ source_fingerprint="$(dirname "$binary")/.evo-source-fingerprint"
 test -s "$source_fingerprint"
 revision_tag="${EVO_ESMC_REVISION_TAG:-$(cut -c1-12 "$source_fingerprint")}"
 artifact_dir="${EVO_ESMC_ACCEPTANCE_DIR:-$HOME/evo.cpp-artifacts/t22-esmc-$revision_tag}"
+receipt_dir="$artifact_dir/receipts"
 
 test -x "$binary"
 test -f "$registry"
@@ -79,6 +80,7 @@ for model_id in $models; do
   fetch_arguments=(
     "$source_dir/tools/evo_fetch.py"
     --cache-dir "$cache_dir"
+    --receipt-dir "$receipt_dir"
   )
   if test "${EVO_ESMC_FETCH_ONLINE:-0}" != "1"; then
     fetch_arguments+=(--local-files-only)

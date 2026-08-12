@@ -572,6 +572,7 @@ def main() -> int:
         assert model_id in esmc_validation
     assert "tools/evo_fetch.py" in esmc_validation
     assert "--local-files-only" in esmc_validation
+    assert '--receipt-dir "$receipt_dir"' in esmc_validation
     assert (
         "/build/grp_icg/users/tang/.cache/huggingface" in esmc_validation
     )
