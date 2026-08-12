@@ -51,4 +51,15 @@ int main() {
     indices(model.attention);
     std::cout << '\n';
   }
+  for (const auto &architecture : evo::architecture_specs()) {
+    const char *tokenizer =
+        architecture.tokenizer == evo::ArchitectureTokenizer::kByteIdentity
+            ? "byte"
+            : "hyenadna-character";
+    std::cout << "@|" << architecture.id << '|'
+              << architecture.artifact_profile << '|'
+              << architecture.runtime_abi << '|' << tokenizer << '|'
+              << architecture.backends << '|' << architecture.capabilities
+              << '|' << (architecture.synthetic_fixture ? 1 : 0) << '\n';
+  }
 }

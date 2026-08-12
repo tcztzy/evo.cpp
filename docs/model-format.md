@@ -1,8 +1,9 @@
-# Evo 2 Safetensors runtime profile
+# Safetensors runtime profiles
 
-`evo.cpp` 使用标准 Safetensors 作为唯一生产模型格式，并在其上定义一个严格、
-确定性的 `evo2-runtime-v1` profile。单文件使用 `.safetensors` 后缀；大模型
-使用标准 Safetensors 分片名与 `model.safetensors.index.json`。
+`evo.cpp` 使用标准 Safetensors 作为生产模型容器。Evo 2 保持严格、确定性的
+`evo2-runtime-v1` profile；第二个 model family 使用独立的
+`hyenadna-runtime-v1` profile。单文件使用 `.safetensors` 后缀；大模型使用
+标准 Safetensors 分片名与 `model.safetensors.index.json`。
 
 ## 为什么直接建立在 Safetensors 上
 
@@ -24,19 +25,21 @@ dense tensor data buffer
 ```
 
 `data_offsets` 相对 data buffer 起点。所有 tensor 必须按 offset 连续排列，
-不允许洞、重叠、别名、尾随数据或截断。物理顺序为：
+不允许洞、重叠、别名、尾随数据或截断。Evo 2 profile 的物理顺序为：
 
 1. `embedding_layer.weight`
 2. `unembed.weight`
 3. `norm.scale`
 4. 按 block 编号和 native load order 排列的 layer tensor
 
-shard 不绑定 GPU 数量；runtime 根据各 layer 的 payload bytes 选择连续 pipeline
-分段。
+其他已注册 profile 使用各自 converter manifest 中的确定性顺序；不依赖源文件
+JSON key 顺序。shard 不绑定 GPU 数量；runtime 根据各 layer 的 payload bytes
+选择连续 pipeline 分段。
 
 ## 按大小分片
 
-转换器默认以 4 GiB tensor payload 为目标大小，按上述物理顺序贪心装填 shard：
+转换器默认以 4 GiB tensor payload 为目标大小，按对应 profile 的确定性物理顺序
+贪心装填 shard：
 
 ```text
 model-00001-of-00004.safetensors
@@ -104,12 +107,23 @@ Safetensors 的 `__metadata__` 值只能是字符串。profile 用稳定前缀�
 | `l:` | comma-separated uint64 list | `l:3,10,17` |
 | `x:` | bytes，lowercase hex | `x:00ff` |
 
-必需键：
+Evo 2 必需键保持不变：
 
 ```text
 evo2.profile = s:evo2-runtime-v1
 runtime.abi  = s:evo2-safetensors-v1
 ```
+
+HyenaDNA 使用不冒充 Evo 2 的独立键值：
+
+```text
+runtime.profile = s:hyenadna-runtime-v1
+runtime.abi     = s:hyenadna-safetensors-v1
+```
+
+每个 shard 必须恰好包含一种已注册 profile key，且所有 shard metadata 完全
+相同。profile、ABI、`model.architecture` 和 backend support 由 architecture
+registry 联合校验，文件名不参与识别。
 
 转换器还记录 model ID、拓扑、source repo/revision、checkpoint 文件名/大小/
 SHA、precision policy 和 converter producer。tensor descriptor 与官方 registry
@@ -125,7 +139,7 @@ reader 在 CUDA allocation 前验证：
 - JSON root、字段和键唯一；
 - metadata 均使用已知 typed prefix；
 - tensor 名、dtype、rank、shape、size、offset 和总文件范围；
-- `evo2.profile`、runtime ABI 与官方模型 signature。
+- artifact profile、runtime ABI、architecture registry 与对应 tensor signature。
 
 Safetensors header/range 校验防止越界和结构损坏。artifact 的真实性及完整文件
 校验由可信渠道中的 SHA256 负责；转换结果不提交 Git，发布时在外部 manifest

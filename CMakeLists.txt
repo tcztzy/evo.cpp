@@ -57,6 +57,7 @@ add_library(
   evo_core STATIC
   src/cli.cpp
   src/cpu_reference.cpp
+  src/cpu/hyenadna.cpp
   src/cpu/model.cpp
   src/cpu/inference_cli.cpp
   src/backend.cpp
@@ -533,6 +534,17 @@ if(BUILD_TESTING)
   elseif(MSVC)
     target_compile_options(evo-cpu-c-api-tests PRIVATE /W4)
   endif()
+  add_executable(evo-hyenadna-c-api-tests tests/test_hyenadna_c_api.c)
+  target_link_libraries(evo-hyenadna-c-api-tests PRIVATE evo::evo)
+  if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(
+      evo-hyenadna-c-api-tests PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
+    if(EVO_WARNINGS_AS_ERRORS)
+      target_compile_options(evo-hyenadna-c-api-tests PRIVATE -Werror)
+    endif()
+  elseif(MSVC)
+    target_compile_options(evo-hyenadna-c-api-tests PRIVATE /W4)
+  endif()
   add_test(
     NAME cpu_backend
     COMMAND ${Python3_EXECUTABLE}
@@ -544,6 +556,19 @@ if(BUILD_TESTING)
       --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/cpu-backend)
   set_tests_properties(
     cpu_backend PROPERTIES ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools")
+  add_test(
+    NAME hyenadna_backend
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_hyenadna_backend.py
+      --binary $<TARGET_FILE:evo-cpu-cli-test-bin>
+      --inspector $<TARGET_FILE:evo-inspect>
+      --c-api-binary $<TARGET_FILE:evo-hyenadna-c-api-tests>
+      --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_tiny_hyenadna.py
+      --converter ${CMAKE_CURRENT_SOURCE_DIR}/tools/convert_hyenadna_checkpoint.py
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/hyenadna-backend)
+  set_tests_properties(
+    hyenadna_backend
+    PROPERTIES ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools")
 
   add_executable(evo-fp8-tests tests/test_fp8.cpp)
   target_link_libraries(evo-fp8-tests PRIVATE evo_core)

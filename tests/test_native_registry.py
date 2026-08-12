@@ -23,8 +23,13 @@ def main() -> int:
         [str(args.binary)], check=True, text=True, capture_output=True
     ).stdout.splitlines()
     native: dict[str, list[str]] = {}
+    architectures: dict[str, list[str]] = {}
     for line in lines:
         fields = line.split("|")
+        if fields[0] == "@":
+            assert len(fields) == 8, line
+            architectures[fields[1]] = fields[2:]
+            continue
         assert len(fields) == 20, line
         native[fields[0]] = fields[1:]
     assert set(native) == set(registry["models"])
@@ -52,6 +57,28 @@ def main() -> int:
         assert indices(fields[16]) == profile["hcm_layer_idxs"]
         assert indices(fields[17]) == profile["hcl_layer_idxs"]
         assert indices(fields[18]) == profile["attn_layer_idxs"]
+    assert set(architectures) == {
+        "StripedHyena2",
+        "StripedHyena2Test",
+        "HyenaDNA",
+        "HyenaDNATest",
+    }
+    assert architectures["StripedHyena2"] == [
+        "evo2-runtime-v1",
+        "evo2-safetensors-v1",
+        "byte",
+        "3",
+        "31",
+        "0",
+    ]
+    assert architectures["HyenaDNA"] == [
+        "hyenadna-runtime-v1",
+        "hyenadna-safetensors-v1",
+        "hyenadna-character",
+        "1",
+        "31",
+        "0",
+    ]
     return 0
 
 

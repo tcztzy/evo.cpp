@@ -1,4 +1,4 @@
-# Evo 2 checkpoint conversion
+# Checkpoint conversion
 
 生产 runtime 只读取 `evo2-runtime-v1` Safetensors。Arc `.pt` 与 BioNeMo DCP
 都在离线环境中转换；推理进程不加载 Python、PyTorch 或 libtorch。
@@ -99,3 +99,27 @@ sha256sum -c MODEL.safetensors.sha256
 
 仓库只保存 source lock、转换代码和格式/profile 测试，不保存 checkpoint、
 转换结果或易失的本地绝对路径。
+
+## HyenaDNA Hugging Face Safetensors
+
+HyenaDNA 转换不需要 PyTorch 或 `safetensors` Python package；converter 严格读取
+上游 Safetensors header、F32 tensor manifest 与 `config.json`，再写独立的
+`hyenadna-runtime-v1` typed artifact：
+
+```sh
+PYTHONPATH=tools python3 tools/convert_hyenadna_checkpoint.py \
+  --input model.safetensors --config config.json \
+  --output hyenadna.safetensors \
+  --model-id LongSafari/hyenadna-tiny-1k-seqlen-hf \
+  --revision e8c1effa8673814e257e627d2e1eda9ea5a373f6 \
+  --source-sha256 5ce2146c21e9c4baa6bddc4998fd3d029903ae84a563bf80218644082194a12d
+
+build/evo-inspect hyenadna.safetensors
+build/evo -m hyenadna.safetensors --backend cpu --ctx 1026 \
+  --score sequences.fa
+```
+
+首版接受 official F32 causal-LM tensor layout、order 2、3-tap short filter、
+12-token source vocabulary padded 到 16，以及 `max_seq_len ≤ 4096`。其他
+topology、dtype、缺失/额外 tensor 或 source hash 不一致均 typed fail。完整
+runtime/tokenizer 边界见 [architecture registry](architectures.md)。

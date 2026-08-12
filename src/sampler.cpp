@@ -13,8 +13,9 @@ Status validate_sampling_config(const SamplingConfig& config) {
   if (!std::isfinite(config.temperature) || config.temperature <= 0.0F) {
     return {ErrorCode::kInvalidArgument, "temperature must be finite and greater than zero"};
   }
-  if (config.top_k > kTokenizerVocabSize) {
-    return {ErrorCode::kInvalidArgument, "top-k must be in [0, 512]"};
+  if (config.top_k >
+      static_cast<std::size_t>(std::numeric_limits<TokenId>::max()) + 1U) {
+    return {ErrorCode::kInvalidArgument, "top-k exceeds the token ID range"};
   }
   if (!std::isfinite(config.top_p) || config.top_p <= 0.0F || config.top_p > 1.0F) {
     return {ErrorCode::kInvalidArgument, "top-p must be finite and in (0, 1]"};
@@ -32,9 +33,15 @@ Status Sampler::sample(const std::vector<float>& logits, TokenId* const token) {
   if (!status.ok()) {
     return status;
   }
-  if (logits.size() != kTokenizerVocabSize) {
+  if (logits.empty() ||
+      logits.size() >
+          static_cast<std::size_t>(std::numeric_limits<TokenId>::max()) + 1U) {
     return {ErrorCode::kInvalidArgument,
-            "sampler requires exactly 512 logits, got " + std::to_string(logits.size())};
+            "sampler logits do not fit the token ID range"};
+  }
+  if (config_.top_k > logits.size()) {
+    return {ErrorCode::kInvalidArgument,
+            "top-k exceeds the model vocabulary"};
   }
   for (std::size_t index = 0; index < logits.size(); ++index) {
     if (!std::isfinite(logits[index])) {

@@ -2,23 +2,33 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "evo/model_format.hpp"
+#include "evo/model_registry.hpp"
 #include "evo/status.hpp"
 #include "evo/tokenizer.hpp"
 
 namespace evo::cpu {
 
+namespace detail {
+class HyenaDnaModel;
+class HyenaDnaContext;
+} // namespace detail
+
 struct ModelConfig final {
   std::string model_id;
+  std::string architecture;
   std::size_t vocab_size{0};
   std::size_t width{0};
   std::size_t layers{0};
   std::size_t max_seqlen{0};
   bool test_fixture{false};
+  ArchitectureTokenizer tokenizer{ArchitectureTokenizer::kByteIdentity};
 };
 
 class Model final {
@@ -34,10 +44,14 @@ public:
                             bool allow_test_fixture = false);
   [[nodiscard]] const ModelConfig &config() const noexcept;
   [[nodiscard]] const char *kernel_name() const noexcept;
+  [[nodiscard]] Status encode(std::string_view sequence,
+                              std::vector<TokenId> *tokens) const;
+  [[nodiscard]] Status decode_token(TokenId token, std::uint8_t *byte) const;
 
 private:
   struct Impl;
   std::shared_ptr<Impl> impl_;
+  std::shared_ptr<detail::HyenaDnaModel> hyena_;
   friend class Context;
 };
 
@@ -79,6 +93,7 @@ public:
 private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
+  std::unique_ptr<detail::HyenaDnaContext> hyena_;
 };
 
 } // namespace evo::cpu

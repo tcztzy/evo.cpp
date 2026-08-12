@@ -69,7 +69,7 @@ T6|x|实现 HF revision/hash/cache 获取、CI 与预编译 release pipeline|V2,
 T7|x|实现共享 model 的 scheduler、dynamic batching 与 bio-native server|V8,V10,V13,V16,I7
 T8|x|设计并实现 fast/quantized profiles + 数值/科学 benchmark gates|V1,V7,V9,V10,V16,I4
 T9|x|实现向量化 CPU backend 与显式 CPU+GPU offload policy|V2,V7,V9,V10,V16,I2,I3
-T10|.|抽象 architecture registry；接入第二个生物序列模型 family|V7,V8,V10,V11,V16,I2,I3,I4
+T10|x|抽象 architecture registry；接入第二个生物序列模型 family|V7,V8,V10,V11,V16,I2,I3,I4
 T11|.|补 FASTQ/gzip/stdin/VCF/reference IO 与坐标输出格式|V3,V5,V6,V12,V16,I5,I6
 T12|.|完善贡献指南、兼容策略、benchmark matrix 与 release 文档|V7,V14,V15,V16,I8
 
@@ -87,3 +87,10 @@ B8|2026-08-12|profile flag 在 CPU-only C ABI 中完成校验但仅由 CUDA 分�
 B9|2026-08-12|NEON dot-product 分支后 scalar fallback 仍参与同一作用域编译，且 FIR helper 残留无效参数→Apple ARM `-Werror` build 失败|V16
 B10|2026-08-12|CPU CLI 把 `std::filesystem` 引入 `evo_core`，但 GCC 8 的 `stdc++fs` 只链接到两个旧 test target→新 CPU consumer 链接失败|V16
 B11|2026-08-12|新增 CPU backend 时改写 CPU-only binary 的既有 CUDA unsupported 文案→旧 CLI contract/script 失配|V15,V16
+B12|2026-08-12|HyenaDNA internal header 与实现同在 `src/cpu`，include 却重复添加 `cpu/`；target 未暴露 `src` include root→T10 首次 build 失败|V16
+B13|2026-08-12|sampler 用全局 Evo 2 `512` 常量校验 logits/top-k→第二个 architecture 的 16-token vocabulary 无法 generation|V7,V10,V16
+B14|2026-08-12|server load gate 独立重复 `vocab == 512` 假设→HyenaDNA 已通过 registry/C ABI 仍在启动末端被拒绝|V7,V10,V16
+B15|2026-08-12|C ABI sampler 测试把 Evo 2 的 512 logits 当作全局契约→动态词表实现正确后仍被旧断言判失败|V7,V10,V16
+B16|2026-08-12|metadata-only C ABI fixture 未声明新增的 architecture/runtime ABI→全量 contract 在注册表校验前失败|V10,V14,V16
+B17|2026-08-12|model-format fixture 增加 registry metadata 后仍写死旧 metadata count→格式解析成功却被脆弱断言判失败|V10,V16
+B18|2026-08-12|HyenaDNA acceptance fixture 依赖 NumPy，但 gpu02 的可复现 Nix Python 不含该包→CUDA 门无法运行独立 oracle|V2,V16,V19

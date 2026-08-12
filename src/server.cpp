@@ -268,7 +268,7 @@ private:
 
   struct ScoreState final {
     const CancellationToken *cancel{nullptr};
-    std::string_view sequence;
+    const std::vector<std::uint32_t> *tokens{nullptr};
     std::vector<double> scores;
     std::string error;
   };
@@ -309,11 +309,11 @@ private:
       return EVO_STATUS_INVALID_ARGUMENT;
     for (std::size_t local = 0; local < rows; ++local) {
       const std::size_t row = token_offset + local;
-      if (row + 1 >= state->sequence.size())
+      if (state->tokens == nullptr || row + 1 >= state->tokens->size())
         break;
-      const auto target = static_cast<unsigned char>(state->sequence[row + 1]);
-      if (static_cast<std::size_t>(target) >= columns) {
-        state->error = "target byte is outside the model vocabulary";
+      const auto target = (*state->tokens)[row + 1];
+      if (target >= columns) {
+        state->error = "target token is outside the model vocabulary";
         return EVO_STATUS_MODEL_FORMAT;
       }
       const float *const values = logits + local * columns;
@@ -433,6 +433,20 @@ private:
         sequence.size());
   }
 
+  evo_status tokenize(const std::string_view sequence,
+                      std::vector<std::uint32_t> *const tokens) const {
+    std::size_t count = 0;
+    evo_status status = evo_model_encode(
+        model_.get(), reinterpret_cast<const std::uint8_t *>(sequence.data()),
+        sequence.size(), nullptr, 0, &count);
+    if (status != EVO_STATUS_OK)
+      return status;
+    tokens->resize(count);
+    return evo_model_encode(
+        model_.get(), reinterpret_cast<const std::uint8_t *>(sequence.data()),
+        sequence.size(), tokens->data(), tokens->size(), &count);
+  }
+
   ServerResponse generate(const JsonValue &root,
                           const CancellationToken &cancel) const {
     auto status = require_object(root, {"prompt", "max_tokens", "temperature",
@@ -509,12 +523,13 @@ private:
                                     logits.last.size(), &token);
       if (c_status != EVO_STATUS_OK)
         return c_error(c_status, "sampling failed");
-      if (token > 255U) {
-        return error_response(422, "model_format",
-                              "sampled token has no byte representation");
-      }
+      std::uint8_t byte = 0;
+      c_status = evo_model_decode_token(model_.get(), token, &byte);
+      if (c_status != EVO_STATUS_OK)
+        return c_error(c_status,
+                       "sampled token has no raw sequence representation");
       tokens.push_back(token);
-      generated.push_back(static_cast<char>(token));
+      generated.push_back(static_cast<char>(byte));
       if (step + 1 == maximum_tokens)
         break;
       c_status =
@@ -551,7 +566,11 @@ private:
     c_status = make_batch(sequence, &batch);
     if (c_status != EVO_STATUS_OK)
       return c_error(c_status, "failed to create score batch");
-    ScoreState state{&cancel, sequence, {}, {}};
+    std::vector<std::uint32_t> target_tokens;
+    c_status = tokenize(sequence, &target_tokens);
+    if (c_status != EVO_STATUS_OK)
+      return c_error(c_status, "failed to tokenize score sequence");
+    ScoreState state{&cancel, &target_tokens, {}, {}};
     state.scores.reserve(sequence.size() - 1);
     c_status =
         evo_context_prefill(context.get(), batch.get(), score_logits, &state);
@@ -1309,9 +1328,12 @@ Status run_server(const CliOptions &options, const bool allow_test_fixture) {
   ModelPtr model{raw_model, &evo_model_free};
   if (load_status != EVO_STATUS_OK)
     return status_from_c(load_status, "server model load: ");
-  if (evo_model_vocab_size(model.get()) != 512)
+  if (evo_model_vocab_size(model.get()) == 0 ||
+      evo_model_vocab_size(model.get()) >
+          static_cast<std::size_t>(std::numeric_limits<TokenId>::max()) + 1U) {
     return {ErrorCode::kModelFormat,
-            "server requires the 512-token Evo byte vocabulary"};
+            "server model vocabulary does not fit the public token type"};
+  }
   const std::size_t model_context = evo_model_max_context(model.get());
   if (model_context != 0 && options.context_size > model_context)
     return {ErrorCode::kInvalidArgument,

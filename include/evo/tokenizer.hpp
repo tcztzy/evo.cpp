@@ -6,6 +6,7 @@
 #include <string_view>
 #include <vector>
 
+#include "evo/model_registry.hpp"
 #include "evo/status.hpp"
 
 namespace evo {
@@ -21,5 +22,14 @@ inline constexpr TokenId kPadToken = 1;
 
 // IDs 256..511 have logits but no byte representation in the supported tokenizer.
 [[nodiscard]] Status token_to_byte(TokenId token, std::uint8_t* byte);
+
+// Architecture-aware raw biological sequence conversion. Special tokens are
+// never inserted implicitly; callers control causal prompt boundaries.
+[[nodiscard]] Status encode_sequence(ArchitectureTokenizer tokenizer,
+                                     std::string_view sequence,
+                                     std::vector<TokenId> *tokens);
+[[nodiscard]] Status decode_sequence_token(ArchitectureTokenizer tokenizer,
+                                           TokenId token,
+                                           std::uint8_t *byte);
 
 }  // namespace evo

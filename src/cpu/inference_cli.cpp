@@ -181,7 +181,10 @@ Status run_generate(const CliOptions &options, const Model &model) {
   auto status = context.initialize_shared(model, options.context_size);
   if (!status.ok())
     return status;
-  const auto prompt = encode_bytes(options.prompt);
+  std::vector<TokenId> prompt;
+  status = model.encode(options.prompt, &prompt);
+  if (!status.ok())
+    return status;
   const auto prefill_count =
       std::min(prompt.size(),
                options.force_prompt_threshold.value_or(
@@ -215,7 +218,7 @@ Status run_generate(const CliOptions &options, const Model &model) {
     if (!status.ok())
       return status;
     std::uint8_t byte = 0;
-    status = token_to_byte(token, &byte);
+    status = model.decode_token(token, &byte);
     if (!status.ok())
       return status;
     generated.push_back(static_cast<char>(byte));
@@ -253,7 +256,10 @@ Status run_score(const CliOptions &options, const Model &model) {
         auto inner = context.initialize_shared(model, options.context_size);
         if (!inner.ok())
           return inner;
-        const auto tokens = encode_bytes(record.bytes);
+        std::vector<TokenId> tokens;
+        inner = model.encode(record.bytes, &tokens);
+        if (!inner.ok())
+          return inner;
         std::vector<float> logits;
         std::vector<double> scores;
         inner = prefill(&context, tokens, options.dump_logits_path.has_value(),
@@ -283,7 +289,10 @@ Status sequence_score(const std::string_view sequence, const Model &model,
   auto status = context.initialize_shared(model, capacity);
   if (!status.ok())
     return status;
-  const auto tokens = encode_bytes(sequence);
+  std::vector<TokenId> tokens;
+  status = model.encode(sequence, &tokens);
+  if (!status.ok())
+    return status;
   std::vector<float> logits;
   std::vector<double> scores;
   status = prefill(&context, tokens, false, &logits, &scores);
@@ -414,7 +423,10 @@ Status run_embed(const CliOptions &options, const Model &model) {
         auto status = context.initialize_shared(model, options.context_size);
         if (!status.ok())
           return status;
-        const auto tokens = encode_bytes(record.bytes);
+        std::vector<TokenId> tokens;
+        status = model.encode(record.bytes, &tokens);
+        if (!status.ok())
+          return status;
         std::vector<float> all;
         std::size_t offset = 0;
         bool first = true;

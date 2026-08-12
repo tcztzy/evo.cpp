@@ -16,6 +16,8 @@ from typing import Protocol
 
 PROFILE_KEY = "evo2.profile"
 PROFILE_VALUE = "evo2-runtime-v1"
+RUNTIME_PROFILE_KEY = "runtime.profile"
+HYENADNA_PROFILE_VALUE = "hyenadna-runtime-v1"
 HEADER_ALIGNMENT = 8
 MAX_HEADER_SIZE = 16 * 1024 * 1024
 MAX_RANK = 8
@@ -122,25 +124,35 @@ def _encode_metadata_value(value: object) -> str:
     raise FormatError(f"unsupported metadata value type: {type(value).__name__}")
 
 
-def encode_metadata(metadata: Mapping[str, object]) -> dict[str, str]:
+def encode_metadata(
+    metadata: Mapping[str, object], artifact_profile: str = PROFILE_VALUE
+) -> dict[str, str]:
     if len(metadata) >= 4096:
         raise FormatError("metadata entry count exceeds 4095")
     encoded: dict[str, str] = {}
     for key in sorted(metadata):
         if not KEY_PATTERN.fullmatch(key) or len(key.encode("ascii")) > 255:
             raise FormatError(f"invalid metadata key {key!r}")
-        if key == PROFILE_KEY:
-            raise FormatError(f"{PROFILE_KEY} is reserved by the writer")
+        if key in {PROFILE_KEY, RUNTIME_PROFILE_KEY}:
+            raise FormatError(f"{key} is reserved by the writer")
         encoded[key] = _encode_metadata_value(metadata[key])
-    encoded[PROFILE_KEY] = f"s:{PROFILE_VALUE}"
+    if artifact_profile == PROFILE_VALUE:
+        encoded[PROFILE_KEY] = f"s:{PROFILE_VALUE}"
+    elif artifact_profile == HYENADNA_PROFILE_VALUE:
+        encoded[RUNTIME_PROFILE_KEY] = f"s:{HYENADNA_PROFILE_VALUE}"
+    else:
+        raise FormatError(f"unsupported artifact profile {artifact_profile!r}")
     return dict(sorted(encoded.items()))
 
 
 def _encode_header(
     metadata: Mapping[str, object],
     tensors: Sequence[TensorSource],
+    artifact_profile: str,
 ) -> bytes:
-    root: dict[str, object] = {"__metadata__": encode_metadata(metadata)}
+    root: dict[str, object] = {
+        "__metadata__": encode_metadata(metadata, artifact_profile)
+    }
     offset = 0
     for source in tensors:
         end = offset + source.nbytes
@@ -237,10 +249,11 @@ def _write_safetensors(
     metadata: Mapping[str, object],
     tensors: Sequence[TensorSource],
     *,
+    artifact_profile: str,
     chunk_size: int,
     progress: Callable[[TensorSource], None] | None,
 ) -> Path:
-    encoded_header = _encode_header(metadata, tensors)
+    encoded_header = _encode_header(metadata, tensors, artifact_profile)
     temporary, temp_path = _temporary_path(output_path)
     try:
         with temporary as output:
@@ -349,6 +362,7 @@ def write_model(
     metadata: Mapping[str, object],
     tensors: Sequence[TensorSource],
     *,
+    artifact_profile: str = PROFILE_VALUE,
     force: bool = False,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     max_shard_size: int = DEFAULT_MAX_SHARD_SIZE,
@@ -405,6 +419,7 @@ def write_model(
                     shard_path,
                     metadata,
                     shard,
+                    artifact_profile=artifact_profile,
                     chunk_size=chunk_size,
                     progress=report,
                 )

@@ -22,7 +22,7 @@ extern "C" {
 #endif
 
 #define EVO_ABI_VERSION_MAJOR 1u
-#define EVO_ABI_VERSION_MINOR 2u
+#define EVO_ABI_VERSION_MINOR 3u
 #define EVO_ABI_VERSION_PATCH 0u
 #define EVO_ABI_VERSION_ENCODE(major, minor, patch)                            \
   ((((uint32_t)(major) & 0xffu) << 24u) |                                      \
@@ -121,6 +121,16 @@ EVO_API size_t evo_model_vocab_size(const evo_model *model);
 EVO_API size_t evo_model_max_context(const evo_model *model);
 EVO_API size_t evo_model_embedding_width(const evo_model *model);
 EVO_API size_t evo_model_layer_count(const evo_model *model);
+// Converts raw sequence bytes with the model architecture's tokenizer. With a
+// null token buffer, returns the required token count through token_count.
+EVO_API evo_status evo_model_encode(const evo_model *model,
+                                    const uint8_t *sequence,
+                                    size_t sequence_length, uint32_t *tokens,
+                                    size_t token_capacity,
+                                    size_t *token_count);
+EVO_API evo_status evo_model_decode_token(const evo_model *model,
+                                          uint32_t token,
+                                          uint8_t *byte_out);
 
 // Contexts retain the immutable model artifact, so the model handle may be
 // freed after context creation. A context itself is single-threaded.

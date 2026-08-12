@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "evo/model_format.hpp"
 
+#include "evo/model_registry.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -878,18 +880,36 @@ Status ModelFile::parse_shard(const std::size_t shard_index) {
             [](const MetadataEntry &left, const MetadataEntry &right) {
               return left.key < right.key;
             });
-  const auto profile =
-      std::find_if(shard_metadata.begin(), shard_metadata.end(),
-                   [](const MetadataEntry &entry) {
-                     return entry.key == "evo2.profile";
-                   });
-  if (profile == shard_metadata.end() ||
-      profile->type != MetadataType::kString ||
-      std::string_view{reinterpret_cast<const char *>(profile->value.data()),
-                       profile->value.size()} != kModelProfile) {
-    return format_error("missing or unsupported evo2.profile metadata");
+  const auto find_profile = [&](const std::string_view key) {
+    return std::find_if(shard_metadata.begin(), shard_metadata.end(),
+                        [key](const MetadataEntry &entry) {
+                          return entry.key == key;
+                        });
+  };
+  const auto evo_profile = find_profile("evo2.profile");
+  const auto runtime_profile = find_profile("runtime.profile");
+  if ((evo_profile == shard_metadata.end()) ==
+      (runtime_profile == shard_metadata.end())) {
+    return format_error(
+        "exactly one registered artifact profile metadata key is required");
+  }
+  const auto profile = evo_profile != shard_metadata.end() ? evo_profile
+                                                            : runtime_profile;
+  if (profile->type != MetadataType::kString) {
+    return format_error("artifact profile metadata must be a string");
+  }
+  const std::string_view profile_value{
+      reinterpret_cast<const char *>(profile->value.data()),
+      profile->value.size()};
+  if (find_artifact_profile(profile_value) == nullptr) {
+    return format_error("unsupported artifact profile '" +
+                        std::string{profile_value} + "'");
+  }
+  if (!profile_.empty() && profile_ != profile_value) {
+    return format_error("artifact profile differs between shards");
   }
   if (metadata_.empty()) {
+    profile_ = profile_value;
     metadata_ = std::move(shard_metadata);
   } else if (!metadata_equal(metadata_, shard_metadata)) {
     return format_error("metadata differs between shards");

@@ -108,9 +108,12 @@ int main(int argc, char **argv) {
   check(evo_sampler_sample(sampler, logits, 512, &token) == EVO_STATUS_OK &&
             token == 37,
         "greedy C sampler selects the exact maximum");
-  check(evo_sampler_sample(sampler, logits, 511, &token) ==
+  check(evo_sampler_sample(sampler, logits, 511, &token) == EVO_STATUS_OK &&
+            token == 37,
+        "sampler accepts a model-defined vocabulary width");
+  check(evo_sampler_sample(sampler, logits, 0, &token) ==
             EVO_STATUS_INVALID_ARGUMENT,
-        "sampler rejects the wrong vocabulary width");
+        "sampler rejects an empty vocabulary");
   evo_sampler_free(sampler);
 
   evo_model_free(NULL);

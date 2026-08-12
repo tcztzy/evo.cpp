@@ -69,7 +69,7 @@ public:
     return "SAFETENSORS";
   }
   [[nodiscard]] std::string_view profile() const noexcept {
-    return kModelProfile;
+    return profile_;
   }
   [[nodiscard]] std::size_t file_size() const noexcept {
     return file_size_;
@@ -100,6 +100,7 @@ private:
   std::vector<MappedFile> mappings_;
   std::vector<MetadataEntry> metadata_;
   std::vector<TensorInfo> tensors_;
+  std::string profile_;
   std::size_t file_size_{0};
 };
 

@@ -4,13 +4,15 @@
 
 **English** | [简体中文](README.zh_CN.md)
 
-`evo.cpp` is a focused C++17 runtime and local server for Evo 2 inference,
+`evo.cpp` is a focused C++17 biological-sequence runtime and local server,
 with portable CPU execution and exact or accelerated CUDA profiles. Its exact
 kernels retain batch-one semantics while the server runs isolated request
 contexts against shared immutable weights. It runs the official 1B, 7B, 20B,
 and 40B checkpoints on one to four NVIDIA GPUs
 from strictly validated Safetensors—without PyTorch, Vortex, Transformer
 Engine, Python, or Hopper-only FP8 instructions at inference time.
+An architecture registry also runs the official F32 HyenaDNA causal-LM family
+on CPU through the same CLI, C ABI, embedding, variant, and server surfaces.
 
 ## Why evo.cpp?
 
@@ -91,6 +93,17 @@ build/Release/evo -m "$MODEL" --gpu 0 --gpu-layers 16 \
   --score sequences.fa --ctx 8192
 ```
 
+For the second registered family, convert an official HyenaDNA Hugging Face
+Safetensors artifact and select CPU explicitly:
+
+```sh
+PYTHONPATH=tools python3 tools/convert_hyenadna_checkpoint.py \
+  --input model.safetensors --config config.json \
+  --output hyenadna.safetensors
+build/Release/evo -m hyenadna.safetensors --backend cpu \
+  --ctx 1026 --score sequences.fa
+```
+
 All commands default to `--profile exact`, including at long context lengths.
 `--profile fast-q8-kv` is an explicit experimental, approximate paged-cache
 mode; it is never selected from context length alone.
@@ -114,6 +127,7 @@ Start with the [model-size exactness record](docs/model-size-validation.md),
 then see the [7B first-divergence audit](docs/vortex-7b-bit-exactness.md),
 [numerical contracts](docs/math-semantics.md),
 [execution profiles and acceptance gates](docs/execution-profiles.md),
+[architecture registry and HyenaDNA boundary](docs/architectures.md),
 [checkpoint conversion](docs/checkpoint-conversion.md), and
 [artifact acquisition and releases](docs/artifact-distribution.md),
 [embedding outputs](docs/embeddings.md),

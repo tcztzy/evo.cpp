@@ -18,6 +18,9 @@ and other languages with a C foreign-function interface.
 - ABI 1.2 adds explicit execution profiles. A zero-initialized context remains
   exact; new callers can opt into the approximate Q8 cache without changing
   model loading or artifact identity.
+- ABI 1.3 adds architecture-aware `evo_model_encode()` and
+  `evo_model_decode_token()`. Existing batch ownership/layout is unchanged;
+  raw sequences are tokenized by the context's registered architecture.
 - A CUDA model handle owns one uploaded copy of the read-only weights plus the
   mapped artifact. Contexts share those immutable device allocations while
   owning independent streams, activation arenas, and recurrent/KV caches. A
@@ -57,6 +60,12 @@ profile. A model loaded with `EVO_BACKEND_CPU` accepts zero context flags and
 reports `cpu-f32`. By contrast, `evo_model_profile()` returns artifact
 metadata.
 
+Call `evo_model_encode()` first with a null output buffer to query token count,
+then with caller-owned `uint32_t` storage. `evo_model_decode_token()` converts
+one sampled token back to a raw sequence byte or returns a typed error for a
+special token. These calls remove the former assumption that every model uses
+Evo 2's byte-identity vocabulary.
+
 `evo_context_prefill()` accepts an opaque batch and emits logits through a
 chunk callback. The callback view is borrowed and valid only during that call;
 this keeps host memory bounded by the backend activation chunk. Returning a
@@ -70,9 +79,9 @@ ABI; the CLI supplies exact `none`, `mean`, and `last` policies.
 
 Current CPU and CUDA backends accept one sequence per batch. Larger batch
 objects are ABI-valid but return `EVO_STATUS_UNSUPPORTED` at execution time,
-rather than silently changing semantics. CPU artifact loading and metadata are
-available in CPU-only builds; CPU inference remains an explicit unsupported
-operation. CPU+GPU layer placement is a CLI policy; the stable C ABI requires
+rather than silently changing semantics. CPU inference is available in
+CPU-only builds and shares mmap-backed weights across isolated contexts.
+CPU+GPU layer placement is a CLI policy; the stable C ABI requires
 the caller to choose one backend per model handle.
 
 ## Installation

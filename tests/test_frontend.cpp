@@ -186,6 +186,12 @@ void test_sampler() {
   check(status.ok() && token == 7,
         "greedy sampler uses stable lowest-ID tie break");
 
+  std::vector<float> small_logits(16, -10.0F);
+  small_logits[10] = 4.0F;
+  status = greedy.sample(small_logits, &token);
+  check(status.ok() && token == 10,
+        "sampler accepts a registered non-Evo vocabulary");
+
   evo::Sampler first{{1.0F, 8, 0.95F, 42}};
   evo::Sampler second{{1.0F, 8, 0.95F, 42}};
   for (std::size_t iteration = 0; iteration < 64; ++iteration) {

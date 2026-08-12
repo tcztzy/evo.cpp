@@ -59,6 +59,8 @@ metadata_json(const std::string_view profile = "s:evo2-runtime-v1") {
          std::string{profile} +
          "\","
          "\"model.name\":\"s:tiny-evo2\","
+         "\"model.architecture\":\"s:StripedHyena2\","
+         "\"runtime.abi\":\"s:evo2-safetensors-v1\","
          "\"config.hidden_size\":\"u:4\","
          "\"config.tie_embeddings\":\"b:1\","
          "\"config.layers\":\"l:0,3\","
@@ -141,7 +143,7 @@ void test_valid_fixture(const Fixture &fixture) {
   check(model.format_name() == "SAFETENSORS", "format is Safetensors");
   check(model.profile() == "evo2-runtime-v1", "runtime profile is exposed");
   check(model.file_size() == fixture.bytes.size(), "file size is exposed");
-  check(model.metadata().size() == 7, "typed metadata entries are decoded");
+  check(model.metadata().size() == 9, "typed metadata entries are decoded");
   check(model.tensors().size() == 2, "tensor descriptors are parsed");
 
   const auto *const model_name = model.find_metadata("model.name");
@@ -191,7 +193,7 @@ void test_invalid_files() {
                               "\"x\":{\"dtype\":\"F32\",\"shape\":[1],"
                               "\"data_offsets\":[0,4]}}",
                               {0, 0, 0, 0}),
-                 "missing or unsupported evo2.profile");
+                 "exactly one registered artifact profile");
 
   expect_failure(make_fixture("{" + metadata_json() +
                                   ",\"x\":{\"dtype\":\"F32\",\"shape\":[1],"

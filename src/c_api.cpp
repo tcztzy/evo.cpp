@@ -17,6 +17,7 @@
 
 #include "evo/cpu/model.hpp"
 #include "evo/model_format.hpp"
+#include "evo/model_registry.hpp"
 #include "evo/profile.hpp"
 #include "evo/sampler.hpp"
 #include "evo/status.hpp"
@@ -120,6 +121,9 @@ struct ModelState final {
   std::vector<int> devices;
   std::string model_id;
   std::string architecture;
+  std::string artifact_profile;
+  evo::ArchitectureTokenizer tokenizer{
+      evo::ArchitectureTokenizer::kByteIdentity};
   std::size_t vocab_size{0};
   std::size_t max_context{0};
   std::size_t embedding_width{0};
@@ -152,7 +156,7 @@ struct evo_context final {
 struct evo_batch final {
   std::size_t sequence_capacity{0};
   std::size_t token_count{0};
-  std::vector<std::vector<evo::TokenId>> sequences;
+  std::vector<std::vector<std::uint8_t>> sequences;
 };
 
 struct evo_sampler final {
@@ -245,19 +249,6 @@ evo_status evo_model_load(const char *const path,
       }
     }
     state->backend = options.backend;
-    if (state->backend == EVO_BACKEND_AUTO) {
-#if defined(EVO_HAS_CUDA)
-      state->backend = EVO_BACKEND_CUDA;
-#else
-      state->backend = EVO_BACKEND_CPU;
-#endif
-    }
-#if !defined(EVO_HAS_CUDA)
-    if (state->backend == EVO_BACKEND_CUDA) {
-      return publish(EVO_STATUS_UNSUPPORTED,
-                     "unsupported: this evo library was built without CUDA");
-    }
-#endif
     auto status = state->file.open(path);
     if (!status.ok())
       return publish(status);
@@ -266,6 +257,43 @@ evo_status evo_model_load(const char *const path,
       state->model_id = metadata_string(state->file, "model.name", "unknown");
     state->architecture =
         metadata_string(state->file, "model.architecture", "unknown");
+    state->artifact_profile = std::string{state->file.profile()};
+    const std::string runtime_abi =
+        metadata_string(state->file, "runtime.abi", "unknown");
+    const auto *const architecture =
+        evo::find_architecture(state->architecture);
+    if (architecture == nullptr ||
+        architecture->artifact_profile != state->artifact_profile ||
+        architecture->runtime_abi != runtime_abi) {
+      return publish(EVO_STATUS_UNSUPPORTED,
+                     "unsupported: artifact architecture/profile/ABI is not "
+                     "registered");
+    }
+    state->tokenizer = architecture->tokenizer;
+    if (state->backend == EVO_BACKEND_AUTO) {
+#if defined(EVO_HAS_CUDA)
+      state->backend =
+          (architecture->backends & evo::kArchitectureBackendCuda) != 0
+              ? EVO_BACKEND_CUDA
+              : EVO_BACKEND_CPU;
+#else
+      state->backend = EVO_BACKEND_CPU;
+#endif
+    }
+    const unsigned backend_flag = state->backend == EVO_BACKEND_CUDA
+                                      ? evo::kArchitectureBackendCuda
+                                      : evo::kArchitectureBackendCpu;
+    if ((architecture->backends & backend_flag) == 0) {
+      return publish(EVO_STATUS_UNSUPPORTED,
+                     "unsupported: selected backend is not registered for "
+                     "this architecture");
+    }
+#if !defined(EVO_HAS_CUDA)
+    if (state->backend == EVO_BACKEND_CUDA) {
+      return publish(EVO_STATUS_UNSUPPORTED,
+                     "unsupported: this evo library was built without CUDA");
+    }
+#endif
     state->vocab_size = metadata_size(state->file, "config.vocab_size");
     state->max_context = metadata_size(state->file, "config.max_seqlen");
     state->embedding_width = metadata_size(state->file, "config.hidden_size");
@@ -310,7 +338,9 @@ const char *evo_model_architecture(const evo_model *const model) {
 }
 
 const char *evo_model_profile(const evo_model *const model) {
-  return model == nullptr || !model->state ? "" : "evo2-runtime-v1";
+  return model == nullptr || !model->state
+             ? ""
+             : model->state->artifact_profile.c_str();
 }
 
 size_t evo_model_vocab_size(const evo_model *const model) {
@@ -327,6 +357,56 @@ size_t evo_model_embedding_width(const evo_model *const model) {
 
 size_t evo_model_layer_count(const evo_model *const model) {
   return model == nullptr || !model->state ? 0 : model->state->layer_count;
+}
+
+evo_status evo_model_encode(const evo_model *const model,
+                            const uint8_t *const sequence,
+                            const size_t sequence_length,
+                            uint32_t *const tokens,
+                            const size_t token_capacity,
+                            size_t *const token_count) {
+  if (token_count != nullptr)
+    *token_count = 0;
+  return protect([&]() -> evo_status {
+    if (model == nullptr || !model->state || sequence == nullptr ||
+        sequence_length == 0 || token_count == nullptr ||
+        (tokens == nullptr && token_capacity != 0)) {
+      return publish(EVO_STATUS_INVALID_ARGUMENT,
+                     "invalid_argument: model tokenizer arguments are invalid");
+    }
+    const std::string_view text{reinterpret_cast<const char *>(sequence),
+                                sequence_length};
+    std::vector<evo::TokenId> encoded;
+    const auto status =
+        evo::encode_sequence(model->state->tokenizer, text, &encoded);
+    if (!status.ok())
+      return publish(status);
+    *token_count = encoded.size();
+    if (tokens == nullptr)
+      return publish(evo::Status::Ok());
+    if (token_capacity < encoded.size()) {
+      return publish(EVO_STATUS_INVALID_ARGUMENT,
+                     "invalid_argument: token buffer is too small");
+    }
+    for (std::size_t index = 0; index < encoded.size(); ++index)
+      tokens[index] = encoded[index];
+    return publish(evo::Status::Ok());
+  });
+}
+
+evo_status evo_model_decode_token(const evo_model *const model,
+                                  const uint32_t token,
+                                  uint8_t *const byte_out) {
+  return protect([&]() -> evo_status {
+    if (model == nullptr || !model->state || byte_out == nullptr ||
+        token > std::numeric_limits<evo::TokenId>::max()) {
+      return publish(EVO_STATUS_INVALID_ARGUMENT,
+                     "invalid_argument: model detokenizer arguments are "
+                     "invalid");
+    }
+    return publish(evo::decode_sequence_token(
+        model->state->tokenizer, static_cast<evo::TokenId>(token), byte_out));
+  });
 }
 
 evo_status evo_context_create(const evo_model *const model,
@@ -458,13 +538,20 @@ evo_status evo_context_prefill(evo_context *const context,
                      "unsupported: exact backend currently requires batch "
                      "size one");
     }
-    const auto &tokens = batch->sequences.front();
-    if (tokens.empty() || tokens.size() > context->capacity ||
+    const auto &sequence = batch->sequences.front();
+    if (sequence.empty() || sequence.size() > context->capacity ||
         evo_context_position(context) != 0) {
       return publish(EVO_STATUS_INVALID_ARGUMENT,
                      "invalid_argument: prefill requires a fresh context and "
                      "a nonempty sequence within capacity");
     }
+    std::vector<evo::TokenId> tokens;
+    const std::string_view sequence_view{
+        reinterpret_cast<const char *>(sequence.data()), sequence.size()};
+    const auto encode_status = evo::encode_sequence(
+        context->state->tokenizer, sequence_view, &tokens);
+    if (!encode_status.ok())
+      return publish(encode_status);
     // From here onward, any status/exception can follow a partial state
     // advance. Keep the context poisoned unless every chunk and callback
     // completes.
@@ -634,13 +721,20 @@ evo_status evo_context_embed(evo_context *const context,
                      "unsupported: exact backend currently requires batch "
                      "size one");
     }
-    const auto &tokens = batch->sequences.front();
-    if (tokens.empty() || tokens.size() > context->capacity ||
+    const auto &sequence = batch->sequences.front();
+    if (sequence.empty() || sequence.size() > context->capacity ||
         evo_context_position(context) != 0) {
       return publish(EVO_STATUS_INVALID_ARGUMENT,
                      "invalid_argument: embedding requires a fresh context and "
                      "a nonempty sequence within capacity");
     }
+    std::vector<evo::TokenId> tokens;
+    const std::string_view sequence_view{
+        reinterpret_cast<const char *>(sequence.data()), sequence.size()};
+    const auto encode_status = evo::encode_sequence(
+        context->state->tokenizer, sequence_view, &tokens);
+    if (!encode_status.ok())
+      return publish(encode_status);
     context->failed = true;
     if (context->cpu) {
       const std::size_t chunk_capacity = context->cpu->activation_capacity();
@@ -755,11 +849,7 @@ evo_status evo_batch_add_sequence(evo_batch *const batch,
       return publish(EVO_STATUS_INVALID_ARGUMENT,
                      "invalid_argument: sequence does not fit batch");
     }
-    std::vector<evo::TokenId> tokens;
-    tokens.reserve(sequence_length);
-    for (std::size_t index = 0; index < sequence_length; ++index)
-      tokens.push_back(static_cast<evo::TokenId>(sequence[index]));
-    batch->sequences.push_back(std::move(tokens));
+    batch->sequences.emplace_back(sequence, sequence + sequence_length);
     batch->token_count += sequence_length;
     return publish(evo::Status::Ok());
   });

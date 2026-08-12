@@ -21,6 +21,12 @@ AVX2/FMA on supported x86-64 hosts, NEON on AArch64, and a scalar fallback
 elsewhere. Block arithmetic is portable F32 and is deliberately reported as
 `cpu-f32`, never as raw-bit `exact`.
 
+The registered HyenaDNA adapter also uses `cpu-f32`, with an architecture-
+specific deterministic direct-convolution kernel and a documented 4096-token
+limit. It does not claim equivalence to the upstream FFT implementation; see
+the [architecture registry](architectures.md) for its numerical gate and
+support boundary.
+
 CPU+GPU placement is also explicit:
 
 ```sh

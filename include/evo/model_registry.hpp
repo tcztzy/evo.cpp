@@ -7,6 +7,34 @@
 
 namespace evo {
 
+enum class ArchitectureTokenizer {
+  kByteIdentity,
+  kHyenaDnaCharacter,
+};
+
+enum ArchitectureBackend : unsigned {
+  kArchitectureBackendCpu = 1U << 0U,
+  kArchitectureBackendCuda = 1U << 1U,
+};
+
+enum ArchitectureCapability : unsigned {
+  kArchitectureGenerate = 1U << 0U,
+  kArchitectureScore = 1U << 1U,
+  kArchitectureEmbed = 1U << 2U,
+  kArchitectureVariant = 1U << 3U,
+  kArchitectureServe = 1U << 4U,
+};
+
+struct ArchitectureSpec final {
+  std::string_view id;
+  std::string_view artifact_profile;
+  std::string_view runtime_abi;
+  ArchitectureTokenizer tokenizer;
+  unsigned backends;
+  unsigned capabilities;
+  bool synthetic_fixture;
+};
+
 enum class OfficialProjectionPrecision { kBF16, kE4M3Software };
 enum class OfficialProjectionWeightDType { kBF16, kF32 };
 enum class OfficialHcmFilterDType { kBF16, kF32 };
@@ -37,5 +65,10 @@ struct OfficialModelSpec final {
 [[nodiscard]] const std::vector<OfficialModelSpec> &official_model_specs();
 [[nodiscard]] const OfficialModelSpec *
 find_official_model(std::string_view model_id) noexcept;
+[[nodiscard]] const std::vector<ArchitectureSpec> &architecture_specs();
+[[nodiscard]] const ArchitectureSpec *
+find_architecture(std::string_view architecture) noexcept;
+[[nodiscard]] const ArchitectureSpec *
+find_artifact_profile(std::string_view profile) noexcept;
 
 } // namespace evo

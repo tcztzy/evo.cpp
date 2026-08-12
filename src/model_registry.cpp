@@ -86,4 +86,47 @@ find_official_model(const std::string_view model_id) noexcept {
   return found == specs.end() ? nullptr : &*found;
 }
 
+const std::vector<ArchitectureSpec> &architecture_specs() {
+  constexpr unsigned all_capabilities =
+      kArchitectureGenerate | kArchitectureScore | kArchitectureEmbed |
+      kArchitectureVariant | kArchitectureServe;
+  static const std::vector<ArchitectureSpec> specs{
+      {"StripedHyena2", "evo2-runtime-v1", "evo2-safetensors-v1",
+       ArchitectureTokenizer::kByteIdentity,
+       kArchitectureBackendCpu | kArchitectureBackendCuda, all_capabilities,
+       false},
+      {"StripedHyena2Test", "evo2-runtime-v1", "evo2-safetensors-v1",
+       ArchitectureTokenizer::kByteIdentity,
+       kArchitectureBackendCpu | kArchitectureBackendCuda, all_capabilities,
+       true},
+      {"HyenaDNA", "hyenadna-runtime-v1", "hyenadna-safetensors-v1",
+       ArchitectureTokenizer::kHyenaDnaCharacter, kArchitectureBackendCpu,
+       all_capabilities, false},
+      {"HyenaDNATest", "hyenadna-runtime-v1", "hyenadna-safetensors-v1",
+       ArchitectureTokenizer::kHyenaDnaCharacter, kArchitectureBackendCpu,
+       all_capabilities, true},
+  };
+  return specs;
+}
+
+const ArchitectureSpec *
+find_architecture(const std::string_view architecture) noexcept {
+  const auto &specs = architecture_specs();
+  const auto found = std::find_if(
+      specs.begin(), specs.end(), [architecture](const auto &item) {
+        return item.id == architecture;
+      });
+  return found == specs.end() ? nullptr : &*found;
+}
+
+const ArchitectureSpec *
+find_artifact_profile(const std::string_view profile) noexcept {
+  const auto &specs = architecture_specs();
+  const auto found =
+      std::find_if(specs.begin(), specs.end(), [profile](const auto &item) {
+        return item.artifact_profile == profile;
+      });
+  return found == specs.end() ? nullptr : &*found;
+}
+
 } // namespace evo

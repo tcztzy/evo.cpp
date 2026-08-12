@@ -4,12 +4,13 @@
 
 [English](README.md) | **简体中文**
 
-`evo.cpp` 是专注于 Evo 2 推理的 C++17 runtime 与本地服务，既支持可移植 CPU
+`evo.cpp` 是面向生物序列模型的 C++17 runtime 与本地服务，既支持可移植 CPU
 执行，也支持 exact 或加速 CUDA profile。exact kernel 保持 batch-1 数值语义，
 服务端则让多个隔离 request context 共享只读模型权重。
 它从严格验证的 Safetensors 运行官方 1B、7B、20B 和 40B checkpoint，支持 1–4 张 NVIDIA GPU；
 推理过程不依赖 PyTorch、Vortex、Transformer Engine、Python，也不要求 Hopper
-专属 FP8 指令。
+专属 FP8 指令。architecture registry 还通过相同 CLI、C ABI、embedding、
+variant 与 server surface 在 CPU 上运行官方 F32 HyenaDNA causal-LM family。
 
 ## 为什么选择 evo.cpp？
 
@@ -84,6 +85,16 @@ build/Release/evo -m "$MODEL" --gpu 0 --gpu-layers 16 \
   --score sequences.fa --ctx 8192
 ```
 
+第二个已注册 family 可直接从官方 HyenaDNA Hugging Face Safetensors 离线转换：
+
+```sh
+PYTHONPATH=tools python3 tools/convert_hyenadna_checkpoint.py \
+  --input model.safetensors --config config.json \
+  --output hyenadna.safetensors
+build/Release/evo -m hyenadna.safetensors --backend cpu \
+  --ctx 1026 --score sequences.fa
+```
+
 所有命令默认使用 `--profile exact`，长 context 也不例外。
 `--profile fast-q8-kv` 是必须显式选择的实验性近似分页 cache 模式；runtime
 绝不会只因 context 变长而自动启用它。
@@ -106,6 +117,7 @@ recipe revision。CUDA 使用的 FlashAttention 与 CUTLASS 仍由 CMake
 [7B first-divergence 审计](docs/vortex-7b-bit-exactness.md)、
 [数值契约](docs/math-semantics.md)、[checkpoint 转换](docs/checkpoint-conversion.md)和
 [执行 profile 与验收 gate](docs/execution-profiles.md)、
+[architecture registry 与 HyenaDNA 边界](docs/architectures.md)、
 [artifact 获取与 release](docs/artifact-distribution.md)、
 [embedding 输出契约](docs/embeddings.md)、
 [变异评分契约](docs/variant-scoring.md)、
