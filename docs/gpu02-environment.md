@@ -127,9 +127,88 @@ scripts/gpu02_prepare_40b.sh
 scripts/gpu02_quality.sh
 ```
 
-`gpu02_build.sh` constructs `$HOME/evo.cpp-cuda12.8-rocky8.sif` from
+### Remote build roots and path overrides
+
+The build, test, and smoke entrypoints share one path contract. If
+`EVO_REMOTE_ROOT` is unset, the remote shell's real `$HOME` is the root; the
+scripts never replace or export `HOME`. Setting, for example,
+
+```sh
+EVO_REMOTE_ROOT=/build/grp_icg/users/tang scripts/gpu02_build.sh
+```
+
+changes all root-derived defaults together. A leaf override always wins over
+`EVO_REMOTE_ROOT`:
+
+| Variable | Default |
+|---|---|
+| `EVO_REMOTE_SOURCE_DIR` | `<root>/evo.cpp` |
+| `EVO_REMOTE_BUILD_DIR` | `<source>/build-gpu` |
+| `EVO_REMOTE_DEPS_DIR` | `<root>/evo.cpp-deps` |
+| `EVO_REMOTE_CONTAINER_PATH` | `<root>/evo.cpp-cuda12.8-rocky8.sif` |
+| `EVO_REMOTE_NIX_ROOT` | `<root>/.local/share/nix-root` |
+| `EVO_REMOTE_CACHE_DIR` | `<root>/.cache/evo.cpp` |
+
+Thus an isolated validation can reuse the read-only dependencies and container
+without touching the canonical source or build directory:
+
+```sh
+export EVO_REMOTE_ROOT=/build/grp_icg/users/tang
+export EVO_REMOTE_SOURCE_DIR=/build/grp_icg/users/tang/evo.cpp-remote-check
+export EVO_REMOTE_BUILD_DIR=/build/grp_icg/users/tang/evo.cpp-build-remote-check
+scripts/gpu02_build.sh
+```
+
+Every supplied remote path must be absolute and may not contain whitespace or
+`.`/`..` components. Source synchronization uses delayed updates and exclusions
+for build trees, caches, environments, and model artifacts. It deliberately
+does not use `rsync --delete`, so an existing remote-only artifact is not
+removed. The image build likewise publishes a process-unique partial file by
+atomic rename rather than deleting an older partial or image.
+
+`EVO_APPTAINER` can select the remote Apptainer executable. `EVO_CMAKE_BIN` can
+select an absolute CMake path inside the container. Without that override, each
+candidate in `<nix-root>/store` is executed inside the container, the script
+requires CMake >=3.25, and the highest verified version is selected.
+CTest must exist beside that exact CMake binary and report the same version; the
+scripts never select an unrelated CTest from another Nix store hash.
+`EVO_PYTHON_BIN` can select Python inside the container; otherwise the highest
+verified Nix Python >=3.9 is chosen, preferring a canonical `python3-<version>`
+package over an environment wrapper at the same version.
+`EVO_BUILD_JOBS` controls compile parallelism and defaults to 4; reduce it for a
+shared host even though compilation does not occupy a GPU.
+
+`gpu02_build.sh` constructs the configured container from
 `containers/evo.cpp-cuda12.8-rocky8.def` when the image is absent, then reuses it
-on later runs.
+on later runs. Compilation does not query the GPU count and does not require four
+idle devices.
+
+### Visible GPUs and multi-GPU tests
+
+`gpu02_test.sh` and `gpu02_smoke.sh` expose only physical GPU 0 by default.
+Choose a different visible physical-device list explicitly:
+
+```sh
+EVO_CUDA_VISIBLE_DEVICES=2 scripts/gpu02_test.sh
+```
+
+The test binaries see those devices renumbered from logical device 0. Ordinary
+and single-GPU tests do not require four cards. To claim the four-GPU branches,
+request them explicitly and narrow the CTest selection to the tests that use
+them:
+
+```sh
+EVO_CUDA_VISIBLE_DEVICES=0,1,2,3 \
+EVO_CTEST_REQUIRED_GPUS=4 \
+EVO_CTEST_REGEX='^(cuda_pipeline|cuda_cli)$' \
+scripts/gpu02_test.sh
+```
+
+When `EVO_CTEST_REQUIRED_GPUS` is greater than one, the wrapper verifies that
+the requested physical IDs exist and have no reported compute process before it
+starts. This is a safety preflight, not a scheduler reservation: another process
+can claim a device after the check. Inspect LSF and `nvidia-smi` first, and do not
+run the multi-GPU command while another user's work is present.
 
 The preparation script resumes both official checkpoint parts into the shared
 Hugging Face cache with ordinary HTTP Range requests against the mirror. This

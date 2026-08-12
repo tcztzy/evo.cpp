@@ -3,30 +3,275 @@
 
 import argparse
 import re
+import subprocess
+import tempfile
 from pathlib import Path
+
+
+REMOTE_PATH_VARIABLES = (
+    "EVO_REMOTE_ROOT",
+    "EVO_REMOTE_SOURCE_DIR",
+    "EVO_REMOTE_BUILD_DIR",
+    "EVO_REMOTE_DEPS_DIR",
+    "EVO_REMOTE_CONTAINER_PATH",
+    "EVO_REMOTE_NIX_ROOT",
+    "EVO_REMOTE_CACHE_DIR",
+)
+
+
+def run_bash(*arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", *arguments],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def check_remote_helper(source_dir: Path) -> None:
+    helper = source_dir / "scripts" / "remote_build_common.sh"
+    helper_text = helper.read_text(encoding="utf-8")
+    assert "evo_version_at_least_3_25" in helper_text
+    assert 'ctest_bin="${cmake_bin%/cmake}/ctest"' in helper_text
+    assert 'test "$EVO_PROBED_CTEST_VERSION" = ' in helper_text
+    assert '"$nix_root"/store/*-cmake-*/bin/cmake' in helper_text
+    assert "evo_version_greater" in helper_text
+    assert 'package_name="${store_entry#*-}"' in helper_text
+    assert "evo_select_python" in helper_text
+    assert '"$nix_root"/store/*-python3-*/bin/python3' in helper_text
+
+    accepted = run_bash(
+        "-c",
+        '. "$1"; evo_validate_optional_remote_path contract ROOT "$2"',
+        "remote-helper-test",
+        str(helper),
+        "/build/grp_icg/users/tang",
+    )
+    assert accepted.returncode == 0, accepted.stderr
+    for unsafe in (
+        "relative/path",
+        "/",
+        "/build/grp_icg/users/tang/../other",
+        "/build/grp_icg/users/tang/with space",
+    ):
+        rejected = run_bash(
+            "-c",
+            '. "$1"; evo_validate_optional_remote_path contract ROOT "$2"',
+            "remote-helper-test",
+            str(helper),
+            unsafe,
+        )
+        assert rejected.returncode != 0, f"unsafe remote path accepted: {unsafe}"
+
+    resolved = run_bash(
+        "-c",
+        (
+            '. "$1"; evo_configure_remote_paths contract "$2" "" "$3" '
+            '"" "" "" "" build-default image-default.sif; '
+            'printf "%s\\n" "$EVO_REMOTE_ROOT_RESOLVED" '
+            '"$EVO_REMOTE_SOURCE_DIR_RESOLVED" '
+            '"$EVO_REMOTE_BUILD_DIR_RESOLVED" '
+            '"$EVO_REMOTE_DEPS_DIR_RESOLVED" '
+            '"$EVO_REMOTE_CONTAINER_PATH_RESOLVED" '
+            '"$EVO_REMOTE_NIX_ROOT_RESOLVED" '
+            '"$EVO_REMOTE_CACHE_DIR_RESOLVED"'
+        ),
+        "remote-helper-test",
+        str(helper),
+        "/build/grp_icg/users/tang",
+        "/build/grp_icg/users/tang/custom-build",
+    )
+    assert resolved.returncode == 0, resolved.stderr
+    assert resolved.stdout.splitlines() == [
+        "/build/grp_icg/users/tang",
+        "/build/grp_icg/users/tang/evo.cpp",
+        "/build/grp_icg/users/tang/custom-build",
+        "/build/grp_icg/users/tang/evo.cpp-deps",
+        "/build/grp_icg/users/tang/image-default.sif",
+        "/build/grp_icg/users/tang/.local/share/nix-root",
+        "/build/grp_icg/users/tang/.cache/evo.cpp",
+    ]
+
+    quoted = run_bash(
+        "-c",
+        (
+            '. "$1"; evo_quote_remote_command bash "" "$2" "$3"; '
+            'printf "%s\\n" "$EVO_REMOTE_COMMAND"'
+        ),
+        "remote-helper-test",
+        str(helper),
+        "/build/grp_icg/users/tang",
+        "^(cuda_ops|npy)$",
+    )
+    assert quoted.returncode == 0, quoted.stderr
+    assert quoted.stdout.strip() == (
+        "bash -s -- '' /build/grp_icg/users/tang "
+        r"\^\(cuda_ops\|npy\)\$"
+    )
+
+    with tempfile.TemporaryDirectory(prefix="evo-remote-cmake-") as temporary:
+        temp_dir = Path(temporary)
+        nix_root = temp_dir / "nix-root"
+        versions = (
+            "000-python3.12-cmake-3.31.2",
+            "aaa-cmake-3.24.9",
+            "bbb-cmake-3.30.0",
+            "ccc-cmake-3.29.4",
+            "ddd-cmake-3.31.2",
+        )
+        for version in versions:
+            bin_dir = nix_root / "store" / version / "bin"
+            bin_dir.mkdir(parents=True)
+            for tool in ("cmake", "ctest"):
+                path = bin_dir / tool
+                path.write_text("", encoding="utf-8")
+                path.chmod(0o755)
+        python_versions = (
+            "111-python3-3.8.19",
+            "222-python3-3.12.5-env",
+            "333-python3-3.12.5",
+            "444-python3-3.13.1",
+        )
+        for version in python_versions:
+            bin_dir = nix_root / "store" / version / "bin"
+            bin_dir.mkdir(parents=True)
+            python = bin_dir / "python3"
+            python.write_text("", encoding="utf-8")
+            python.chmod(0o755)
+        fake_apptainer = temp_dir / "apptainer"
+        fake_apptainer.write_text(
+            """#!/usr/bin/env bash
+set -euo pipefail
+previous=""
+current=""
+for argument in "$@"; do
+  previous="$current"
+  current="$argument"
+done
+tool="$previous"
+kind="${tool##*/}"
+if test "$kind" = python3; then
+  case "$tool" in
+    *111-python3*) version=3.8.19 ;;
+    *222-python3*) version=3.12.5 ;;
+    *333-python3*) version=3.12.5 ;;
+    *444-python3*) version=3.13.1 ;;
+    *) exit 1 ;;
+  esac
+  printf 'Python %s\\n' "$version"
+  exit 0
+fi
+case "$tool" in
+  *000-python3.12-cmake*) version=3.31.2 ;;
+  *aaa-cmake*) version=3.24.9 ;;
+  *bbb-cmake*/bin/cmake) version=3.30.0 ;;
+  *bbb-cmake*/bin/ctest) version=3.29.9 ;;
+  *ccc-cmake*) version=3.29.4 ;;
+  *ddd-cmake*) version=3.31.2 ;;
+  *) exit 1 ;;
+esac
+printf '%s version %s\\n' "$kind" "$version"
+""",
+            encoding="utf-8",
+        )
+        fake_apptainer.chmod(0o755)
+        selection_script = (
+            'set -euo pipefail; . "$1"; '
+            'evo_select_cmake contract "$2" /image.sif "$3" "$4"; '
+            'printf "%s\\n%s\\n%s\\n" "$EVO_CMAKE_BIN_SELECTED" '
+            '"$EVO_CTEST_BIN_SELECTED" "$EVO_CMAKE_VERSION_SELECTED"'
+        )
+        selected = run_bash(
+            "-c",
+            selection_script,
+            "remote-helper-test",
+            str(helper),
+            str(fake_apptainer),
+            str(nix_root),
+            "",
+        )
+        assert selected.returncode == 0, selected.stderr
+        assert selected.stdout.splitlines() == [
+            "/nix/store/ddd-cmake-3.31.2/bin/cmake",
+            "/nix/store/ddd-cmake-3.31.2/bin/ctest",
+            "3.31.2",
+        ]
+        too_old = run_bash(
+            "-c",
+            selection_script,
+            "remote-helper-test",
+            str(helper),
+            str(fake_apptainer),
+            str(nix_root),
+            "/nix/store/aaa-cmake-3.24.9/bin/cmake",
+        )
+        assert too_old.returncode != 0
+        mismatched_ctest = run_bash(
+            "-c",
+            selection_script,
+            "remote-helper-test",
+            str(helper),
+            str(fake_apptainer),
+            str(nix_root),
+            "/nix/store/bbb-cmake-3.30.0/bin/cmake",
+        )
+        assert mismatched_ctest.returncode != 0
+
+        python_selection_script = (
+            'set -euo pipefail; . "$1"; '
+            'evo_select_python contract "$2" /image.sif "$3" "$4"; '
+            'printf "%s\\n%s\\n" "$EVO_PYTHON_BIN_SELECTED" '
+            '"$EVO_PYTHON_VERSION_SELECTED"'
+        )
+        selected_python = run_bash(
+            "-c",
+            python_selection_script,
+            "remote-helper-test",
+            str(helper),
+            str(fake_apptainer),
+            str(nix_root),
+            "",
+        )
+        assert selected_python.returncode == 0, selected_python.stderr
+        assert selected_python.stdout.splitlines() == [
+            "/nix/store/444-python3-3.13.1/bin/python3",
+            "3.13.1",
+        ]
+        too_old_python = run_bash(
+            "-c",
+            python_selection_script,
+            "remote-helper-test",
+            str(helper),
+            str(fake_apptainer),
+            str(nix_root),
+            "/nix/store/111-python3-3.8.19/bin/python3",
+        )
+        assert too_old_python.returncode != 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-dir", type=Path, required=True)
     args = parser.parse_args()
+    check_remote_helper(args.source_dir)
 
     test_script = args.source_dir / "scripts" / "gpu02_test.sh"
     text = test_script.read_text(encoding="utf-8")
-    assert "apptainer exec --nv" in text, (
+    assert '"$apptainer" exec --nv' in text, (
         "V18: the gpu02 CUDA test runner must expose the host NVIDIA driver "
-        "with 'apptainer exec --nv'"
+        "with Apptainer's 'exec --nv' mode"
     )
-    assert 'ctest_bin="' in text
-    assert 'store/*-cmake-[3-9]*/bin/ctest' in text
+    assert 'ctest_bin="$EVO_CTEST_BIN_SELECTED"' in text
+    assert "evo_select_cmake gpu02_test" in text
     assert 'test -x "$ctest_bin"' not in text, (
         "V18: /nix is mounted only inside Apptainer, so container-only "
         "executables must not be preflighted on the gpu02 host"
     )
-    assert "printf -v quoted_regex '%q'" in text, (
-        "V18: the optional CTest regex must be shell-quoted before SSH "
-        "transports it through the remote login shell"
-    )
+    assert "evo_quote_remote_command bash" in text
+    assert 'cuda_visible_devices="${EVO_CUDA_VISIBLE_DEVICES:-0}"' in text
+    assert 'required_gpus="${EVO_CTEST_REQUIRED_GPUS:-1}"' in text
+    assert "evo_require_idle_multi_gpu_list gpu02_test" in text
     for script in sorted((args.source_dir / "scripts").glob("gpu02_*.sh")):
         script_text = script.read_text(encoding="utf-8")
         assert re.search(r"(?m)^[ \t]*python3(?:[ \t]|$)", script_text) is None, (
@@ -48,10 +293,20 @@ def main() -> int:
     assert 'cuda_release="${EVO_GPU01_CUDA_RELEASE:-12.8}"' in gpu01_build
     assert "--delete" not in gpu01_build
     assert 'image_name="${EVO_GPU01_IMAGE_NAME:-' in gpu01_build
-    assert 'apptainer="${EVO_APPTAINER:-' in gpu01_build
+    assert 'apptainer="${apptainer_override:-$HOME/.local/apptainer/' in gpu01_build
     assert 'export APPTAINER_TMPDIR="/tmp/evo.cpp-apptainer-$UID"' in gpu01_build
     assert 'if test "$cuda_release" != "$expected_cuda_release"' in gpu01_build
-    assert 'ctest_bin="${cmake_bin%/cmake}/ctest"' in gpu01_build
+    assert 'ctest_bin="$EVO_CTEST_BIN_SELECTED"' in gpu01_build
+    assert "evo_select_cmake gpu01_build" in gpu01_build
+    assert 'cuda_visible_devices="${EVO_CUDA_VISIBLE_DEVICES:-0}"' in gpu01_build
+    assert 'build_jobs="${EVO_BUILD_JOBS:-4}"' in gpu01_build
+    assert '  --build "$build_dir" -j"$build_jobs"' in gpu01_build
+    assert "evo_select_python gpu01_build" in gpu01_build
+    assert '-DPython3_EXECUTABLE="$python_bin"' in gpu01_build
+    assert "EVO_CTEST_REQUIRED_GPUS" not in gpu01_build
+    assert "evo_quote_remote_command bash" in gpu01_build
+    for variable in REMOTE_PATH_VARIABLES:
+        assert variable in gpu01_build
     assert "-R '^(npy|cuda_smoke|cuda_ops)$'" in gpu01_build
     assert "-DCMAKE_CUDA_ARCHITECTURES=80" in gpu01_build
     assert "-DEVO_WARNINGS_AS_ERRORS=ON" in gpu01_build
@@ -69,6 +324,12 @@ def main() -> int:
         args.source_dir / "scripts" / "gpu01_build_image.sh"
     ).read_text(encoding="utf-8")
     assert 'image_host="${EVO_GPU01_IMAGE_HOST:-gpu02}"' in gpu01_image
+    assert "--delete" not in gpu01_image
+    assert "EVO_REMOTE_ROOT" in gpu01_image
+    assert "EVO_REMOTE_SOURCE_DIR" in gpu01_image
+    assert "EVO_REMOTE_CONTAINER_PATH" in gpu01_image
+    assert "EVO_REMOTE_CACHE_DIR" in gpu01_image
+    assert "evo_quote_remote_command bash" in gpu01_image
     assert "evo.cpp-cuda12.4-rocky8.def" in gpu01_image
     assert "docker-archive://$archive" in gpu01_image
     assert "cuda12.4.1-devel-rockylinux8-amd64.docker.tar" in gpu01_image
@@ -79,7 +340,17 @@ def main() -> int:
         args.source_dir / "scripts" / "gpu02_build.sh"
     ).read_text(encoding="utf-8")
     assert 'rsync_retries="${EVO_RSYNC_RETRIES:-12}"' in build
+    assert 'build_jobs="${EVO_BUILD_JOBS:-4}"' in build
+    assert '  --build "$build_dir" -j"$build_jobs"' in build
+    assert "evo_select_python gpu02_build" in build
+    assert '-DPython3_EXECUTABLE="$python_bin"' in build
     assert "until rsync -az --delay-updates" in build
+    assert "evo_quote_remote_command bash" in build
+    assert "EVO_CTEST_REQUIRED_GPUS" not in build
+    assert "CUDA_VISIBLE_DEVICES" not in build
+    assert "gpu_count" not in build
+    for variable in REMOTE_PATH_VARIABLES:
+        assert variable in build
     assert "-DEVO_FLASH_ATTENTION_SOURCE_DIR=" in build
     assert "-DEVO_CUTLASS_SOURCE_DIR=" in build
     assert "-DEVO_LIBNPY_SOURCE_DIR=" in build
@@ -102,7 +373,9 @@ def main() -> int:
         assert f"--exclude {excluded}" in build
     assert 'if (( rsync_attempt >= rsync_retries ))' in build
     assert 'sleep "$rsync_retry_delay"' in build
-    assert 'store/*-cmake-[3-9]*/bin/cmake' in build
+    assert "evo_select_cmake gpu02_build" in build
+    assert 'cmake_bin="$EVO_CMAKE_BIN_SELECTED"' in build
+    assert "store/*-cmake-[3-9]*/bin/cmake" not in build
     assert "dnsh5jd817k0zddr0k6x3zmyl146bbs6" not in build
     configure_index = build.index('  -S "$source_dir"')
     compile_index = build.index('  --build "$build_dir"')
@@ -110,6 +383,21 @@ def main() -> int:
         "V16: the canonical build entrypoint must configure its build "
         "directory before attempting to compile it"
     )
+
+    smoke = (
+        args.source_dir / "scripts" / "gpu02_smoke.sh"
+    ).read_text(encoding="utf-8")
+    assert 'cuda_visible_devices="${EVO_CUDA_VISIBLE_DEVICES:-0}"' in smoke
+    assert 'required_gpus="${EVO_CTEST_REQUIRED_GPUS:-1}"' in smoke
+    assert "evo_require_idle_multi_gpu_list gpu02_smoke" in smoke
+    assert "evo_select_cmake gpu02_smoke" in smoke
+    for variable in REMOTE_PATH_VARIABLES:
+        assert variable in smoke
+
+    for protected_script in (gpu01_build, gpu01_image, build):
+        assert "--delete" not in protected_script, (
+            "remote synchronization must never delete pre-existing artifacts"
+        )
 
     local_build = (
         args.source_dir / "scripts" / "local_test.sh"
@@ -261,11 +549,40 @@ def main() -> int:
     environment = (
         args.source_dir / "docs" / "gpu02-environment.md"
     ).read_text(encoding="utf-8")
+    assert "EVO_REMOTE_ROOT=/build/grp_icg/users/tang" in environment
+    assert "EVO_REMOTE_CONTAINER_PATH" in environment
+    assert "CMake >=3.25" in environment
+    assert "does not use `rsync --delete`" in environment
+    assert "EVO_CUDA_VISIBLE_DEVICES=0,1,2,3" in environment
+    assert "EVO_CTEST_REQUIRED_GPUS=4" in environment
     assert "report is 3,777 bytes" in environment
     assert (
         "314f50939dade079ef69494a57f954488082c361172547930c49ca4a02ef3a40"
         in environment
     )
+    gpu01_environment = (
+        args.source_dir / "docs" / "gpu01-environment.md"
+    ).read_text(encoding="utf-8")
+    assert "EVO_REMOTE_ROOT=/build/grp_icg/users/tang" in gpu01_environment
+    assert "EVO_CUDA_VISIBLE_DEVICES=2" in gpu01_environment
+    assert "CMake >=3.25" in gpu01_environment
+
+    readme = (args.source_dir / "README.md").read_text(encoding="utf-8")
+    readme_zh = (args.source_dir / "README.zh_CN.md").read_text(encoding="utf-8")
+    for readme_text in (readme, readme_zh):
+        assert "EVO_REMOTE_ROOT" in readme_text
+        assert "EVO_CUDA_VISIBLE_DEVICES" in readme_text
+
+    libnpy_commit = "890ea4fcda302a580e633c624c6a63e2a5d422f6"
+    libnpy_archive_sha256 = (
+        "c7b275c6cb8e46df43a20271e65010bdf63945831f2c0931ea6f2eda6a842acd"
+    )
+    assert libnpy_commit in gpu01_build
+    assert libnpy_commit in build
+    assert libnpy_commit in gpu01_environment
+    assert libnpy_commit in environment
+    assert libnpy_archive_sha256 in gpu01_environment
+    assert libnpy_archive_sha256 in environment
     return 0
 
 

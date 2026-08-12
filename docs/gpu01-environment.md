@@ -48,11 +48,40 @@ cuBLASLt, cuFFT, and current-source CUDA operator tests on gpu01:
 scripts/gpu01_build.sh
 ```
 
-The script syncs only source files, requires a prebuilt
-`$HOME/evo.cpp-cuda12.8-rocky8.sif`, configures a separate
-`build-gpu01-cu128`, builds for `sm_80`, and runs both the CUDA smoke and CUDA
-operator suites plus the NPY format contract. Its offline
-`$HOME/evo.cpp-deps` mirror includes libnpy at commit
+The script shares the gpu02 remote-path contract. `EVO_REMOTE_ROOT` defaults to
+the remote shell's real `$HOME`; it does not replace `HOME`. Setting
+`EVO_REMOTE_ROOT=/build/grp_icg/users/tang` changes the default source, dependency,
+container, Nix, and cache roots together. The leaf variables
+`EVO_REMOTE_SOURCE_DIR`, `EVO_REMOTE_BUILD_DIR`, `EVO_REMOTE_DEPS_DIR`,
+`EVO_REMOTE_CONTAINER_PATH`, `EVO_REMOTE_NIX_ROOT`, and
+`EVO_REMOTE_CACHE_DIR` take precedence. The gpu01 build default is
+`<source>/build-gpu01-cu128`; its default container is
+`<root>/evo.cpp-cuda12.8-rocky8.sif`.
+
+All supplied paths must be safe absolute paths without whitespace or `.`/`..`
+components. Source sync never uses `--delete`, so remote-only outputs are
+preserved. `EVO_CMAKE_BIN`, when set, names CMake inside the container; otherwise
+the script executes every Nix candidate, requires CMake >=3.25, and pairs CTest
+from the same prefix and version. `EVO_APPTAINER` overrides the remote runtime
+path. `EVO_PYTHON_BIN` overrides the container Python; otherwise the highest
+verified Nix Python >=3.9 is used. `EVO_BUILD_JOBS` controls compile parallelism
+(default 4). For example:
+
+```sh
+EVO_REMOTE_ROOT=/build/grp_icg/users/tang \
+EVO_CUDA_VISIBLE_DEVICES=2 \
+scripts/gpu01_build.sh
+```
+
+Compilation itself does not require four GPUs. The final targeted NPY, CUDA
+smoke, and CUDA operator checks use the one physical device selected by
+`EVO_CUDA_VISIBLE_DEVICES` (GPU 0 by default); this entrypoint does not run the
+four-GPU integration branches.
+
+The script syncs only source files, requires a prebuilt configured container,
+builds for `sm_80`, and runs both the CUDA smoke and CUDA operator suites plus
+the NPY format contract. Its offline `<root>/evo.cpp-deps` mirror includes
+libnpy at commit
 `890ea4fcda302a580e633c624c6a63e2a5d422f6`, alongside the pinned
 FlashAttention and CUTLASS source trees. The libnpy commit archive has SHA256
 `c7b275c6cb8e46df43a20271e65010bdf63945831f2c0931ea6f2eda6a842acd`.
@@ -84,7 +113,7 @@ For a stricter toolkit ceiling, set `EVO_GPU01_CUDA_RELEASE=12.4` after building
 [`evo.cpp-cuda12.4-rocky8.def`](../containers/evo.cpp-cuda12.4-rocky8.def).
 The SIF should be built on a registry-connected host; gpu01 cannot currently
 pull OCI layers reliably. If
-`$HOME/.cache/evo.cpp/cuda12.4.1-devel-rockylinux8-amd64.docker.tar` exists,
+`<cache>/cuda12.4.1-devel-rockylinux8-amd64.docker.tar` exists,
 the image script imports that offline Docker archive instead of contacting the
 registry. On this cluster, gpu01 and gpu02 share the same home filesystem, so
 the complete workflow is:
@@ -93,6 +122,11 @@ the complete workflow is:
 scripts/gpu01_build_image.sh  # builds CUDA 12.4 SIF on gpu02
 EVO_GPU01_CUDA_RELEASE=12.4 scripts/gpu01_build.sh
 ```
+
+`gpu01_build_image.sh` accepts the same `EVO_REMOTE_ROOT`, source, container,
+cache, and Apptainer overrides. A fully explicit
+`EVO_REMOTE_CONTAINER_PATH` takes precedence over the filename implied by
+`EVO_GPU01_IMAGE_NAME`.
 
 ## Exactness boundary
 

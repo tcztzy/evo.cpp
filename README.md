@@ -73,6 +73,14 @@ trees through the documented `EVO_*_SOURCE_DIR` cache variables. A CPU-only
 build (`-DEVO_CUDA=OFF`) leaves the NPY module disabled by default and can
 still be configured directly with CMake.
 
+For the checked-in gpu01/gpu02 remote entrypoints, `EVO_REMOTE_ROOT` changes the
+root without rewriting remote `HOME`; source, build, dependency, container, Nix,
+and cache paths also have explicit leaf overrides. GPU compilation does not
+require four idle cards, while `EVO_CUDA_VISIBLE_DEVICES` and
+`EVO_CTEST_REQUIRED_GPUS` make device exposure and multi-GPU test preflights
+explicit. See the [gpu02 path and GPU contract](docs/gpu02-environment.md) and
+[gpu01 compatibility path](docs/gpu01-environment.md).
+
 Start with the [model-size exactness record](docs/model-size-validation.md),
 then see the [7B first-divergence audit](docs/vortex-7b-bit-exactness.md),
 [numerical contracts](docs/math-semantics.md),

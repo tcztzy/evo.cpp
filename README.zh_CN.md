@@ -68,6 +68,14 @@ recipe revision。CUDA 使用的 FlashAttention 与 CUTLASS 仍由 CMake
 变量提供三份本地源码。CPU-only 构建（`-DEVO_CUDA=OFF`）默认不会启用 NPY
 模块，仍可直接用 CMake 配置。
 
+仓库内 gpu01/gpu02 远程入口统一使用 `EVO_REMOTE_ROOT` 切换远端根目录，不会
+改写远端 `HOME`；源码、build、依赖、容器、Nix 和 cache 也都有优先级更高的
+独立路径覆盖。GPU 编译不再要求四张空闲卡；`EVO_CUDA_VISIBLE_DEVICES` 和
+`EVO_CTEST_REQUIRED_GPUS` 分别显式控制可见设备与多卡测试预检。完整默认值、
+路径安全规则及 `/build/grp_icg/users/tang` 示例见
+[gpu02 环境与远程路径契约](docs/gpu02-environment.md)和
+[gpu01 兼容构建路径](docs/gpu01-environment.md)。
+
 建议先读[各尺寸 exactness 记录](docs/model-size-validation.md)，再看
 [7B first-divergence 审计](docs/vortex-7b-bit-exactness.md)、
 [数值契约](docs/math-semantics.md)、[checkpoint 转换](docs/checkpoint-conversion.md)和
