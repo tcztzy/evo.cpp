@@ -77,6 +77,14 @@ test -n "$apptainer" && test -x "$apptainer" || {
   echo "gpu02_test: Apptainer is not available at ${apptainer:-<unset>}" >&2
   exit 2
 }
+fingerprint_file="$build_dir/.evo-source-fingerprint"
+evo_require_file gpu02_test "successful build fingerprint" "$fingerprint_file"
+expected_fingerprint="$(evo_source_fingerprint "$source_dir")"
+actual_fingerprint="$(sed -n '1p' "$fingerprint_file")"
+if test "$actual_fingerprint" != "$expected_fingerprint"; then
+  echo "gpu02_test: source fingerprint does not match build; run gpu02_build.sh first" >&2
+  exit 2
+fi
 evo_require_idle_multi_gpu_list gpu02_test "$cuda_visible_devices" \
   "$required_gpus"
 evo_select_cmake gpu02_test "$apptainer" "$image" "$nix_root" \

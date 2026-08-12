@@ -113,9 +113,12 @@ apptainer="${apptainer_override:-$(command -v apptainer || true)}"
 
 test -d "$source_dir"
 test -f "$definition"
-test -f "$deps_dir/flash-attention-628452c73a4fab560189a7caa8702642c6a38235/csrc/flash_attn/src/flash_fwd_kernel.h"
-test -f "$deps_dir/cutlass-7127592069c2fe01b041e174ba4345ef9b279671/include/cute/tensor.hpp"
-test -f "$deps_dir/libnpy-890ea4fcda302a580e633c624c6a63e2a5d422f6/include/npy.hpp"
+evo_require_file gpu02_build "pinned FlashAttention header" \
+  "$deps_dir/flash-attention-628452c73a4fab560189a7caa8702642c6a38235/csrc/flash_attn/src/flash_fwd_kernel.h"
+evo_require_file gpu02_build "pinned CUTLASS header" \
+  "$deps_dir/cutlass-7127592069c2fe01b041e174ba4345ef9b279671/include/cute/tensor.hpp"
+evo_require_file gpu02_build "pinned libnpy header" \
+  "$deps_dir/libnpy-890ea4fcda302a580e633c624c6a63e2a5d422f6/include/npy.hpp"
 test -n "$apptainer" && test -x "$apptainer" || {
   echo "gpu02_build: Apptainer is not available at ${apptainer:-<unset>}" >&2
   exit 2
@@ -147,6 +150,8 @@ container_binds=(
 if [[ "$build_dir" != "$source_dir"/* ]]; then
   container_binds+=(-B "${build_dir%/*}:${build_dir%/*}")
 fi
+fingerprint_file="$build_dir/.evo-source-fingerprint"
+source_fingerprint_before="$(evo_source_fingerprint "$source_dir")"
 
 "$apptainer" exec "${container_binds[@]}" "$image" nvcc --version
 "$apptainer" exec "${container_binds[@]}" "$image" "$cmake_bin" \
@@ -165,4 +170,14 @@ fi
   -DEVO_CUTLASS_SOURCE_DIR="$deps_dir/cutlass-7127592069c2fe01b041e174ba4345ef9b279671"
 "$apptainer" exec "${container_binds[@]}" "$image" "$cmake_bin" \
   --build "$build_dir" -j"$build_jobs"
+source_fingerprint_after="$(evo_source_fingerprint "$source_dir")"
+if test "$source_fingerprint_before" != "$source_fingerprint_after"; then
+  echo "gpu02_build: source changed during build; refusing to publish a stale fingerprint" >&2
+  exit 2
+fi
+fingerprint_partial="${fingerprint_file}.$$.partial"
+trap 'rm -f -- "$fingerprint_partial"' EXIT HUP INT TERM
+printf '%s\n' "$source_fingerprint_before" >"$fingerprint_partial"
+mv -- "$fingerprint_partial" "$fingerprint_file"
+trap - EXIT HUP INT TERM
 REMOTE

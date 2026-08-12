@@ -10,6 +10,58 @@ evo_remote_error() {
   printf '%s: %s\n' "$script_name" "$*" >&2
 }
 
+evo_require_file() {
+  local script_name="$1"
+  local label="$2"
+  local path="$3"
+  if ! test -f "$path"; then
+    evo_remote_error "$script_name" "$label is missing at $path"
+    return 2
+  fi
+}
+
+evo_sha256_file() {
+  local path="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$path"
+  else
+    shasum -a 256 "$path"
+  fi
+}
+
+evo_sha256_stream() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum
+  else
+    shasum -a 256
+  fi
+}
+
+evo_source_fingerprint() {
+  local source_dir="$1"
+  local entry=""
+  local path=""
+  test -d "$source_dir" || {
+    evo_remote_error source_fingerprint "source directory is missing at $source_dir"
+    return 2
+  }
+  (
+    cd -- "$source_dir"
+    while IFS= read -r -d '' path; do
+      evo_sha256_file "$path"
+    done < <(
+      for entry in CMakeLists.txt conanfile.py configs include scripts src \
+          tests third_party/flash-attention-shim tools; do
+        if test -f "$entry"; then
+          printf '%s\0' "$entry"
+        elif test -d "$entry"; then
+          find "$entry" -type f -print0
+        fi
+      done | LC_ALL=C sort -z
+    )
+  ) | evo_sha256_stream | awk '{print $1}'
+}
+
 evo_validate_optional_remote_path() {
   local script_name="$1"
   local variable_name="$2"

@@ -3,10 +3,8 @@
 #include <iostream>
 #include <string>
 #include <string_view>
-#include <vector>
 
 #include "evo/cli.hpp"
-#include "evo/sequence_io.hpp"
 #include "evo/status.hpp"
 #include "evo/tokenizer.hpp"
 #include "evo/version.hpp"
@@ -69,23 +67,6 @@ int main(const int argc, char **argv) {
       if (options.dump_tokens) {
         dump_tokens("prompt", options.prompt);
       }
-    } else {
-      std::vector<evo::SequenceRecord> records;
-      status = evo::read_sequence_file(options.score_path, &records);
-      if (!status.ok()) {
-        return fail(status);
-      }
-      for (const auto &record : records) {
-        if (record.bytes.size() > options.context_size) {
-          return fail({evo::ErrorCode::kInvalidArgument,
-                       "score record '" + record.name + "' exceeds --ctx"});
-        }
-      }
-      if (options.dump_tokens) {
-        for (const auto &record : records) {
-          dump_tokens(record.name, record.bytes);
-        }
-      }
     }
 
 #if defined(EVO_HAS_CUDA)
@@ -97,10 +78,9 @@ int main(const int argc, char **argv) {
     status = evo::cuda::run_inference_cli(options, allow_test_fixture);
     return status.ok() ? 0 : fail(status);
 #else
-    return fail(
-        {evo::ErrorCode::kUnsupported,
-         "this evo binary was built without CUDA support; rebuild with "
-         "-DEVO_CUDA=ON"});
+    return fail({evo::ErrorCode::kUnsupported,
+                 "this evo binary was built without CUDA support; rebuild with "
+                 "-DEVO_CUDA=ON"});
 #endif
   } catch (const std::exception &error) {
     return fail({evo::ErrorCode::kInternal, error.what()});

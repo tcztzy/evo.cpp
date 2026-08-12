@@ -361,6 +361,85 @@ def main() -> int:
             "score mode did not concatenate logits across activation chunks"
         )
 
+    multi_score_input = args.work_dir / "multi-score.fasta"
+    multi_score_input.write_text(">first\nACGT\n>second description\nTGCA\n")
+    multi_score_result = run_checked(
+        [
+            str(args.binary),
+            "-m",
+            str(model),
+            "--score",
+            str(multi_score_input),
+            "--ctx",
+            "8",
+            "--gpu",
+            gpu_list,
+            "--dump-tokens",
+        ]
+    )
+    multi_scores = [json.loads(line) for line in multi_score_result.stdout.splitlines()]
+    if (
+        [record["name"] for record in multi_scores] != ["first", "second description"]
+        or [record["tokens"] for record in multi_scores] != [4, 4]
+        or b"tokens first=[65,67,71,84]" not in multi_score_result.stderr
+        or b"tokens second description=[84,71,67,65]" not in multi_score_result.stderr
+    ):
+        raise AssertionError("streaming multi-record FASTA lost order or bytes")
+
+    oversized_score_input = args.work_dir / "oversized-score.fasta"
+    oversized_score_input.write_text(">too-long\nACGTACGTA\n")
+    oversized_score = subprocess.run(
+        [
+            str(args.binary),
+            "-m",
+            str(model),
+            "--score",
+            str(oversized_score_input),
+            "--ctx",
+            "8",
+            "--gpu",
+            gpu_list,
+        ],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if (
+        oversized_score.returncode == 0
+        or oversized_score.stdout
+        or b"record 'too-long' exceeds maximum 8 bytes" not in oversized_score.stderr
+    ):
+        raise AssertionError("oversized streamed record was not rejected cleanly")
+
+    late_error_input = args.work_dir / "late-error.fasta"
+    late_error_input.write_text(">complete\nACGT\n>bad\nAC GT\n")
+    late_error = subprocess.run(
+        [
+            str(args.binary),
+            "-m",
+            str(model),
+            "--score",
+            str(late_error_input),
+            "--ctx",
+            "8",
+            "--gpu",
+            gpu_list,
+        ],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    completed_lines = late_error.stdout.splitlines()
+    if (
+        late_error.returncode == 0
+        or len(completed_lines) != 1
+        or json.loads(completed_lines[0])["name"] != "complete"
+        or b"whitespace at line 4" not in late_error.stderr
+    ):
+        raise AssertionError(
+            "late FASTA error did not preserve one complete JSONL record"
+        )
+
     print("CUDA CLI tests passed")
     return 0
 

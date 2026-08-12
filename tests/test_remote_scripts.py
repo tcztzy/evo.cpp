@@ -40,6 +40,42 @@ def check_remote_helper(source_dir: Path) -> None:
     assert 'package_name="${store_entry#*-}"' in helper_text
     assert "evo_select_python" in helper_text
     assert '"$nix_root"/store/*-python3-*/bin/python3' in helper_text
+    assert "evo_require_file" in helper_text
+    assert "evo_source_fingerprint" in helper_text
+
+    missing = run_bash(
+        "-c",
+        '. "$1"; evo_require_file contract "pinned dependency" "$2"',
+        "remote-helper-test",
+        str(helper),
+        "/missing/pinned-dependency.hpp",
+    )
+    assert missing.returncode != 0
+    assert "/missing/pinned-dependency.hpp" in missing.stderr
+
+    with tempfile.TemporaryDirectory(prefix="evo-source-fingerprint-") as temporary:
+        fingerprint_root = Path(temporary)
+        (fingerprint_root / "src").mkdir()
+        source = fingerprint_root / "src" / "sample.cpp"
+        source.write_text("first\n", encoding="utf-8")
+        first_fingerprint = run_bash(
+            "-c",
+            '. "$1"; evo_source_fingerprint "$2"',
+            "remote-helper-test",
+            str(helper),
+            str(fingerprint_root),
+        )
+        assert first_fingerprint.returncode == 0, first_fingerprint.stderr
+        source.write_text("second\n", encoding="utf-8")
+        second_fingerprint = run_bash(
+            "-c",
+            '. "$1"; evo_source_fingerprint "$2"',
+            "remote-helper-test",
+            str(helper),
+            str(fingerprint_root),
+        )
+        assert second_fingerprint.returncode == 0, second_fingerprint.stderr
+        assert first_fingerprint.stdout != second_fingerprint.stdout
 
     accepted = run_bash(
         "-c",
@@ -264,6 +300,8 @@ def main() -> int:
     )
     assert 'ctest_bin="$EVO_CTEST_BIN_SELECTED"' in text
     assert "evo_select_cmake gpu02_test" in text
+    assert 'fingerprint_file="$build_dir/.evo-source-fingerprint"' in text
+    assert "source fingerprint does not match" in text
     assert 'test -x "$ctest_bin"' not in text, (
         "V18: /nix is mounted only inside Apptainer, so container-only "
         "executables must not be preflighted on the gpu02 host"
@@ -374,6 +412,12 @@ def main() -> int:
     assert 'if (( rsync_attempt >= rsync_retries ))' in build
     assert 'sleep "$rsync_retry_delay"' in build
     assert "evo_select_cmake gpu02_build" in build
+    assert 'fingerprint_file="$build_dir/.evo-source-fingerprint"' in build
+    assert 'source_fingerprint_before="$(evo_source_fingerprint "$source_dir")"' in build
+    assert 'source_fingerprint_after="$(evo_source_fingerprint "$source_dir")"' in build
+    assert "source changed during build" in build
+    assert 'mv -- "$fingerprint_partial" "$fingerprint_file"' in build
+    assert 'evo_require_file gpu02_build "pinned libnpy header"' in build
     assert 'cmake_bin="$EVO_CMAKE_BIN_SELECTED"' in build
     assert "store/*-cmake-[3-9]*/bin/cmake" not in build
     assert "dnsh5jd817k0zddr0k6x3zmyl146bbs6" not in build

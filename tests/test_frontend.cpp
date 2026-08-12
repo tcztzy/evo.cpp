@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -32,9 +32,11 @@ void check(const bool condition, const std::string_view description) {
 }
 
 class TemporaryFile final {
- public:
+public:
   explicit TemporaryFile(const std::string_view contents) {
-    auto pattern = (std::filesystem::temp_directory_path() / "evo-frontend-XXXXXX").string();
+    auto pattern =
+        (std::filesystem::temp_directory_path() / "evo-frontend-XXXXXX")
+            .string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
     const int descriptor = ::mkstemp(writable.data());
@@ -44,7 +46,8 @@ class TemporaryFile final {
     ::close(descriptor);
     path_ = writable.data();
     std::ofstream output(path_, std::ios::binary | std::ios::trunc);
-    output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+    output.write(contents.data(),
+                 static_cast<std::streamsize>(contents.size()));
     if (!output) {
       std::abort();
     }
@@ -55,19 +58,20 @@ class TemporaryFile final {
     std::filesystem::remove(path_, error);
   }
 
-  TemporaryFile(const TemporaryFile&) = delete;
-  TemporaryFile& operator=(const TemporaryFile&) = delete;
+  TemporaryFile(const TemporaryFile &) = delete;
+  TemporaryFile &operator=(const TemporaryFile &) = delete;
 
-  [[nodiscard]] const std::string& path() const noexcept { return path_; }
+  [[nodiscard]] const std::string &path() const noexcept { return path_; }
 
- private:
+private:
   std::string path_;
 };
 
-evo::Status parse(std::vector<std::string> arguments, evo::CliOptions* const options) {
-  std::vector<char*> argv;
+evo::Status parse(std::vector<std::string> arguments,
+                  evo::CliOptions *const options) {
+  std::vector<char *> argv;
   argv.reserve(arguments.size());
-  for (auto& argument : arguments) {
+  for (auto &argument : arguments) {
     argv.push_back(argument.data());
   }
   return evo::parse_cli(static_cast<int>(argv.size()), argv.data(), options);
@@ -84,8 +88,10 @@ void test_tokenizer() {
   std::uint8_t byte = 0;
   check(evo::token_to_byte(255, &byte).ok() && byte == 255,
         "byte token decodes without sign extension");
-  check(!evo::token_to_byte(256, &byte).ok(), "non-byte vocabulary ID is rejected");
-  check(!evo::token_to_byte(1, nullptr).ok(), "null tokenizer output is rejected");
+  check(!evo::token_to_byte(256, &byte).ok(),
+        "non-byte vocabulary ID is rejected");
+  check(!evo::token_to_byte(1, nullptr).ok(),
+        "null tokenizer output is rejected");
 }
 
 void test_sequence_reader() {
@@ -109,13 +115,64 @@ void test_sequence_reader() {
 
   TemporaryFile empty_record{">one\n>two\nAC\n"};
   status = evo::read_sequence_file(empty_record.path(), &records);
-  check(!status.ok() && status.message().find("has no sequence") != std::string::npos,
+  check(!status.ok() &&
+            status.message().find("has no sequence") != std::string::npos,
         "empty FASTA record is rejected");
 
   TemporaryFile whitespace{">one\nAC GT\n"};
   status = evo::read_sequence_file(whitespace.path(), &records);
-  check(!status.ok() && status.message().find("whitespace") != std::string::npos,
+  check(!status.ok() &&
+            status.message().find("whitespace") != std::string::npos,
         "ambiguous FASTA whitespace is rejected");
+
+  std::vector<std::string> streamed_names;
+  std::vector<std::string> streamed_bytes;
+  status = evo::stream_sequence_file(fasta.path(), 4,
+                                     [&](const evo::SequenceRecord &record) {
+                                       streamed_names.push_back(record.name);
+                                       streamed_bytes.push_back(record.bytes);
+                                       return evo::Status::Ok();
+                                     });
+  check(status.ok() &&
+            streamed_names ==
+                std::vector<std::string>({"one", "two description"}) &&
+            streamed_bytes == std::vector<std::string>({"ACGT", "N"}),
+        "streaming FASTA delivers one ordered byte-exact record at a time");
+
+  TemporaryFile oversized_fasta{">one\nACGTA\n"};
+  std::size_t delivered = 0;
+  status = evo::stream_sequence_file(oversized_fasta.path(), 4,
+                                     [&](const evo::SequenceRecord &) {
+                                       ++delivered;
+                                       return evo::Status::Ok();
+                                     });
+  check(!status.ok() && delivered == 0 &&
+            status.message().find("exceeds maximum 4 bytes") !=
+                std::string::npos,
+        "FASTA record limit is enforced before callback delivery");
+
+  TemporaryFile oversized_raw{"ACGTA"};
+  status = evo::stream_sequence_file(oversized_raw.path(), 4,
+                                     [&](const evo::SequenceRecord &) {
+                                       ++delivered;
+                                       return evo::Status::Ok();
+                                     });
+  check(!status.ok() && delivered == 0 &&
+            status.message().find("exceeds maximum 4 bytes") !=
+                std::string::npos,
+        "raw record limit is enforced while bytes are appended");
+
+  TemporaryFile late_error{">one\nAC\n>two\nA C\n"};
+  status = evo::stream_sequence_file(
+      late_error.path(), 8, [&](const evo::SequenceRecord &record) {
+        ++delivered;
+        check(record.name == "one" && record.bytes == "AC",
+              "record preceding a later parse error remains complete");
+        return evo::Status::Ok();
+      });
+  check(!status.ok() && delivered == 1 &&
+            status.message().find("whitespace at line 4") != std::string::npos,
+        "later FASTA errors preserve completed callbacks and fail the stream");
 }
 
 void test_sampler() {
@@ -125,14 +182,16 @@ void test_sampler() {
   evo::TokenId token = 0;
   evo::Sampler greedy{{1.0F, 1, 1.0F, 123}};
   auto status = greedy.sample(logits, &token);
-  check(status.ok() && token == 7, "greedy sampler uses stable lowest-ID tie break");
+  check(status.ok() && token == 7,
+        "greedy sampler uses stable lowest-ID tie break");
 
   evo::Sampler first{{1.0F, 8, 0.95F, 42}};
   evo::Sampler second{{1.0F, 8, 0.95F, 42}};
   for (std::size_t iteration = 0; iteration < 64; ++iteration) {
     evo::TokenId left = 0;
     evo::TokenId right = 0;
-    check(first.sample(logits, &left).ok() && second.sample(logits, &right).ok() && left == right,
+    check(first.sample(logits, &left).ok() &&
+              second.sample(logits, &right).ok() && left == right,
           "identical sampler seeds reproduce every draw");
   }
 
@@ -161,19 +220,40 @@ void test_sampler() {
 
 void test_cli() {
   evo::CliOptions options;
-  auto status = parse({"evo", "-m", "model.safetensors", "-p", "ACGT", "-n", "8",
-                       "--ctx", "128", "--gpu", "0,1,2,3", "--temp", "0.8",
-                       "--top-k", "32", "--top-p", "0.9", "--seed", "99",
-                       "--force-prompt-threshold", "3",
-                       "--dump-tokens", "--dump-logits", "logits.npy", "--dump-layer",
+  auto status = parse({"evo",
+                       "-m",
+                       "model.safetensors",
+                       "-p",
+                       "ACGT",
+                       "-n",
+                       "8",
+                       "--ctx",
+                       "128",
+                       "--gpu",
+                       "0,1,2,3",
+                       "--temp",
+                       "0.8",
+                       "--top-k",
+                       "32",
+                       "--top-p",
+                       "0.9",
+                       "--seed",
+                       "99",
+                       "--force-prompt-threshold",
+                       "3",
+                       "--dump-tokens",
+                       "--dump-logits",
+                       "logits.npy",
+                       "--dump-layer",
                        "49:layer.npy"},
                       &options);
-  check(status.ok(), std::string{"valid generation CLI parses: "} + status.message());
+  check(status.ok(),
+        std::string{"valid generation CLI parses: "} + status.message());
   check(options.mode == evo::RunMode::kGenerate && options.prompt == "ACGT" &&
             options.generated_tokens == 8 && options.context_size == 128,
         "generation CLI values are retained");
-  check(options.gpu_ids == std::vector<int>({0, 1, 2, 3}) && options.sampling.top_k == 32 &&
-            options.sampling.seed == 99,
+  check(options.gpu_ids == std::vector<int>({0, 1, 2, 3}) &&
+            options.sampling.top_k == 32 && options.sampling.seed == 99,
         "GPU and sampling CLI values are retained");
   check(options.dump_layer.has_value() && options.dump_layer->layer == 49,
         "debug layer CLI parses");
@@ -186,42 +266,49 @@ void test_cli() {
             options.dump_layer->layer == 50,
         "CLI defers model-specific layer bounds to the runtime");
 
-  status = parse({"evo", "-m", "model.safetensors", "--score", "input.fa", "--gpu", "2"},
-                 &options);
+  status = parse(
+      {"evo", "-m", "model.safetensors", "--score", "input.fa", "--gpu", "2"},
+      &options);
   check(status.ok() && options.mode == evo::RunMode::kScore,
         "score CLI accepts one GPU and no sampling options");
 
-  status = parse({"evo", "-m", "a", "-m", "b", "-p", "A", "-n", "1", "--gpu", "0"},
-                 &options);
-  check(!status.ok() && status.message().find("specified twice") != std::string::npos,
+  status =
+      parse({"evo", "-m", "a", "-m", "b", "-p", "A", "-n", "1", "--gpu", "0"},
+            &options);
+  check(!status.ok() &&
+            status.message().find("specified twice") != std::string::npos,
         "duplicate CLI options are rejected");
-  status = parse({"evo", "-m", "a", "-p", "A", "--score", "x", "-n", "1", "--gpu", "0"},
-                 &options);
-  check(!status.ok() && status.message().find("exactly one") != std::string::npos,
+  status = parse(
+      {"evo", "-m", "a", "-p", "A", "--score", "x", "-n", "1", "--gpu", "0"},
+      &options);
+  check(!status.ok() &&
+            status.message().find("exactly one") != std::string::npos,
         "conflicting run modes are rejected");
-  status = parse({"evo", "-m", "a", "-p", "A", "-n", "1", "--gpu", "0,0"},
-                 &options);
-  check(!status.ok() && status.message().find("duplicate ID") != std::string::npos,
+  status =
+      parse({"evo", "-m", "a", "-p", "A", "-n", "1", "--gpu", "0,0"}, &options);
+  check(!status.ok() &&
+            status.message().find("duplicate ID") != std::string::npos,
         "duplicate GPU IDs are rejected");
-  status = parse({"evo", "-m", "a", "-p", "A", "-n", "1", "--gpu", "0", "--top-p", "0"},
-                 &options);
+  status = parse(
+      {"evo", "-m", "a", "-p", "A", "-n", "1", "--gpu", "0", "--top-p", "0"},
+      &options);
   check(!status.ok() && status.message().find("top-p") != std::string::npos,
         "invalid top-p is rejected");
   status = parse({"evo", "-m", "a", "-p", "A", "-n", "1", "--gpu", "0",
                   "--force-prompt-threshold", "0"},
                  &options);
-  check(!status.ok() &&
-            status.message().find("force-prompt-threshold") != std::string::npos,
+  check(!status.ok() && status.message().find("force-prompt-threshold") !=
+                            std::string::npos,
         "zero teacher-forcing threshold is rejected");
   status = parse({"evo", "-m", "a", "--score", "input.fa", "--gpu", "0",
                   "--force-prompt-threshold", "3"},
                  &options);
-  check(!status.ok() &&
-            status.message().find("only valid for generation") != std::string::npos,
+  check(!status.ok() && status.message().find("only valid for generation") !=
+                            std::string::npos,
         "teacher-forcing threshold is rejected for score mode");
 }
 
-}  // namespace
+} // namespace
 
 int main() {
   test_tokenizer();

@@ -425,67 +425,82 @@ Status run_generate(const CliOptions &options, PipelineModel *const model,
 
 Status run_score(const CliOptions &options, PipelineModel *const model,
                  MemoryTracker *const memory, Metrics *const metrics) {
-  std::vector<SequenceRecord> records;
-  auto status = read_sequence_file(options.score_path, &records);
-  if (!status.ok()) {
-    return status;
-  }
-  if (records.size() != 1 && (options.dump_logits_path.has_value() ||
-                              options.dump_layer.has_value())) {
-    return {ErrorCode::kInvalidArgument,
-            "--dump-logits and --dump-layer require a score input with "
-            "exactly one record"};
-  }
-
   const std::size_t vocab_size = model->config().vocab_size;
   if (vocab_size != kTokenizerVocabSize) {
     return {ErrorCode::kModelFormat, "scoring requires a 512-token vocabulary"};
   }
-  for (const auto &record : records) {
-    const auto tokens = encode_bytes(record.bytes);
-    if (tokens.size() < 2) {
-      return {ErrorCode::kInvalidArgument,
-              "score record '" + record.name +
-                  "' must contain at least two bytes"};
-    }
-    std::vector<float> logits;
-    const auto dump = make_layer_dump(options);
-    const bool stateless =
-        !dump.has_value() && tokens.size() <= model->activation_capacity();
-    status = prefill_in_chunks(tokens, tokens.size(), dump, true, false,
-                               stateless, model, &logits, metrics);
-    if (!status.ok()) {
-      return {status.code(),
-              "score prefill for '" + record.name + "': " + status.message()};
-    }
-    status = memory->observe();
-    if (!status.ok()) {
-      return status;
-    }
-    if (logits.size() != tokens.size() * vocab_size) {
-      return {ErrorCode::kInternal,
-              "score prefill returned an incomplete logit matrix"};
-    }
-    if (options.dump_logits_path.has_value()) {
-      status = npy::write_f32(*options.dump_logits_path, logits, tokens.size(),
-                              vocab_size);
-      if (!status.ok()) {
-        return status;
-      }
-    }
+  std::size_t processed_records = 0;
+  const auto status = stream_sequence_file(
+      options.score_path, options.context_size,
+      [&](const SequenceRecord &record) -> Status {
+        if (processed_records != 0 && (options.dump_logits_path.has_value() ||
+                                       options.dump_layer.has_value())) {
+          return {ErrorCode::kInvalidArgument,
+                  "--dump-logits and --dump-layer require a score input with "
+                  "exactly one record"};
+        }
+        if (options.dump_tokens) {
+          const auto dumped = encode_bytes(record.bytes);
+          std::cerr << "tokens " << record.name << "=[";
+          for (std::size_t index = 0; index < dumped.size(); ++index) {
+            if (index != 0) {
+              std::cerr << ',';
+            }
+            std::cerr << dumped[index];
+          }
+          std::cerr << "]\n";
+        }
+        const auto tokens = encode_bytes(record.bytes);
+        if (tokens.size() < 2) {
+          return {ErrorCode::kInvalidArgument,
+                  "score record '" + record.name +
+                      "' must contain at least two bytes"};
+        }
+        std::vector<float> logits;
+        const auto dump = make_layer_dump(options);
+        const bool stateless =
+            !dump.has_value() && tokens.size() <= model->activation_capacity();
+        auto record_status =
+            prefill_in_chunks(tokens, tokens.size(), dump, true, false,
+                              stateless, model, &logits, metrics);
+        if (!record_status.ok()) {
+          return {record_status.code(), "score prefill for '" + record.name +
+                                            "': " + record_status.message()};
+        }
+        record_status = memory->observe();
+        if (!record_status.ok()) {
+          return record_status;
+        }
+        if (logits.size() != tokens.size() * vocab_size) {
+          return {ErrorCode::kInternal,
+                  "score prefill returned an incomplete logit matrix"};
+        }
+        if (options.dump_logits_path.has_value()) {
+          record_status = npy::write_f32(*options.dump_logits_path, logits,
+                                         tokens.size(), vocab_size);
+          if (!record_status.ok()) {
+            return record_status;
+          }
+        }
 
-    std::vector<double> token_scores;
-    token_scores.reserve(tokens.size() - 1);
-    for (std::size_t index = 1; index < tokens.size(); ++index) {
-      double value = 0.0;
-      status = log_probability(logits.data() + (index - 1) * vocab_size,
-                               vocab_size, tokens[index], &value);
-      if (!status.ok()) {
-        return status;
-      }
-      token_scores.push_back(value);
-    }
-    print_score_record(record, token_scores);
+        std::vector<double> token_scores;
+        token_scores.reserve(tokens.size() - 1);
+        for (std::size_t index = 1; index < tokens.size(); ++index) {
+          double value = 0.0;
+          record_status =
+              log_probability(logits.data() + (index - 1) * vocab_size,
+                              vocab_size, tokens[index], &value);
+          if (!record_status.ok()) {
+            return record_status;
+          }
+          token_scores.push_back(value);
+        }
+        print_score_record(record, token_scores);
+        ++processed_records;
+        return Status::Ok();
+      });
+  if (!status.ok()) {
+    return status;
   }
   std::cout.flush();
   if (!std::cout) {
