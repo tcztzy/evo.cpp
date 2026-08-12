@@ -256,6 +256,7 @@ if(EVO_CUDA)
   add_library(
     evo_cuda STATIC
     src/cuda/attention.cu
+    src/cuda/esmc.cu
     src/cuda/flash_attention.cu
     src/cuda/hyena.cu
     src/cuda/model.cu
@@ -393,6 +394,19 @@ if(EVO_CUDA)
     if(EVO_WARNINGS_AS_ERRORS)
       target_compile_options(
         evo-cuda-pipeline-tests PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Werror>)
+    endif()
+
+    add_executable(evo-cuda-esmc-tests tests/test_cuda_esmc.cu)
+    target_link_libraries(evo-cuda-esmc-tests PRIVATE evo_cuda)
+    set_target_properties(
+      evo-cuda-esmc-tests
+      PROPERTIES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+    target_compile_options(
+      evo-cuda-esmc-tests
+      PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr;-Xcompiler=-Wall,-Wextra,-Wconversion,-Wshadow>)
+    if(EVO_WARNINGS_AS_ERRORS)
+      target_compile_options(
+        evo-cuda-esmc-tests PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Werror>)
     endif()
 
     add_executable(
@@ -803,6 +817,13 @@ if(BUILD_TESTING)
         --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_tiny_model.py
         --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/cuda_pipeline)
     add_test(
+      NAME cuda_esmc
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_esmc_backend.py
+        --binary $<TARGET_FILE:evo-cuda-esmc-tests>
+        --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_tiny_esmc.py
+        --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/cuda_esmc)
+    add_test(
       NAME cuda_cli
       COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cuda_cli.py
@@ -865,6 +886,11 @@ if(BUILD_TESTING)
       PROPERTIES
         LABELS "gpu;cuda;multi_gpu"
         SKIP_RETURN_CODE 77
+        ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools")
+    set_tests_properties(
+      cuda_esmc
+      PROPERTIES
+        LABELS "gpu;cuda"
         ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools")
     set_tests_properties(
       cuda_cli
