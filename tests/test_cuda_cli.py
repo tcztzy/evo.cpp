@@ -468,6 +468,197 @@ def main() -> int:
     if streaming_metrics["retained_logits_peak_bytes"] >= full_logits_bytes:
         raise AssertionError("streaming score mode retained the full logit matrix")
 
+    def score_bytes(name: str, sequence: bytes) -> dict[str, object]:
+        path = args.work_dir / f"variant-{name}.txt"
+        path.write_bytes(sequence)
+        result = run_checked(
+            [
+                str(args.binary),
+                "-m",
+                str(model),
+                "--score",
+                str(path),
+                "--ctx",
+                "8",
+                "--gpu",
+                gpu_list,
+            ]
+        )
+        return json.loads(result.stdout)
+
+    forward_reference = score_bytes("forward-reference", b"AACCGG")
+    forward_alternate = score_bytes("forward-alternate", b"AATCGG")
+    reverse_reference = score_bytes("reverse-reference", b"CCGGTT")
+    reverse_alternate = score_bytes("reverse-alternate", b"CCGATT")
+    variant_result = run_checked(
+        [
+            str(args.binary),
+            "variant-score",
+            "-m",
+            str(model),
+            "--sequence",
+            "AACCGGTT",
+            "--position",
+            "3",
+            "--ref",
+            "C",
+            "--alt",
+            "T",
+            "--window",
+            "6",
+            "--strand",
+            "both",
+            "--normalization",
+            "sum",
+            "--ctx",
+            "8",
+            "--gpu",
+            gpu_list,
+            "--dump-tokens",
+        ]
+    )
+    variant = json.loads(variant_result.stdout)
+    strand_scores = {item["strand"]: item for item in variant["strands"]}
+    expected_forward = (
+        forward_alternate["log_likelihood"]
+        - forward_reference["log_likelihood"]
+    )
+    expected_reverse = (
+        reverse_alternate["log_likelihood"]
+        - reverse_reference["log_likelihood"]
+    )
+    if any(
+        (
+            variant["position"] != 3,
+            variant["position_coordinate_system"] != "1-based",
+            variant["reference"] != "C",
+            variant["alternate"] != "T",
+            variant["window"]["start"] != 0,
+            variant["window"]["end"] != 6,
+            variant["window"]["coordinate_system"] != "0-based-half-open",
+            variant["window"]["reference_sequence"] != "AACCGG",
+            variant["window"]["alternate_sequence"] != "AATCGG",
+            variant["normalization"] != "sum_log_likelihood",
+            variant["backend"] != "cuda",
+            variant["profile"] != "test_fixture",
+            set(strand_scores) != {"+", "-"},
+            variant["aggregation"] != "mean_across_strands",
+            b"tokens variant-reference=[65,65,67,67,71,71]"
+            not in variant_result.stderr,
+        )
+    ):
+        raise AssertionError("variant scoring omitted coordinate or strand metadata")
+    if not all(
+        (
+            math.isclose(
+                strand_scores["+"]["reference_log_likelihood"],
+                forward_reference["log_likelihood"],
+                rel_tol=1e-12,
+                abs_tol=1e-12,
+            ),
+            math.isclose(
+                strand_scores["+"]["alternate_log_likelihood"],
+                forward_alternate["log_likelihood"],
+                rel_tol=1e-12,
+                abs_tol=1e-12,
+            ),
+            math.isclose(
+                strand_scores["-"]["reference_log_likelihood"],
+                reverse_reference["log_likelihood"],
+                rel_tol=1e-12,
+                abs_tol=1e-12,
+            ),
+            math.isclose(
+                strand_scores["-"]["alternate_log_likelihood"],
+                reverse_alternate["log_likelihood"],
+                rel_tol=1e-12,
+                abs_tol=1e-12,
+            ),
+            math.isclose(
+                variant["score"],
+                (expected_forward + expected_reverse) / 2.0,
+                rel_tol=1e-12,
+                abs_tol=1e-12,
+            ),
+        )
+    ):
+        raise AssertionError("variant delta differs from exact standalone scoring")
+
+    mean_variant_result = run_checked(
+        [
+            str(args.binary),
+            "variant-score",
+            "-m",
+            str(model),
+            "--sequence",
+            "AACCGGTT",
+            "--position",
+            "3",
+            "--ref",
+            "C",
+            "--alt",
+            "T",
+            "--window",
+            "6",
+            "--strand",
+            "forward",
+            "--normalization",
+            "mean",
+            "--ctx",
+            "8",
+            "--gpu",
+            gpu_list,
+        ]
+    )
+    mean_variant = json.loads(mean_variant_result.stdout)
+    expected_mean_delta = (
+        forward_alternate["log_likelihood"] / 5
+        - forward_reference["log_likelihood"] / 5
+    )
+    if (
+        mean_variant["normalization"] != "mean_log_likelihood"
+        or mean_variant["aggregation"] != "single_strand"
+        or not math.isclose(
+            mean_variant["score"],
+            expected_mean_delta,
+            rel_tol=1e-12,
+            abs_tol=1e-12,
+        )
+    ):
+        raise AssertionError("variant mean normalization is not explicit or exact")
+
+    mismatch_variant = subprocess.run(
+        [
+            str(args.binary),
+            "variant-score",
+            "-m",
+            str(model),
+            "--sequence",
+            "AACCGGTT",
+            "--position",
+            "3",
+            "--ref",
+            "G",
+            "--alt",
+            "T",
+            "--window",
+            "6",
+            "--ctx",
+            "8",
+            "--gpu",
+            gpu_list,
+        ],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if (
+        mismatch_variant.returncode == 0
+        or mismatch_variant.stdout
+        or b"reference allele does not match" not in mismatch_variant.stderr
+    ):
+        raise AssertionError("variant reference mismatch did not fail closed")
+
     multi_score_input = args.work_dir / "multi-score.fasta"
     multi_score_input.write_text(">first\nACGT\n>second description\nTGCA\n")
     multi_score_result = run_checked(

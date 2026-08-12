@@ -62,6 +62,9 @@ build/Release/evo -m "$MODEL" -p ACGT -n 32 --ctx 8192 --gpu 0
 build/Release/evo -m "$MODEL" --score sequences.fa --ctx 8192 --gpu 0
 build/Release/evo embed -m "$MODEL" --input sequences.fa \
   --output embeddings --layer 24 --pooling mean --ctx 8192 --gpu 0
+build/Release/evo variant-score -m "$MODEL" --sequence AACCGGTT \
+  --position 3 --ref C --alt T --window 6 --strand both \
+  --normalization sum --ctx 8192 --gpu 0
 ```
 
 构建依赖 Conan 2。仓库内的 `conan.lock` 固定了 libnpy 1.0.1 及其 Conan
@@ -82,6 +85,7 @@ recipe revision。CUDA 使用的 FlashAttention 与 CUTLASS 仍由 CMake
 [7B first-divergence 审计](docs/vortex-7b-bit-exactness.md)、
 [数值契约](docs/math-semantics.md)、[checkpoint 转换](docs/checkpoint-conversion.md)和
 [embedding 输出契约](docs/embeddings.md)、
+[变异评分契约](docs/variant-scoring.md)、
 [可复现 GPU 环境](docs/gpu02-environment.md)。
 
 `evo.cpp` 是 Apache-2.0 独立项目，不属于 Arc Institute 或 NVIDIA。模型架构和

@@ -10,10 +10,11 @@
 
 #include "evo/sampler.hpp"
 #include "evo/status.hpp"
+#include "evo/variant.hpp"
 
 namespace evo {
 
-enum class RunMode { kGenerate, kScore, kEmbed };
+enum class RunMode { kGenerate, kScore, kEmbed, kVariantScore };
 
 enum class EmbeddingPooling { kNone, kMean, kLast };
 
@@ -31,6 +32,13 @@ struct CliOptions final {
   std::string embed_output_dir;
   std::size_t embed_layer{0};
   EmbeddingPooling embedding_pooling{EmbeddingPooling::kNone};
+  std::string variant_sequence;
+  std::size_t variant_position_1based{0};
+  std::string variant_reference;
+  std::string variant_alternate;
+  std::size_t variant_window_tokens{0};
+  VariantStrand variant_strand{VariantStrand::kBoth};
+  VariantNormalization variant_normalization{VariantNormalization::kSum};
   std::size_t generated_tokens{0};
   std::size_t context_size{8192};
   std::optional<std::size_t> force_prompt_threshold;

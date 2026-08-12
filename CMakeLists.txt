@@ -64,6 +64,7 @@ add_library(
   src/sequence_io.cpp
   src/status.cpp
   src/tokenizer.cpp
+  src/variant.cpp
   src/version.cpp)
 add_library(evo::core ALIAS evo_core)
 target_include_directories(

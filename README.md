@@ -66,6 +66,9 @@ build/Release/evo -m "$MODEL" -p ACGT -n 32 --ctx 8192 --gpu 0
 build/Release/evo -m "$MODEL" --score sequences.fa --ctx 8192 --gpu 0
 build/Release/evo embed -m "$MODEL" --input sequences.fa \
   --output embeddings --layer 24 --pooling mean --ctx 8192 --gpu 0
+build/Release/evo variant-score -m "$MODEL" --sequence AACCGGTT \
+  --position 3 --ref C --alt T --window 6 --strand both \
+  --normalization sum --ctx 8192 --gpu 0
 ```
 
 This requires Conan 2. The checked-in `conan.lock` fixes libnpy 1.0.1 and its
@@ -88,6 +91,7 @@ then see the [7B first-divergence audit](docs/vortex-7b-bit-exactness.md),
 [numerical contracts](docs/math-semantics.md),
 [checkpoint conversion](docs/checkpoint-conversion.md), and
 [embedding outputs](docs/embeddings.md),
+[variant scoring](docs/variant-scoring.md),
 [reproducible GPU environment](docs/gpu02-environment.md).
 
 `evo.cpp` is an independent Apache-2.0 project, not an Arc Institute or NVIDIA

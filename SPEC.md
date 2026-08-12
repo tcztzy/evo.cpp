@@ -64,7 +64,7 @@ T1|x|stream FASTA/raw records；移除 CLI 双重读取；保持 parser contract
 T2|x|stream scoring chunk logits；默认⊥累计完整 logits matrix|V1,V4,V6,V15,V16,I1,I6
 T3|x|抽离 backend-neutral model/context/batch；发布稳定 C ABI + install package|V1,V2,V8,V10,V14,V15,V16,I3,I8
 T4|x|实现 first-class intermediate embedding API/CLI + metadata|V1,V7,V11,V15,V16,I2,I6
-T5|.|实现 strand/coordinate-aware variant scoring CLI|V1,V6,V7,V12,V16,I2,I5,I6
+T5|x|实现 strand/coordinate-aware variant scoring CLI|V1,V6,V7,V12,V16,I2,I5,I6
 T6|.|实现 HF revision/hash/cache 获取、CI 与预编译 release pipeline|V2,V10,V16,I2,I4,I8
 T7|.|实现共享 model 的 scheduler、dynamic batching 与 bio-native server|V8,V10,V13,V16,I7
 T8|.|设计并实现 fast/quantized profiles + 数值/科学 benchmark gates|V1,V7,V9,V10,V16,I4

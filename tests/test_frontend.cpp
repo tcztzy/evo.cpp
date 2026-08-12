@@ -19,6 +19,7 @@
 #include "evo/sampler.hpp"
 #include "evo/sequence_io.hpp"
 #include "evo/tokenizer.hpp"
+#include "evo/variant.hpp"
 
 namespace {
 
@@ -218,6 +219,42 @@ void test_sampler() {
         "invalid sampling configuration fails closed");
 }
 
+void test_variant() {
+  std::string reverse;
+  auto status = evo::reverse_complement("ACGTN", &reverse);
+  check(status.ok() && reverse == "NACGT",
+        "reverse complement preserves canonical IUPAC DNA");
+  status = evo::reverse_complement("RYSWKMBDHVN", &reverse);
+  check(status.ok() && reverse == "NBDHVKMWSRY",
+        "reverse complement supports ambiguous IUPAC DNA");
+  status = evo::reverse_complement("acgt", &reverse);
+  check(status.ok() && reverse == "acgt",
+        "reverse complement preserves input case");
+  status = evo::reverse_complement("ACGU", &reverse);
+  check(!status.ok() && status.message().find("offset 3") != std::string::npos,
+        "reverse complement rejects non-IUPAC DNA with an offset");
+
+  evo::VariantWindow window;
+  status = evo::make_variant_window("AACCGGTT", 3, "C", "T", 6, &window);
+  check(status.ok() && window.reference == "AACCGG" &&
+            window.alternate == "AATCGG" && window.reference_start == 0 &&
+            window.reference_end == 6 && window.variant_offset == 2,
+        "SNV window uses 1-based input and 0-based half-open coordinates");
+  status = evo::make_variant_window("AACCGG", 3, "C", "CTT", 5, &window);
+  check(status.ok() && window.reference == "ACC" &&
+            window.alternate == "ACTTC" && window.reference_start == 1 &&
+            window.reference_end == 4 && window.variant_offset == 1,
+        "indel windows fit the longer allele without shifting the locus");
+  status = evo::make_variant_window("AACCGG", 3, "G", "T", 5, &window);
+  check(!status.ok() &&
+            status.message().find("does not match") != std::string::npos,
+        "reference mismatch fails before inference");
+  status = evo::make_variant_window("A", 1, "A", "T", 2, &window);
+  check(
+      !status.ok() && status.message().find("two tokens") != std::string::npos,
+      "variant likelihood requires two-token reference and alternate windows");
+}
+
 void test_cli() {
   evo::CliOptions options;
   auto status = parse({"evo",
@@ -296,6 +333,67 @@ void test_cli() {
             status.message().find("generation/scoring") != std::string::npos,
         "embedding rejects sampling and generation options");
 
+  status = parse({"evo",
+                  "variant-score",
+                  "-m",
+                  "model.safetensors",
+                  "--sequence",
+                  "AACCGGTT",
+                  "--position",
+                  "3",
+                  "--ref",
+                  "C",
+                  "--alt",
+                  "T",
+                  "--window",
+                  "6",
+                  "--strand",
+                  "both",
+                  "--normalization",
+                  "mean",
+                  "--ctx",
+                  "8",
+                  "--gpu",
+                  "0,1"},
+                 &options);
+  check(
+      status.ok() && options.mode == evo::RunMode::kVariantScore &&
+          options.variant_sequence == "AACCGGTT" &&
+          options.variant_position_1based == 3 &&
+          options.variant_reference == "C" &&
+          options.variant_alternate == "T" &&
+          options.variant_window_tokens == 6 &&
+          options.variant_strand == evo::VariantStrand::kBoth &&
+          options.variant_normalization == evo::VariantNormalization::kMean,
+      "variant-score retains coordinates, alleles, strand, and normalization");
+  status = parse({"evo", "variant-score", "-m", "model.safetensors",
+                  "--sequence", "AACCGGTT", "--position", "3", "--ref", "C",
+                  "--alt", "T", "--ctx", "8", "--gpu", "0"},
+                 &options);
+  check(status.ok() && options.variant_window_tokens == 8 &&
+            options.variant_strand == evo::VariantStrand::kBoth &&
+            options.variant_normalization == evo::VariantNormalization::kSum,
+        "variant-score defaults to context window, both strands, and sum");
+  status = parse({"evo", "variant-score", "-m", "model.safetensors",
+                  "--sequence", "AACCGGTT", "--position", "3", "--ref", "C",
+                  "--alt", "T", "--window", "9", "--ctx", "8", "--gpu", "0"},
+                 &options);
+  check(!status.ok() &&
+            status.message().find("must not exceed") != std::string::npos,
+        "variant window cannot exceed the inference context");
+  status = parse({"evo", "variant-score", "-m", "model.safetensors",
+                  "--sequence", "AACCGGTT", "--position", "3", "--ref", "C",
+                  "--alt", "T", "--strand", "sense", "--gpu", "0"},
+                 &options);
+  check(!status.ok() && status.message().find("strand") != std::string::npos,
+        "variant-score rejects unknown strand semantics");
+  status = parse({"evo", "-m", "model.safetensors", "--sequence", "AACCGGTT",
+                  "--position", "3", "--ref", "C", "--alt", "T", "--gpu", "0"},
+                 &options);
+  check(!status.ok() &&
+            status.message().find("variant-score") != std::string::npos,
+        "variant arguments require the variant-score subcommand");
+
   status =
       parse({"evo", "-m", "a", "-m", "b", "-p", "A", "-n", "1", "--gpu", "0"},
             &options);
@@ -338,6 +436,7 @@ int main() {
   test_tokenizer();
   test_sequence_reader();
   test_sampler();
+  test_variant();
   test_cli();
   if (failures != 0) {
     std::cerr << failures << " frontend test(s) failed\n";

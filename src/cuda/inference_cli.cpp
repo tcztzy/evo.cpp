@@ -12,6 +12,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <ostream>
 #include <sstream>
@@ -28,6 +29,7 @@
 #include "evo/sampler.hpp"
 #include "evo/sequence_io.hpp"
 #include "evo/tokenizer.hpp"
+#include "evo/variant.hpp"
 
 namespace evo::cuda {
 namespace {
@@ -613,6 +615,219 @@ Status run_score(const CliOptions &options, PipelineModel *const model,
   return Status::Ok();
 }
 
+Status score_sequence(const std::string_view sequence,
+                      PipelineModel *const model, Metrics *const metrics,
+                      std::vector<double> *const token_scores) {
+  if (model == nullptr || metrics == nullptr || token_scores == nullptr) {
+    return {ErrorCode::kInvalidArgument,
+            "variant sequence scoring arguments are invalid"};
+  }
+  const auto tokens = encode_bytes(sequence);
+  if (tokens.size() < 2) {
+    return {ErrorCode::kInvalidArgument,
+            "variant sequence must contain at least two bytes"};
+  }
+  const std::size_t vocab_size = model->config().vocab_size;
+  if (vocab_size != kTokenizerVocabSize) {
+    return {ErrorCode::kModelFormat,
+            "variant scoring requires a 512-token vocabulary"};
+  }
+  token_scores->clear();
+  token_scores->reserve(tokens.size() - 1);
+  const LogitsChunkConsumer score_chunk =
+      [&](const std::size_t offset,
+          const std::vector<float> &chunk_logits) -> Status {
+    const std::size_t chunk_tokens = chunk_logits.size() / vocab_size;
+    for (std::size_t local = 0; local < chunk_tokens; ++local) {
+      const std::size_t row = offset + local;
+      if (row + 1 >= tokens.size())
+        break;
+      double value = 0.0;
+      const auto status =
+          log_probability(chunk_logits.data() + local * vocab_size, vocab_size,
+                          tokens[row + 1], &value);
+      if (!status.ok())
+        return status;
+      token_scores->push_back(value);
+    }
+    return Status::Ok();
+  };
+  std::vector<float> logits;
+  const bool stateless = tokens.size() <= model->activation_capacity();
+  auto status =
+      prefill_in_chunks(tokens, tokens.size(), std::nullopt, false, false,
+                        stateless, model, &logits, metrics, score_chunk);
+  if (!status.ok())
+    return status;
+  if (token_scores->size() != tokens.size() - 1) {
+    return {ErrorCode::kInternal,
+            "variant prefill returned incomplete token log likelihoods"};
+  }
+  return Status::Ok();
+}
+
+struct VariantStrandScore final {
+  const char *strand{"unknown"};
+  double reference_log_likelihood{0.0};
+  double alternate_log_likelihood{0.0};
+  std::size_t reference_scored_tokens{0};
+  std::size_t alternate_scored_tokens{0};
+  double delta{0.0};
+};
+
+Status score_variant_strand(const std::string_view reference,
+                            const std::string_view alternate,
+                            const VariantStrand strand,
+                            const VariantNormalization normalization,
+                            PipelineModel *const model, Metrics *const metrics,
+                            VariantStrandScore *const result) {
+  if (result == nullptr) {
+    return {ErrorCode::kInvalidArgument, "variant strand score output is null"};
+  }
+  std::vector<double> reference_scores;
+  auto status = score_sequence(reference, model, metrics, &reference_scores);
+  if (!status.ok()) {
+    return {status.code(), std::string{variant_strand_name(strand)} +
+                               " reference window: " + status.message()};
+  }
+  std::vector<double> alternate_scores;
+  status = score_sequence(alternate, model, metrics, &alternate_scores);
+  if (!status.ok()) {
+    return {status.code(), std::string{variant_strand_name(strand)} +
+                               " alternate window: " + status.message()};
+  }
+  result->strand = variant_strand_name(strand);
+  result->reference_scored_tokens = reference_scores.size();
+  result->alternate_scored_tokens = alternate_scores.size();
+  result->reference_log_likelihood =
+      std::accumulate(reference_scores.begin(), reference_scores.end(), 0.0);
+  result->alternate_log_likelihood =
+      std::accumulate(alternate_scores.begin(), alternate_scores.end(), 0.0);
+  if (normalization == VariantNormalization::kMean) {
+    result->reference_log_likelihood /=
+        static_cast<double>(result->reference_scored_tokens);
+    result->alternate_log_likelihood /=
+        static_cast<double>(result->alternate_scored_tokens);
+  }
+  result->delta =
+      result->alternate_log_likelihood - result->reference_log_likelihood;
+  return Status::Ok();
+}
+
+Status run_variant_score(const CliOptions &options, PipelineModel *const model,
+                         MemoryTracker *const memory, Metrics *const metrics) {
+  VariantWindow window;
+  auto status = make_variant_window(
+      options.variant_sequence, options.variant_position_1based,
+      options.variant_reference, options.variant_alternate,
+      options.variant_window_tokens, &window);
+  if (!status.ok())
+    return status;
+
+  if (options.dump_tokens) {
+    const auto dump = [](const std::string_view label,
+                         const std::string_view sequence) {
+      const auto tokens = encode_bytes(sequence);
+      std::cerr << "tokens " << label << "=[";
+      for (std::size_t index = 0; index < tokens.size(); ++index) {
+        if (index != 0)
+          std::cerr.put(',');
+        std::cerr << tokens[index];
+      }
+      std::cerr << "]\n";
+    };
+    dump("variant-reference", window.reference);
+    dump("variant-alternate", window.alternate);
+  }
+
+  std::vector<VariantStrandScore> scores;
+  scores.reserve(options.variant_strand == VariantStrand::kBoth ? 2 : 1);
+  if (options.variant_strand == VariantStrand::kForward ||
+      options.variant_strand == VariantStrand::kBoth) {
+    VariantStrandScore result;
+    status = score_variant_strand(
+        window.reference, window.alternate, VariantStrand::kForward,
+        options.variant_normalization, model, metrics, &result);
+    if (!status.ok())
+      return status;
+    scores.push_back(result);
+  }
+  if (options.variant_strand == VariantStrand::kReverse ||
+      options.variant_strand == VariantStrand::kBoth) {
+    std::string reverse_reference;
+    status = reverse_complement(window.reference, &reverse_reference);
+    if (!status.ok())
+      return status;
+    std::string reverse_alternate;
+    status = reverse_complement(window.alternate, &reverse_alternate);
+    if (!status.ok())
+      return status;
+    VariantStrandScore result;
+    status = score_variant_strand(
+        reverse_reference, reverse_alternate, VariantStrand::kReverse,
+        options.variant_normalization, model, metrics, &result);
+    if (!status.ok())
+      return status;
+    scores.push_back(result);
+  }
+  status = memory->observe();
+  if (!status.ok())
+    return status;
+
+  double aggregate = 0.0;
+  for (const auto &score : scores)
+    aggregate += score.delta;
+  aggregate /= static_cast<double>(scores.size());
+  std::cout << "{\"position\":" << options.variant_position_1based
+            << ",\"position_coordinate_system\":\"1-based\",\"reference\":";
+  write_json_string(std::cout, options.variant_reference);
+  std::cout << ",\"alternate\":";
+  write_json_string(std::cout, options.variant_alternate);
+  std::cout << ",\"window\":{\"start\":" << window.reference_start
+            << ",\"end\":" << window.reference_end
+            << ",\"coordinate_system\":\"0-based-half-open\""
+            << ",\"reference_sequence\":";
+  write_json_string(std::cout, window.reference);
+  std::cout << ",\"alternate_sequence\":";
+  write_json_string(std::cout, window.alternate);
+  std::cout << ",\"reference_tokens\":" << window.reference.size()
+            << ",\"alternate_tokens\":" << window.alternate.size() << '}'
+            << ",\"normalization\":\""
+            << variant_normalization_name(options.variant_normalization)
+            << "\",\"backend\":\"cuda\",\"profile\":\""
+            << (model->config().test_fixture ? "test_fixture" : "exact")
+            << "\",\"model_id\":";
+  if (model->config().model_id.empty()) {
+    std::cout << "null";
+  } else {
+    write_json_string(std::cout, model->config().model_id);
+  }
+  std::cout << ",\"strands\":[";
+  for (std::size_t index = 0; index < scores.size(); ++index) {
+    if (index != 0)
+      std::cout.put(',');
+    const auto &score = scores[index];
+    std::cout << "{\"strand\":\"" << score.strand
+              << "\",\"reference_log_likelihood\":" << std::setprecision(17)
+              << score.reference_log_likelihood
+              << ",\"alternate_log_likelihood\":"
+              << score.alternate_log_likelihood
+              << ",\"reference_scored_tokens\":"
+              << score.reference_scored_tokens
+              << ",\"alternate_scored_tokens\":"
+              << score.alternate_scored_tokens << ",\"delta\":" << score.delta
+              << '}';
+  }
+  std::cout << "],\"aggregation\":\""
+            << (scores.size() == 1 ? "single_strand" : "mean_across_strands")
+            << "\",\"score\":" << aggregate << "}\n";
+  std::cout.flush();
+  if (!std::cout) {
+    return {ErrorCode::kIo, "failed to write variant score JSON to stdout"};
+  }
+  return Status::Ok();
+}
+
 Status run_embed(const CliOptions &options, PipelineModel *const model,
                  MemoryTracker *const memory, Metrics *const metrics) {
   if (options.embed_layer >= model->config().layers) {
@@ -855,8 +1070,10 @@ Status run_inference_cli(const CliOptions &options,
     status = run_generate(options, &model, &memory, &metrics);
   } else if (options.mode == RunMode::kScore) {
     status = run_score(options, &model, &memory, &metrics);
-  } else {
+  } else if (options.mode == RunMode::kEmbed) {
     status = run_embed(options, &model, &memory, &metrics);
+  } else {
+    status = run_variant_score(options, &model, &memory, &metrics);
   }
   if (!status.ok()) {
     return status;

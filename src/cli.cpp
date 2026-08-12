@@ -105,7 +105,10 @@ std::string_view cli_usage() noexcept {
          "  evo -m MODEL.safetensors[.index.json] --score FASTA_OR_TEXT --gpu "
          "0,1,2,3\n"
          "  evo embed -m MODEL --input FASTA_OR_TEXT --output DIR --layer N "
-         "--pooling none|mean|last --gpu 0,1,2,3\n\n"
+         "--pooling none|mean|last --gpu 0,1,2,3\n"
+         "  evo variant-score -m MODEL --sequence DNA --position POS --ref "
+         "REF --alt ALT --window N --strand forward|reverse|both "
+         "--normalization sum|mean --gpu 0,1,2,3\n\n"
          "Sampling:\n"
          "  --temp F       Temperature > 0 (default: 1)\n"
          "  --top-k K      Keep K logits; 0 disables, 1 is greedy (default: "
@@ -130,8 +133,13 @@ Status parse_cli(const int argc, char *const argv[],
   }
   *options = CliOptions{};
   const bool embed_command = argc > 1 && std::string_view{argv[1]} == "embed";
-  if (embed_command)
+  const bool variant_command =
+      argc > 1 && std::string_view{argv[1]} == "variant-score";
+  if (embed_command) {
     options->mode = RunMode::kEmbed;
+  } else if (variant_command) {
+    options->mode = RunMode::kVariantScore;
+  }
   bool seen_model = false;
   bool seen_prompt = false;
   bool seen_score = false;
@@ -148,8 +156,16 @@ Status parse_cli(const int argc, char *const argv[],
   bool seen_embed_output = false;
   bool seen_embed_layer = false;
   bool seen_embedding_pooling = false;
+  bool seen_variant_sequence = false;
+  bool seen_variant_position = false;
+  bool seen_variant_reference = false;
+  bool seen_variant_alternate = false;
+  bool seen_variant_window = false;
+  bool seen_variant_strand = false;
+  bool seen_variant_normalization = false;
 
-  for (int index = embed_command ? 2 : 1; index < argc; ++index) {
+  const int option_start = embed_command || variant_command ? 2 : 1;
+  for (int index = option_start; index < argc; ++index) {
     const std::string_view option{argv[index]};
     std::string_view value;
     auto status = Status::Ok();
@@ -221,6 +237,87 @@ Status parse_cli(const int argc, char *const argv[],
       } else {
         return {ErrorCode::kInvalidArgument,
                 "--pooling must be one of none, mean, or last"};
+      }
+    } else if (option == "--sequence") {
+      if (seen_variant_sequence)
+        return duplicate(option);
+      seen_variant_sequence = true;
+      status = value_after(argc, argv, &index, option, &value);
+      if (!status.ok())
+        return status;
+      options->variant_sequence = value;
+    } else if (option == "--position") {
+      if (seen_variant_position)
+        return duplicate(option);
+      seen_variant_position = true;
+      status = value_after(argc, argv, &index, option, &value);
+      if (!status.ok())
+        return status;
+      if (!parse_unsigned(value, &options->variant_position_1based) ||
+          options->variant_position_1based == 0) {
+        return {ErrorCode::kInvalidArgument,
+                "--position must be a positive 1-based integer"};
+      }
+    } else if (option == "--ref") {
+      if (seen_variant_reference)
+        return duplicate(option);
+      seen_variant_reference = true;
+      status = value_after(argc, argv, &index, option, &value);
+      if (!status.ok())
+        return status;
+      options->variant_reference = value;
+    } else if (option == "--alt") {
+      if (seen_variant_alternate)
+        return duplicate(option);
+      seen_variant_alternate = true;
+      status = value_after(argc, argv, &index, option, &value);
+      if (!status.ok())
+        return status;
+      options->variant_alternate = value;
+    } else if (option == "--window") {
+      if (seen_variant_window)
+        return duplicate(option);
+      seen_variant_window = true;
+      status = value_after(argc, argv, &index, option, &value);
+      if (!status.ok())
+        return status;
+      if (!parse_unsigned(value, &options->variant_window_tokens) ||
+          options->variant_window_tokens == 0 ||
+          options->variant_window_tokens > 1'048'576) {
+        return {ErrorCode::kInvalidArgument,
+                "--window must be an integer in [1, 1048576]"};
+      }
+    } else if (option == "--strand") {
+      if (seen_variant_strand)
+        return duplicate(option);
+      seen_variant_strand = true;
+      status = value_after(argc, argv, &index, option, &value);
+      if (!status.ok())
+        return status;
+      if (value == "forward") {
+        options->variant_strand = VariantStrand::kForward;
+      } else if (value == "reverse") {
+        options->variant_strand = VariantStrand::kReverse;
+      } else if (value == "both") {
+        options->variant_strand = VariantStrand::kBoth;
+      } else {
+        return {ErrorCode::kInvalidArgument,
+                "--strand must be one of forward, reverse, or both"};
+      }
+    } else if (option == "--normalization") {
+      if (seen_variant_normalization)
+        return duplicate(option);
+      seen_variant_normalization = true;
+      status = value_after(argc, argv, &index, option, &value);
+      if (!status.ok())
+        return status;
+      if (value == "sum") {
+        options->variant_normalization = VariantNormalization::kSum;
+      } else if (value == "mean") {
+        options->variant_normalization = VariantNormalization::kMean;
+      } else {
+        return {ErrorCode::kInvalidArgument,
+                "--normalization must be one of sum or mean"};
       }
     } else if (option == "-n" || option == "--tokens") {
       if (seen_tokens)
@@ -362,7 +459,10 @@ Status parse_cli(const int argc, char *const argv[],
     if (seen_prompt || seen_score || seen_tokens ||
         seen_force_prompt_threshold || seen_temperature || seen_top_k ||
         seen_top_p || seen_seed || options->dump_logits_path.has_value() ||
-        options->dump_layer.has_value()) {
+        options->dump_layer.has_value() || seen_variant_sequence ||
+        seen_variant_position || seen_variant_reference ||
+        seen_variant_alternate || seen_variant_window || seen_variant_strand ||
+        seen_variant_normalization) {
       return {ErrorCode::kInvalidArgument,
               "embed accepts --input/--output/--layer/--pooling, --ctx, "
               "--gpu, and --dump-tokens; generation/scoring options are "
@@ -383,10 +483,53 @@ Status parse_cli(const int argc, char *const argv[],
       return {ErrorCode::kInvalidArgument, "--gpu is required"};
     return Status::Ok();
   }
+  if (variant_command) {
+    if (seen_prompt || seen_score || seen_tokens ||
+        seen_force_prompt_threshold || seen_temperature || seen_top_k ||
+        seen_top_p || seen_seed || seen_embed_input || seen_embed_output ||
+        seen_embed_layer || seen_embedding_pooling ||
+        options->dump_logits_path.has_value() ||
+        options->dump_layer.has_value()) {
+      return {ErrorCode::kInvalidArgument,
+              "variant-score accepts variant arguments, --ctx, --gpu, and "
+              "--dump-tokens; generation/scoring/embedding options are "
+              "invalid"};
+    }
+    if (!seen_variant_sequence || options->variant_sequence.empty()) {
+      return {ErrorCode::kInvalidArgument,
+              "variant-score requires a nonempty --sequence"};
+    }
+    if (!seen_variant_position) {
+      return {ErrorCode::kInvalidArgument,
+              "variant-score requires --position POS"};
+    }
+    if (!seen_variant_reference || options->variant_reference.empty()) {
+      return {ErrorCode::kInvalidArgument,
+              "variant-score requires a nonempty --ref allele"};
+    }
+    if (!seen_variant_alternate || options->variant_alternate.empty()) {
+      return {ErrorCode::kInvalidArgument,
+              "variant-score requires a nonempty --alt allele"};
+    }
+    if (!seen_gpu)
+      return {ErrorCode::kInvalidArgument, "--gpu is required"};
+    if (!seen_variant_window)
+      options->variant_window_tokens = options->context_size;
+    if (options->variant_window_tokens > options->context_size) {
+      return {ErrorCode::kInvalidArgument, "--window must not exceed --ctx"};
+    }
+    return Status::Ok();
+  }
   if (seen_embed_input || seen_embed_output || seen_embed_layer ||
       seen_embedding_pooling) {
     return {ErrorCode::kInvalidArgument,
             "--input, --output, --layer, and --pooling require 'evo embed'"};
+  }
+  if (seen_variant_sequence || seen_variant_position ||
+      seen_variant_reference || seen_variant_alternate || seen_variant_window ||
+      seen_variant_strand || seen_variant_normalization) {
+    return {ErrorCode::kInvalidArgument,
+            "variant arguments require 'evo variant-score'"};
   }
   if (seen_prompt == seen_score) {
     return {ErrorCode::kInvalidArgument,
