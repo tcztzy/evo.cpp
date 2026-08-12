@@ -18,11 +18,11 @@ evo.cpp !成为本地、可嵌入、可移植的生物序列基础模型推理�
 ## §I INTERFACES
 
 - I1 existing-cli: `evo -m MODEL -p DNA -n N --ctx N --gpu IDS` 与 `evo -m MODEL --score INPUT --ctx N --gpu IDS` !保持兼容。
-- I2 cli: `evo run|score|embed|variant-score|serve|bench ...`; `-hf/--hf-repo REPO[@REV]` ?直接解析缓存 artifact。
+- I2 cli: `evo run|score|embed|variant-score|serve|bench ...`; `-hf/--hf-repo REPO[@REV]` !解析已验证本地 HF cache artifact；⊥推理进程调用 Python downloader。
 - I3 c-api: `include/evo/evo.h` 暴露 opaque `evo_model`、`evo_context`、`evo_batch`、`evo_sampler`; C ABI + version query。
 - I4 artifact: strict Safetensors + index JSON + typed metadata；exact/fast/profile/revision/hash !可查询。
 - I5 bio-input: FASTA、raw、stdin；后续 FASTQ/gzip/VCF/reference FASTA；record name、坐标、strand !保留。
-- I6 output: scoring JSONL；embedding NPY/Safetensors；generation FASTA/raw；错误→nonzero + typed status。
+- I6 output: scoring/bench JSONL；embedding NPY/Safetensors；generation stdout `raw|fasta`；错误→nonzero + typed status。
 - I7 server: `/v1/generate`、`/v1/score`、`/v1/embeddings`、`/v1/variants`、`/health`、`/metrics`；请求可取消、限长、隔离 context。
 - I8 install: `cmake --install` 提供 library、headers、CLI、CMake package；release 提供校验和与平台元数据。
 
@@ -56,6 +56,9 @@ R5|OpenGenome2 IO|raw 数据为大规模异构 FASTA；流式 record 处理优�
 - V17: sequence byte limit !在读取/append 前检查；超限输入 ⊥先 materialize 再拒绝。
 - V18: streaming input 后续 record 失败 → 已输出 JSONL 仅含完整 record 行 + process nonzero；⊥半行或成功退出。
 - V19: remote GPU build 缺依赖 → actionable path error；成功 build !写 source fingerprint；remote test !拒绝缺失/不匹配 fingerprint，⊥运行 stale binary。
+- V20: public sequence IO ∀ multi-record path → only streaming callback API；⊥暴露全量 `vector<SequenceRecord>` 聚合 helper。
+- V21: bench ∀ report → architecture、artifact/profile、backend、input identity、warmup、repetitions、token count、timing statistic !显式；失败/unsupported → typed nonzero。
+- V22: ∀ production exact model ID → pinned real-checkpoint raw-bit gate evidence !存在；缺证据 ID !显式 experimental/unsupported，⊥继承同 family 证据。
 
 ## §T TASKS
 
@@ -72,6 +75,10 @@ T9|x|实现向量化 CPU backend 与显式 CPU+GPU offload policy|V2,V7,V9,V10,V
 T10|x|抽象 architecture registry；接入第二个生物序列模型 family|V7,V8,V10,V11,V16,I2,I3,I4
 T11|x|补 FASTQ/gzip/stdin/VCF/reference IO 与坐标输出格式|V3,V5,V6,V12,V16,I5,I6
 T12|x|完善贡献指南、兼容策略、benchmark matrix 与 release 文档|V7,V14,V15,V16,I8
+T13|.|实现 `run|score|bench` CLI hierarchy、内建 reproducible bench 与 generation `raw|fasta` 输出|V7,V9,V10,V15,V16,V21,I1,I2,I6
+T14|.|移除公共全量 sequence reader；测试与 consumer 统一 streaming API|V3,V16,V17,V20,I5
+T15|.|实现 `-hf/--hf-repo REPO[@REV]` 已验证本地 cache artifact 解析|V2,V10,V16,I2,I4
+T16|.|审计 production exact model ID；补真实 checkpoint raw-bit 证据或显式降级为 experimental/unsupported|V1,V10,V16,V22,I4
 
 ## §B BUGS
 
