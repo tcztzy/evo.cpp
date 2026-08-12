@@ -33,6 +33,50 @@ def swiglu_hidden_dim(d_model: int) -> int:
     return int((((8 / 3) * d_model) + 255) // 256 * 256)
 
 
+def load_official_checkpoint(model: Any, model_dir: Path, load_file: Any) -> None:
+    """Load official Safetensors through PyTorch's extra-state-aware API."""
+    single = model_dir / "model.safetensors"
+    index_path = model_dir / "model.safetensors.index.json"
+    if single.is_file():
+        checkpoint_paths = [single]
+    elif index_path.is_file():
+        index = load_json(index_path, "Safetensors index")
+        weight_map = index.get("weight_map")
+        if (
+            not isinstance(weight_map, dict)
+            or not weight_map
+            or any(not isinstance(name, str) for name in weight_map.values())
+        ):
+            raise OracleError("Safetensors index has no weight_map")
+        checkpoint_paths = [model_dir / name for name in sorted(set(weight_map.values()))]
+    else:
+        raise OracleError("official checkpoint has no Safetensors weights")
+
+    expected = set(model.state_dict())
+    loaded: set[str] = set()
+    for checkpoint_path in checkpoint_paths:
+        state = load_file(str(checkpoint_path), device="cpu")
+        duplicate = loaded.intersection(state)
+        if duplicate:
+            raise OracleError(
+                f"duplicate tensors across official shards: {sorted(duplicate)}"
+            )
+        result = model.load_state_dict(state, strict=False)
+        if result.unexpected_keys:
+            raise OracleError(
+                f"unexpected official checkpoint tensors: {result.unexpected_keys}"
+            )
+        loaded.update(state)
+        del state
+    missing = sorted(expected - loaded)
+    extra = sorted(loaded - expected)
+    if missing or extra:
+        raise OracleError(
+            f"official checkpoint manifest differs from model: missing={missing}, "
+            f"extra={extra}"
+        )
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -116,6 +160,7 @@ def main() -> int:
         import numpy as np
         import torch
         import transformers
+        from safetensors.torch import load_file
         from transformers.models.esmc.configuration_esmc import ESMCConfig
         from transformers.models.esmc.modeling_esmc import ESMCForMaskedLM
         from transformers.models.esmc.tokenization_esmc import ESMCTokenizer
@@ -176,9 +221,8 @@ def main() -> int:
     torch.set_float32_matmul_precision("highest")
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
-    model = ESMCForMaskedLM.from_pretrained(
-        str(model_dir), config=config, local_files_only=True, dtype=torch.float32
-    )
+    model = ESMCForMaskedLM(config)
+    load_official_checkpoint(model, model_dir, load_file)
     model.eval().to(args.device)
     inputs = {name: tensor.to(args.device) for name, tensor in encoded.items()}
     with torch.inference_mode():

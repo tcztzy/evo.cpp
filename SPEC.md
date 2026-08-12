@@ -148,3 +148,4 @@ B27|2026-08-12|全量回归发现 legacy converter/documentation contracts 假�
 B28|2026-08-12|ESMC 验收脚本假设 gpu02 同步目录含 `.git`，但标准 build 明确排除 VCS metadata→真实远端在运行前失败|V16,V30
 B29|2026-08-12|ESMC oracle 从 receipt 首文件父目录推断 HF snapshot，但 cached symlink 返回 resolved `blobs/` 路径→官方 loader 找不到同目录制品|V28,V30
 B30|2026-08-12|ESMC oracle 假设 config 暴露 `expansion_ratio`，但 pinned 实现固定 `8/3` 并向上取整至 256→真实 config 拓扑自检异常|R8,V26,V30
+B31|2026-08-12|通用 Transformers 5.1 loader 把 TE 的 Safetensors `_extra_state` 当普通 attribute，无法装载官方权重→oracle 改用 PyTorch extra-state-aware `load_state_dict` 且逐 shard 核对完整 key set|R8,R12,V28,V30
