@@ -91,6 +91,9 @@ def main() -> int:
     help_result = run(sys.executable, args.generator, "--help")
     assert help_result.returncode == 0, help_result.stderr
     assert "--reference-commit" in help_result.stdout
+    generator_text = args.generator.read_text(encoding="utf-8")
+    assert "modeling_esmc._flash_attn_rotary_available = False" in generator_text
+    assert "output_attentions=True" in generator_text
     specification = importlib.util.spec_from_file_location("esmc_oracle", args.generator)
     assert specification is not None and specification.loader is not None
     oracle_module = importlib.util.module_from_spec(specification)

@@ -162,6 +162,7 @@ def main() -> int:
         import transformers
         from safetensors.torch import load_file
         from transformers.models.esmc.configuration_esmc import ESMCConfig
+        from transformers.models.esmc import modeling_esmc
         from transformers.models.esmc.modeling_esmc import ESMCForMaskedLM
         from transformers.models.esmc.tokenization_esmc import ESMCTokenizer
     except ImportError as error:
@@ -221,6 +222,8 @@ def main() -> int:
     torch.set_float32_matmul_precision("highest")
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
+    modeling_esmc._flash_attn_rotary_available = False
+    modeling_esmc.apply_triton_rotary = None
     model = ESMCForMaskedLM(config)
     load_official_checkpoint(model, model_dir, load_file)
     model.eval().to(args.device)
@@ -229,6 +232,7 @@ def main() -> int:
         output = model(
             **inputs,
             output_hidden_states=False,
+            output_attentions=True,
             return_dict=True,
             compute_sae=False,
         )
@@ -261,7 +265,8 @@ def main() -> int:
         },
         "sequence": args.sequence,
         "token_ids": token_ids,
-        "attention_implementation": "eager",
+        "attention_implementation": "official_manual_f32",
+        "rotary_implementation": "official_pytorch_fallback",
         "dtype": "float32",
         "tf32": False,
         "outputs": {
