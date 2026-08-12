@@ -5,6 +5,8 @@
 #include <string_view>
 #include <vector>
 
+#include "evo/status.hpp"
+
 namespace evo {
 
 enum class ArchitectureTokenizer {
@@ -38,6 +40,7 @@ struct ArchitectureSpec final {
 enum class OfficialProjectionPrecision { kBF16, kE4M3Software };
 enum class OfficialProjectionWeightDType { kBF16, kF32 };
 enum class OfficialHcmFilterDType { kBF16, kF32 };
+enum class OfficialExactSupport { kValidated, kUnsupported };
 
 struct OfficialModelSpec final {
   std::string_view id;
@@ -56,6 +59,8 @@ struct OfficialModelSpec final {
   OfficialProjectionPrecision projection_precision;
   OfficialProjectionWeightDType projection_weight_dtype;
   OfficialHcmFilterDType hcm_filter_dtype;
+  OfficialExactSupport exact_support;
+  std::string_view exact_evidence;
   std::vector<std::size_t> hcs;
   std::vector<std::size_t> hcm;
   std::vector<std::size_t> hcl;
@@ -65,6 +70,10 @@ struct OfficialModelSpec final {
 [[nodiscard]] const std::vector<OfficialModelSpec> &official_model_specs();
 [[nodiscard]] const OfficialModelSpec *
 find_official_model(std::string_view model_id) noexcept;
+[[nodiscard]] const char *
+official_exact_support_name(OfficialExactSupport support) noexcept;
+[[nodiscard]] Status
+require_official_exact_support(std::string_view model_id);
 [[nodiscard]] const std::vector<ArchitectureSpec> &architecture_specs();
 [[nodiscard]] const ArchitectureSpec *
 find_architecture(std::string_view architecture) noexcept;

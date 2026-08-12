@@ -91,6 +91,8 @@
   "models": {
     "evo2_1b_base": {
       "profile": "1b_base",
+      "exact_support": "validated",
+      "exact_evidence": "model-size-validation/2026-08-04/evo2_1b_base",
       "expected_model_name": "shc-evo2-1b-8k-2T-v2",
       "config": "evo2-1b-8k.yml",
       "source_config": "evo2/configs/evo2-1b-8k.yml",
@@ -109,6 +111,8 @@
     },
     "evo2_7b": {
       "profile": "7b_1m",
+      "exact_support": "validated",
+      "exact_evidence": "model-size-validation/2026-08-04/evo2_7b",
       "expected_model_name": "shc-evo2-7b-8k-2T-v2",
       "config": "evo2-7b-1m.yml",
       "source_config": "evo2/configs/evo2-7b-1m.yml",
@@ -128,6 +132,8 @@
     },
     "evo2_7b_base": {
       "profile": "7b_base",
+      "exact_support": "unsupported",
+      "exact_evidence": null,
       "expected_model_name": "shc-evo2-7b-8k-2T-v2",
       "config": "evo2-7b-8k.yml",
       "source_config": "evo2/configs/evo2-7b-8k.yml",
@@ -147,6 +153,8 @@
     },
     "evo2_7b_262k": {
       "profile": "7b_262k",
+      "exact_support": "unsupported",
+      "exact_evidence": null,
       "expected_model_name": "shc-evo2-7b-8k-2T-v2",
       "config": "evo2-7b-262k.yml",
       "source_config": "evo2/configs/evo2-7b-262k.yml",
@@ -166,6 +174,8 @@
     },
     "evo2_20b": {
       "profile": "20b_1m",
+      "exact_support": "validated",
+      "exact_evidence": "model-size-validation/2026-08-04/evo2_20b",
       "expected_model_name": "shc-evo2-20b",
       "config": "evo2-20b-1m.yml",
       "source_config": "evo2/configs/evo2-20b-1m.yml",
@@ -184,6 +194,8 @@
     },
     "evo2_40b": {
       "profile": "40b_1m",
+      "exact_support": "validated",
+      "exact_evidence": "model-size-validation/2026-08-04/evo2_40b",
       "expected_model_name": "shc-evo2-40b-8k-11T-v2",
       "config": "evo2-40b-1m.yml",
       "source_config": "evo2/configs/evo2-40b-1m.yml",
@@ -206,6 +218,8 @@
     },
     "evo2_40b_base": {
       "profile": "40b_base",
+      "exact_support": "unsupported",
+      "exact_evidence": null,
       "expected_model_name": "shc-evo2-40b-8k-11T-v2",
       "config": "evo2-40b-8k.yml",
       "source_config": "evo2/configs/evo2-40b-8k.yml",
@@ -228,6 +242,8 @@
     },
     "evo2_40b_bionemo_bf16": {
       "profile": "40b_1m",
+      "exact_support": "unsupported",
+      "exact_evidence": null,
       "expected_model_name": "evo2-40b-1m-fp8-bf16",
       "config": "evo2-40b-1m-bionemo-bf16.yml",
       "source_repo": "nvidia/bionemo-framework",

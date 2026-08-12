@@ -81,6 +81,9 @@ struct RuntimeModelConfig final {
 [[nodiscard]] std::size_t
 backend_warmup_tokens(const RuntimeModelConfig &config,
                       std::size_t arena_capacity) noexcept;
+[[nodiscard]] Status
+validate_runtime_exact_support(const RuntimeModelConfig &config,
+                               InferenceProfile profile);
 
 struct LayerDump final {
   std::size_t layer{0};

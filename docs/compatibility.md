@@ -76,6 +76,10 @@ changed tensor or arithmetic interpretation requires a new profile name.
 Exact claims apply only to the registered artifact, profile, backend, hardware
 boundary, and oracle revision in the acceptance record. `cpu-f32`, hybrid, and
 `fast-q8-kv` remain visibly approximate even when their regression gates pass.
+The runtime exact allowlist is also `model.id`-specific: one variant cannot
+inherit another variant's evidence merely because width, layer count, or most
+operators match. Exact-unsupported IDs remain convertible registry entries and
+fail with `unsupported` before CUDA weights are uploaded.
 
 ## Supported build and release matrix
 

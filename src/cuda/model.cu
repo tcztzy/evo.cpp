@@ -507,6 +507,13 @@ std::size_t backend_warmup_tokens(const RuntimeModelConfig &config,
              : 0;
 }
 
+Status validate_runtime_exact_support(const RuntimeModelConfig &config,
+                                      const InferenceProfile profile) {
+  if (config.test_fixture || !inference_profile_is_exact(profile))
+    return Status::Ok();
+  return require_official_exact_support(config.model_id);
+}
+
 Status read_runtime_model_config(const ModelFile &model,
                                  const bool allow_test_fixture,
                                  RuntimeModelConfig *const config) {
@@ -1947,6 +1954,9 @@ Status SingleGpuModel::load(const ModelFile &model, const int device,
   if (!status.ok())
     return status;
   impl_->config.inference_profile = profile;
+  status = validate_runtime_exact_support(impl_->config, profile);
+  if (!status.ok())
+    return status;
   if (!impl_->config.test_fixture &&
       context_capacity > impl_->config.max_seqlen) {
     return {ErrorCode::kInvalidArgument,
@@ -2377,6 +2387,9 @@ Status PipelineModel::load(const ModelFile &model,
   if (!status.ok())
     return status;
   candidate->config.inference_profile = profile;
+  status = validate_runtime_exact_support(candidate->config, profile);
+  if (!status.ok())
+    return status;
   candidate->layer_limit = requested_layer_limit == 0 ? candidate->config.layers
                                                       : requested_layer_limit;
   if (candidate->layer_limit == 0 ||
@@ -2585,6 +2598,9 @@ Status PipelineModel::initialize_shared(const PipelineModel &source,
   candidate->config = source.impl_->config;
   candidate->layer_limit = source.impl_->layer_limit;
   candidate->config.inference_profile = profile;
+  auto status = validate_runtime_exact_support(candidate->config, profile);
+  if (!status.ok())
+    return status;
   if (!candidate->config.test_fixture &&
       context_capacity > candidate->config.max_seqlen) {
     return {ErrorCode::kInvalidArgument,
@@ -2611,7 +2627,7 @@ Status PipelineModel::initialize_shared(const PipelineModel &source,
     stage->arena_capacity = candidate->arena_capacity;
     stage->layer_offset = source_stage.layer_offset;
     stage->q8_kv_cache = candidate->q8_kv_cache;
-    auto status = select_device(stage->device);
+    status = select_device(stage->device);
     if (!status.ok())
       return status;
     status = stage->stream.create();
@@ -2643,7 +2659,7 @@ Status PipelineModel::initialize_shared(const PipelineModel &source,
     memory.arena_bytes = arena_bytes(stage->arena);
     candidate->stages.push_back(std::move(stage));
   }
-  auto status = candidate->enable_stage_peers();
+  status = candidate->enable_stage_peers();
   if (!status.ok())
     return status;
   candidate->loaded = true;

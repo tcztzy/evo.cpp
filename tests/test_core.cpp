@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <iostream>
 #include <numeric>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -54,6 +55,19 @@ int main() {
     check(layers == expected, "official stripe layers are disjoint and complete");
     check(model.hidden_size / model.heads == 128,
           "official registry fixes the attention head dimension");
+    if (model.exact_support == evo::OfficialExactSupport::kValidated) {
+      check(!model.exact_evidence.empty(),
+            "validated exact model IDs carry a pinned evidence record");
+      check(evo::require_official_exact_support(model.id).ok(),
+            "validated exact model IDs pass the runtime support gate");
+    } else {
+      const auto unsupported = evo::require_official_exact_support(model.id);
+      check(model.exact_evidence.empty() && !unsupported.ok() &&
+                unsupported.code() == evo::ErrorCode::kUnsupported &&
+                unsupported.message().find(std::string{model.id}) !=
+                    std::string::npos,
+            "ungated model IDs fail exact execution with a typed diagnostic");
+    }
   }
   check(evo::find_official_model("evo2_20b")->projection_weight_dtype ==
             evo::OfficialProjectionWeightDType::kF32,
@@ -63,6 +77,10 @@ int main() {
         "7B retains BF16 projection semantics");
   check(evo::find_official_model("unknown") == nullptr,
         "unknown model IDs fail registry lookup");
+  const auto unknown_exact = evo::require_official_exact_support("unknown");
+  check(!unknown_exact.ok() &&
+            unknown_exact.code() == evo::ErrorCode::kUnsupported,
+        "unknown exact model IDs fail closed");
 
   if (failures != 0) {
     std::cerr << failures << " core test(s) failed\n";

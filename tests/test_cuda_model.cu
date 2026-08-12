@@ -144,7 +144,28 @@ int main(const int argc, char **argv) {
           "7B variants share the backend warmup policy");
     check(evo::cuda::backend_warmup_tokens(warmup_config, 127) == 0,
           "undersized activation arena disables backend warmup");
+    const auto unsupported_exact = evo::cuda::validate_runtime_exact_support(
+        warmup_config, evo::InferenceProfile::kExact);
+    check(!unsupported_exact.ok() &&
+              unsupported_exact.code() == evo::ErrorCode::kUnsupported &&
+              unsupported_exact.message().find("evo2_7b_262k") !=
+                  std::string::npos,
+          "ungated production model ID is rejected by the CUDA exact gate");
+    check(evo::cuda::validate_runtime_exact_support(
+              warmup_config, evo::InferenceProfile::kFastQ8Kv)
+              .ok(),
+          "ungated model ID remains available to an explicit approximate profile");
+    warmup_config.model_id = "evo2_7b";
+    check(evo::cuda::validate_runtime_exact_support(
+              warmup_config, evo::InferenceProfile::kExact)
+              .ok(),
+          "raw-bit-gated production model ID passes the CUDA exact gate");
     warmup_config.test_fixture = true;
+    warmup_config.model_id.clear();
+    check(evo::cuda::validate_runtime_exact_support(
+              warmup_config, evo::InferenceProfile::kExact)
+              .ok(),
+          "synthetic fixtures retain isolated exact regression coverage");
     check(evo::cuda::backend_warmup_tokens(warmup_config, 8192) == 0,
           "synthetic fixtures never run production backend warmup");
     warmup_config.test_fixture = false;

@@ -10,7 +10,8 @@ the real official artifact and the environment recorded below.
 | Architecture / path | Evidence class | Correctness or acceptance gate | Performance gate | Current scope |
 |---|---|---|---|---|
 | StripedHyena2 CUDA `exact` | Synthetic operator/model fixtures | Raw-bit vectors for operators, prefill, cache and generation | None; fixture timing is not published | Every CUDA change |
-| Evo 2 1B/7B/20B/40B CUDA `exact` | Real checkpoint, pinned Vortex/PyTorch oracle | Zero unequal raw block/logit elements and byte-identical greedy generation | 7B prefill 16/128/1024 and cached decode on idle A800 | Published exact and speed claims |
+| `evo2_1b_base`, `evo2_7b`, `evo2_20b`, `evo2_40b` CUDA `exact` | Real checkpoint, pinned Vortex/PyTorch oracle | Zero unequal raw block/logit elements and byte-identical greedy generation | 7B prefill 16/128/1024 and cached decode on idle A800 | Published exact and speed claims |
+| `evo2_7b_base`, `evo2_7b_262k`, `evo2_40b_base`, `evo2_40b_bionemo_bf16` CUDA `exact` | No ID-specific raw-bit record | Typed unsupported before weight upload | None | Not a production exact path |
 | StripedHyena2 CUDA `fast-q8-kv` | Synthetic paired run against `exact` | cosine ≥ 0.9999, logit MAE ≤ 0.01, top-1/rank/variant-sign agreement = 1 | Report separately; never mix with exact | Experimental profile regression |
 | StripedHyena2 CPU `cpu-f32` | Synthetic paired run against CUDA `exact` | cosine ≥ 0.999, logit MAE ≤ 0.1, top-1 ≥ 0.95, rank/variant-sign agreement = 1 | CPU model/context microbench when performance changes | Portable approximate runtime |
 | StripedHyena2 CUDA-prefix/CPU-suffix hybrid | Synthetic paired run with fixed `--gpu-layers` | Deterministic placement plus the applicable approximate-profile bounds | Report transfer and end-to-end time separately | Generation and scoring only |

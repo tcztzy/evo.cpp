@@ -44,6 +44,13 @@ The promise is deliberately narrow and testable: registered official
 checkpoints, pinned arithmetic semantics, batch 1, and the documented CUDA/A800
 environment. Unsupported shapes, tensors, dtypes, or execution modes fail
 explicitly instead of silently selecting approximate math.
+The production CUDA `exact` allowlist is ID-specific:
+`evo2_1b_base`, `evo2_7b`, `evo2_20b`, and `evo2_40b`. The registered
+`evo2_7b_base`, `evo2_7b_262k`, `evo2_40b_base`, and
+`evo2_40b_bionemo_bf16` artifacts remain convertible and available to
+explicit approximate paths, but exact loading fails until that precise ID has
+its own pinned real-checkpoint raw-bit gate. `evo-inspect` reports this status
+and evidence ID.
 
 ## Quick start
 

@@ -38,6 +38,11 @@ variant 与 server surface 在 CPU 上运行官方 F32 HyenaDNA causal-LM family
 承诺的边界刻意保持清晰：注册的官方 checkpoint、固定数值语义、batch 1，以及文档
 记录的 CUDA/A800 环境。不支持的 shape、tensor、dtype 或执行模式会明确失败，不会
 静默切换为近似实现。
+production CUDA `exact` allowlist 按完整 model ID 管理：`evo2_1b_base`、
+`evo2_7b`、`evo2_20b`、`evo2_40b`。已注册的 `evo2_7b_base`、
+`evo2_7b_262k`、`evo2_40b_base` 与 `evo2_40b_bionemo_bf16` 仍可转换并用于
+显式 approximate path，但在该精确 ID 拥有独立、固定真实 checkpoint raw-bit gate
+前，exact load 会明确失败。`evo-inspect` 会输出这一状态及 evidence ID。
 
 ## 快速开始
 

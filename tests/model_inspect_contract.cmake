@@ -26,6 +26,7 @@ if(NOT inspect_result EQUAL 0)
 endif()
 if(NOT inspect_output MATCHES "format=SAFETENSORS profile=evo2-runtime-v1.*validation=ok" OR
    NOT inspect_output MATCHES "metadata model.name type=string value=tiny-evo2" OR
+   NOT inspect_output MATCHES "exact_support=unknown evidence=none" OR
    NOT inspect_output MATCHES "tensor_count=2" OR
    NOT inspect_output MATCHES "tensor embed.weight dtype=BF16 shape=\\[2,2\\]")
   message(FATAL_ERROR "evo-inspect output contract failed: ${inspect_output}")

@@ -49,7 +49,9 @@ int main() {
     indices(model.hcl);
     std::cout << '|';
     indices(model.attention);
-    std::cout << '\n';
+    std::cout << '|'
+              << evo::official_exact_support_name(model.exact_support) << '|'
+              << model.exact_evidence << '\n';
   }
   for (const auto &architecture : evo::architecture_specs()) {
     const char *tokenizer =

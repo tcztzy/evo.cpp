@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "evo/model_format.hpp"
+#include "evo/model_registry.hpp"
 #include "evo/status.hpp"
 #include "evo/version.hpp"
 
@@ -53,6 +54,23 @@ int inspect(const std::string &path, const std::string_view selected_tensor) {
     std::cout << "metadata " << entry.key
               << " type=" << evo::metadata_type_name(entry.type)
               << " value=" << evo::metadata_value_text(entry) << '\n';
+  }
+  const auto *const model_id = model.find_metadata("model.id");
+  const auto *const official =
+      model_id != nullptr && model_id->type == evo::MetadataType::kString
+          ? evo::find_official_model(evo::metadata_value_text(*model_id))
+          : nullptr;
+  if (model.profile() == evo::kModelProfile) {
+    std::cout << "exact_support="
+              << (official == nullptr
+                      ? "unknown"
+                      : evo::official_exact_support_name(
+                            official->exact_support))
+              << " evidence="
+              << (official == nullptr || official->exact_evidence.empty()
+                      ? "none"
+                      : official->exact_evidence)
+              << '\n';
   }
 
   if (!selected_tensor.empty()) {

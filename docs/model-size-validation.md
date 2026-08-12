@@ -6,6 +6,26 @@ with zero unequal raw elements?
 
 ## Result
 
+Exact support is attached to the complete `model.id`, never inherited from a
+size or topology family. The 2026-08-04 audit found the following production
+boundary:
+
+| `model.id` | CUDA `exact` status | Evidence ID / reason |
+|---|---|---|
+| `evo2_1b_base` | validated | `model-size-validation/2026-08-04/evo2_1b_base` |
+| `evo2_7b` | validated | `model-size-validation/2026-08-04/evo2_7b` |
+| `evo2_20b` | validated | `model-size-validation/2026-08-04/evo2_20b` |
+| `evo2_40b` | validated | `model-size-validation/2026-08-04/evo2_40b` |
+| `evo2_7b_base` | unsupported | no ID-specific real-checkpoint raw-bit gate |
+| `evo2_7b_262k` | unsupported | no ID-specific real-checkpoint raw-bit gate |
+| `evo2_40b_base` | unsupported | no ID-specific real-checkpoint raw-bit gate |
+| `evo2_40b_bionemo_bf16` | unsupported | BioNeMo tolerance/behavioral validation is not a raw-bit Vortex gate |
+
+The unsupported IDs remain registry entries for acquisition, conversion, and
+explicit approximate execution. The exact loader rejects them before weight
+upload. Promotion requires its own pinned source/artifact hashes, independent
+oracle, zero-unequal raw-bit report, and generated-byte record.
+
 The official 1B, 7B, 20B, and 40B paths all completed real-checkpoint GPU
 prefill and cached generation on A800 GPUs. The acceptance gate compared raw
 dtype payloads, not a tolerance: every audited block output, generation logit,

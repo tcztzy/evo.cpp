@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 from pathlib import Path
 
@@ -57,6 +58,9 @@ def main() -> int:
     compatibility = required_paths[3].read_text(encoding="utf-8")
     benchmarks = required_paths[4].read_text(encoding="utf-8")
     releases = required_paths[5].read_text(encoding="utf-8")
+    exactness = (source_dir / "docs" / "model-size-validation.md").read_text(
+        encoding="utf-8"
+    )
     require(
         contributing,
         (
@@ -110,6 +114,21 @@ def main() -> int:
         ),
         "release documentation",
     )
+    registry = json.loads(
+        (source_dir / "configs" / "model-registry.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    for model_id, model in registry["models"].items():
+        if model_id not in exactness or model["exact_support"] not in exactness:
+            raise AssertionError(
+                f"model-size validation omitted exact support for {model_id}"
+            )
+        evidence = model["exact_evidence"]
+        if evidence is not None and evidence not in exactness:
+            raise AssertionError(
+                f"model-size validation omitted evidence ID for {model_id}"
+            )
 
     header = (source_dir / "include" / "evo" / "evo.h").read_text(
         encoding="utf-8"

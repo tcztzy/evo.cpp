@@ -30,7 +30,7 @@ def main() -> int:
             assert len(fields) == 8, line
             architectures[fields[1]] = fields[2:]
             continue
-        assert len(fields) == 20, line
+        assert len(fields) == 22, line
         native[fields[0]] = fields[1:]
     assert set(native) == set(registry["models"])
 
@@ -57,6 +57,8 @@ def main() -> int:
         assert indices(fields[16]) == profile["hcm_layer_idxs"]
         assert indices(fields[17]) == profile["hcl_layer_idxs"]
         assert indices(fields[18]) == profile["attn_layer_idxs"]
+        assert fields[19] == entry["exact_support"]
+        assert fields[20] == (entry["exact_evidence"] or "")
     assert set(architectures) == {
         "StripedHyena2",
         "StripedHyena2Test",
