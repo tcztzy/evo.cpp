@@ -150,3 +150,4 @@ B29|2026-08-12|ESMC oracle 从 receipt 首文件父目录推断 HF snapshot，�
 B30|2026-08-12|ESMC oracle 假设 config 暴露 `expansion_ratio`，但 pinned 实现固定 `8/3` 并向上取整至 256→真实 config 拓扑自检异常|R8,V26,V30
 B31|2026-08-12|通用 Transformers 5.1 loader 把 TE 的 Safetensors `_extra_state` 当普通 attribute，无法装载官方权重→oracle 改用 PyTorch extra-state-aware `load_state_dict` 且逐 shard 核对完整 key set|R8,R12,V28,V30
 B32|2026-08-12|BioNeMo 容器的可选 FlashAttention Triton RoPE 找不到无版本 `libcuda.so`→oracle 固定使用 pinned 官方 pure-PyTorch RoPE fallback 与 manual F32 attention，避免环境相关 kernel dispatch|R8,V26,V30
+B33|2026-08-12|ESMC 验收脚本在 gpu02 宿主直接启动容器构建的 CUDA binary→动态链接器找不到 `libcudart.so.12`|V16,V30

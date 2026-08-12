@@ -575,6 +575,8 @@ def main() -> int:
     assert "convert_esmc_checkpoint.py" in esmc_validation
     assert "generate_esmc_official_oracle.py" in esmc_validation
     assert "compare_esmc_oracle.py" in esmc_validation
+    assert "run_native()" in esmc_validation
+    assert '/usr/bin/apptainer exec --nv "$runtime_image" "$binary"' in esmc_validation
     assert 'r["repo"].replace("/", "--")' in esmc_validation
     assert '["files"][0]["path"]' not in esmc_validation, (
         "HF receipt paths may resolve a snapshot symlink into the blobs directory"

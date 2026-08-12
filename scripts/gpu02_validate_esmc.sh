@@ -8,6 +8,7 @@ registry="$source_dir/configs/model-registry.json"
 cache_dir="${EVO_ESMC_CACHE_DIR:-$HOME/esmc-oracle/hf-cache}"
 reference_image="${EVO_ESMC_REFERENCE_IMAGE:-$HOME/bionemo-pytorch-26.06-py3.sif}"
 reference_pythonpath="${EVO_ESMC_REFERENCE_PYTHONPATH:-$HOME/esmc-oracle/pydeps}"
+runtime_image="${EVO_ESMC_RUNTIME_IMAGE:-$HOME/evo.cpp-cuda12.8-rocky8.sif}"
 gpu_id="${EVO_ESMC_GPU_ID:-0}"
 models="${EVO_ESMC_MODELS:-esmc_300m esmc_600m esmc_6b}"
 source_fingerprint="$(dirname "$binary")/.evo-source-fingerprint"
@@ -18,6 +19,7 @@ artifact_dir="${EVO_ESMC_ACCEPTANCE_DIR:-$HOME/evo.cpp-artifacts/t22-esmc-$revis
 test -x "$binary"
 test -f "$registry"
 test -f "$reference_image"
+test -f "$runtime_image"
 test -f "$reference_pythonpath/transformers/models/esmc/modeling_esmc.py"
 if [[ ! "$gpu_id" =~ ^[0-9]+$ ]]; then
   echo "gpu02_validate_esmc: EVO_ESMC_GPU_ID must be one numeric GPU ID" >&2
@@ -49,6 +51,10 @@ container_python() {
   /usr/bin/apptainer exec \
     --env "PYTHONPATH=$reference_pythonpath" \
     "$reference_image" python3 "$@"
+}
+
+run_native() {
+  /usr/bin/apptainer exec --nv "$runtime_image" "$binary" "$@"
 }
 
 for model_id in $models; do
@@ -109,10 +115,10 @@ for model_id in $models; do
   printf '>acceptance\nLAGV<mask>ERT\n' >"$input_path"
   test ! -e "$native_logits_dir"
   test ! -e "$native_hidden_dir"
-  "$binary" logits -m "$runtime_load" --input "$input_path" \
+  run_native logits -m "$runtime_load" --input "$input_path" \
     --output "$native_logits_dir" --ctx 16 --gpu "$gpu_id" --profile exact \
     >"$model_dir/native-logits.stdout" 2>"$model_dir/native-logits.stderr"
-  "$binary" embed -m "$runtime_load" --input "$input_path" \
+  run_native embed -m "$runtime_load" --input "$input_path" \
     --output "$native_hidden_dir" --layer "$layer" --pooling none \
     --ctx 16 --gpu "$gpu_id" --profile exact \
     >"$model_dir/native-hidden.stdout" 2>"$model_dir/native-hidden.stderr"
