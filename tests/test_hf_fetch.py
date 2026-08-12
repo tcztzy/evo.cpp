@@ -184,6 +184,7 @@ def main() -> int:
     ):
         raise AssertionError("corrupt cached checkpoint was not refreshed")
 
+    log.write_text("", encoding="utf-8")
     local_result = run_tool(
         args.tool,
         python_path,
@@ -201,6 +202,32 @@ def main() -> int:
         ],
     )
     require_success(local_result)
+    if log.read_text(encoding="utf-8"):
+        raise AssertionError("offline source lookup depended on Hugging Face metadata")
+    cached_source.write_bytes(b"x" * len(source_payload))
+    offline_tampered_result = run_tool(
+        args.tool,
+        python_path,
+        remote,
+        log,
+        source_revision,
+        [
+            "--cache-dir",
+            str(cache),
+            "--local-files-only",
+            "source",
+            "tiny",
+            "--registry",
+            str(registry),
+        ],
+    )
+    if (
+        offline_tampered_result.returncode == 0
+        or "integrity mismatch" not in offline_tampered_result.stderr
+        or log.read_text(encoding="utf-8")
+    ):
+        raise AssertionError("offline source snapshot did not fail closed")
+    cached_source.write_bytes(source_payload)
 
     runtime_revision = "b" * 40
     runtime_root = remote / "owner" / "runtime" / runtime_revision

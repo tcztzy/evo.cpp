@@ -170,28 +170,46 @@ def download_verified(
     endpoint: str | None,
     local_files_only: bool,
 ) -> Path:
-    _, hf_hub_download = load_huggingface()
-    arguments: dict[str, Any] = {
-        "repo_id": repo,
-        "filename": name,
-        "revision": resolved_revision,
-        "cache_dir": str(cache_dir),
-        "local_files_only": local_files_only,
-    }
-    if endpoint:
-        arguments["endpoint"] = endpoint
-
-    def acquire(force: bool) -> Path:
-        if force:
-            arguments["force_download"] = True
+    snapshot_path = (
+        cache_dir
+        / f"models--{safe_repo_path(repo)}"
+        / "snapshots"
+        / resolved_revision
+        / name
+    )
+    if local_files_only:
         try:
-            return Path(hf_hub_download(**arguments)).resolve()
-        except Exception as error:
+            path = snapshot_path.resolve(strict=True)
+        except OSError as error:
             raise FetchError(
-                f"cannot fetch {repo}@{resolved_revision}/{name}: {error}"
+                f"cached snapshot file is unavailable: {snapshot_path}"
             ) from error
+        if not path.is_file():
+            raise FetchError(f"cached snapshot file is unavailable: {snapshot_path}")
+    else:
+        _, hf_hub_download = load_huggingface()
+        arguments: dict[str, Any] = {
+            "repo_id": repo,
+            "filename": name,
+            "revision": resolved_revision,
+            "cache_dir": str(cache_dir),
+            "local_files_only": False,
+        }
+        if endpoint:
+            arguments["endpoint"] = endpoint
 
-    path = acquire(False)
+        def acquire(force: bool) -> Path:
+            if force:
+                arguments["force_download"] = True
+            try:
+                return Path(hf_hub_download(**arguments)).resolve()
+            except Exception as error:
+                raise FetchError(
+                    f"cannot fetch {repo}@{resolved_revision}/{name}: {error}"
+                ) from error
+
+        path = acquire(False)
+
     for attempt in range(2):
         try:
             size = path.stat().st_size
