@@ -79,10 +79,14 @@ build/Release/evo serve -m "$MODEL" --ctx 8192 --gpu 0 \
 
 ```sh
 build/Release/evo -m "$MODEL" --backend cpu --score sequences.fa --ctx 8192
+gzip -c reads.fastq | \
+  build/Release/evo -m "$MODEL" --backend cpu --score - --ctx 8192
 build/Release/evo serve -m "$MODEL" --backend cpu --ctx 8192 \
   --host 127.0.0.1 --port 8080
 build/Release/evo -m "$MODEL" --gpu 0 --gpu-layers 16 \
   --score sequences.fa --ctx 8192
+build/Release/evo variant-score -m "$MODEL" --vcf variants.vcf.gz \
+  --reference reference.fa.gz --window 8192 --ctx 8192 --gpu 0
 ```
 
 第二个已注册 family 可直接从官方 HyenaDNA Hugging Face Safetensors 离线转换：
@@ -103,7 +107,8 @@ build/Release/evo -m hyenadna.safetensors --backend cpu \
 recipe revision。CUDA 使用的 FlashAttention 与 CUTLASS 仍由 CMake
 `FetchContent` 固定源码；离线环境可通过对应的 `EVO_*_SOURCE_DIR` cache
 变量提供三份本地源码。CPU-only 构建（`-DEVO_CUDA=OFF`）默认不会启用 NPY
-模块，仍可直接用 CMake 配置。
+模块，仍可直接用 CMake 配置。普通/gzip 序列输入只链接系统 zlib runtime，
+不要求 zlib header。
 
 仓库内 gpu01/gpu02 远程入口统一使用 `EVO_REMOTE_ROOT` 切换远端根目录，不会
 改写远端 `HOME`；源码、build、依赖、容器、Nix 和 cache 也都有优先级更高的
@@ -118,6 +123,7 @@ recipe revision。CUDA 使用的 FlashAttention 与 CUTLASS 仍由 CMake
 [数值契约](docs/math-semantics.md)、[checkpoint 转换](docs/checkpoint-conversion.md)和
 [执行 profile 与验收 gate](docs/execution-profiles.md)、
 [architecture registry 与 HyenaDNA 边界](docs/architectures.md)、
+[sequence、gzip、stdin、VCF 与 reference 输入](docs/sequence-inputs.md)、
 [artifact 获取与 release](docs/artifact-distribution.md)、
 [embedding 输出契约](docs/embeddings.md)、
 [变异评分契约](docs/variant-scoring.md)、

@@ -1,9 +1,8 @@
 # Variant scoring
 
-`evo variant-score` compares one inline DNA alternate allele with its stated
-reference allele under the loaded Evo 2 model. It is intended as a small,
-auditable primitive for biological tools; VCF and indexed reference-genome
-batch input belong to the broader sequence-I/O work.
+`evo variant-score` compares DNA alternate alleles with their stated reference
+alleles under the loaded model. It supports one inline event or a streaming
+VCF plus reference FASTA.
 
 ```sh
 evo variant-score -m MODEL \
@@ -12,9 +11,20 @@ evo variant-score -m MODEL \
   --ctx 8192 --gpu 0
 ```
 
+For a batch:
+
+```sh
+evo variant-score -m MODEL \
+  --vcf variants.vcf.gz --reference reference.fa.gz \
+  --window 8192 --strand both --normalization sum \
+  --ctx 8192 --gpu 0
+```
+
 ## Coordinates and windows
 
 - `--position` is a positive, 1-based coordinate into `--sequence`.
+- VCF `POS` is reported as `VCF-1-based`; each output also carries its source
+  record/allele index, line, ID, and contig.
 - `--ref` must exactly match `--sequence` at that position. A mismatch is an
   error and no score is emitted.
 - Output window `start` and `end` use 0-based, half-open coordinates on the
@@ -49,15 +59,15 @@ counts are always written to JSON.
 `-`; and `both` reports both deltas and sets the top-level `score` to their
 arithmetic mean. No strand is silently substituted or omitted.
 
-The single JSON object includes the alleles, coordinate systems, derived
-window sequences and lengths, normalization, strand-level likelihoods and
-deltas, aggregation policy, backend, execution profile, and model identifier.
+Each JSONL object includes the source kind, alleles, coordinate systems,
+derived window sequences and lengths, normalization, strand-level likelihoods
+and deltas, aggregation policy, backend, execution profile, and model
+identifier.
 `profile: "exact"` means the registered exact runtime; approximate profiles
 must use distinct names and acceptance gates.
 
-## Current scope
-
-This command accepts one variant and an inline reference sequence. It does not
-yet parse VCF, fetch a contig from reference FASTA, normalize multiallelic
-records, or left-align indels. Those operations will be added with the planned
-VCF/reference I/O layer; callers must perform them explicitly for now.
+VCF multiallelic records are split in source order. The runtime does not
+left-align or otherwise normalize alleles, and does not skip filtered records.
+Symbolic and breakend alleles are unsupported. Reference lookup is a bounded,
+portable two-pass scan rather than indexed random access; details and failure
+semantics are in [sequence and variant input](sequence-inputs.md).

@@ -70,7 +70,7 @@ T7|x|实现共享 model 的 scheduler、dynamic batching 与 bio-native server|V
 T8|x|设计并实现 fast/quantized profiles + 数值/科学 benchmark gates|V1,V7,V9,V10,V16,I4
 T9|x|实现向量化 CPU backend 与显式 CPU+GPU offload policy|V2,V7,V9,V10,V16,I2,I3
 T10|x|抽象 architecture registry；接入第二个生物序列模型 family|V7,V8,V10,V11,V16,I2,I3,I4
-T11|.|补 FASTQ/gzip/stdin/VCF/reference IO 与坐标输出格式|V3,V5,V6,V12,V16,I5,I6
+T11|x|补 FASTQ/gzip/stdin/VCF/reference IO 与坐标输出格式|V3,V5,V6,V12,V16,I5,I6
 T12|.|完善贡献指南、兼容策略、benchmark matrix 与 release 文档|V7,V14,V15,V16,I8
 
 ## §B BUGS
@@ -94,3 +94,9 @@ B15|2026-08-12|C ABI sampler 测试把 Evo 2 的 512 logits 当作全局契约�
 B16|2026-08-12|metadata-only C ABI fixture 未声明新增的 architecture/runtime ABI→全量 contract 在注册表校验前失败|V10,V14,V16
 B17|2026-08-12|model-format fixture 增加 registry metadata 后仍写死旧 metadata count→格式解析成功却被脆弱断言判失败|V10,V16
 B18|2026-08-12|HyenaDNA acceptance fixture 依赖 NumPy，但 gpu02 的可复现 Nix Python 不含该包→CUDA 门无法运行独立 oracle|V2,V16,V19
+B19|2026-08-12|FASTQ quality 范围循环隐式把 signed char 转 unsigned char→AppleClang `-Werror` 拒绝构建|V16
+B20|2026-08-12|VCF callback 混用显式 `Status{}` 与推导 initializer-list return，且 variant helper 参数名被反向链局部变量遮蔽→严格编译失败|V16
+B21|2026-08-12|gpu02 CUDA image 只有 versioned `libz.so.1` runtime、没有 zlib-devel headers/unversioned linker name→标准 FindZLIB 配置失败|V2,V16,V19
+B22|2026-08-12|预先把 `EVO_ZLIB_LIBRARY` 缓存变量定义为空会让 `find_library` 视为用户已赋值而跳过搜索→本机 link 未携带 zlib|V16
+B23|2026-08-12|AppleClang 未报告 lambda 参数遮蔽外层 helper 参数，GCC 8 `-Wshadow -Werror` 在 gpu02 拒绝构建|V16,V19
+B24|2026-08-12|CUDA variant token-dump lambda 同样复用外层 `sequence` 名，CPU-only 本机门未编译该 TU→gpu02 才触发 GCC shadow gate|V16,V19

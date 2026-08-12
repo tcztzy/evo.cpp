@@ -102,13 +102,17 @@ std::string_view cli_usage() noexcept {
          "  evo --version\n"
          "  evo -m MODEL.safetensors[.index.json] -p DNA -n TOKENS --ctx N "
          "--gpu 0,1,2,3 [sampling]\n"
-         "  evo -m MODEL.safetensors[.index.json] --score FASTA_OR_TEXT --gpu "
+         "  evo -m MODEL.safetensors[.index.json] --score "
+         "FASTA_FASTQ_OR_TEXT --gpu "
          "0,1,2,3\n"
-         "  evo embed -m MODEL --input FASTA_OR_TEXT --output DIR --layer N "
+         "  evo embed -m MODEL --input FASTA_FASTQ_OR_TEXT --output DIR "
+         "--layer N "
          "--pooling none|mean|last --gpu 0,1,2,3\n"
          "  evo variant-score -m MODEL --sequence DNA --position POS --ref "
          "REF --alt ALT --window N --strand forward|reverse|both "
-         "--normalization sum|mean --gpu 0,1,2,3\n\n"
+         "--normalization sum|mean --gpu 0,1,2,3\n"
+         "  evo variant-score -m MODEL --vcf VARIANTS.vcf[.gz] --reference "
+         "REFERENCE.fa[.gz] --window N --gpu 0,1,2,3\n\n"
          "  evo serve -m MODEL --ctx N --gpu 0,1,2,3 [server options]\n\n"
          "Server:\n"
          "  --host ADDRESS              IPv4 bind address (default: "
@@ -182,6 +186,8 @@ Status parse_cli(const int argc, char *const argv[],
   bool seen_embed_layer = false;
   bool seen_embedding_pooling = false;
   bool seen_variant_sequence = false;
+  bool seen_variant_vcf = false;
+  bool seen_variant_reference_path = false;
   bool seen_variant_position = false;
   bool seen_variant_reference = false;
   bool seen_variant_alternate = false;
@@ -282,6 +288,22 @@ Status parse_cli(const int argc, char *const argv[],
       if (!status.ok())
         return status;
       options->variant_sequence = value;
+    } else if (option == "--vcf") {
+      if (seen_variant_vcf)
+        return duplicate(option);
+      seen_variant_vcf = true;
+      status = value_after(argc, argv, &index, option, &value);
+      if (!status.ok())
+        return status;
+      options->variant_vcf_path = value;
+    } else if (option == "--reference") {
+      if (seen_variant_reference_path)
+        return duplicate(option);
+      seen_variant_reference_path = true;
+      status = value_after(argc, argv, &index, option, &value);
+      if (!status.ok())
+        return status;
+      options->variant_reference_path = value;
     } else if (option == "--position") {
       if (seen_variant_position)
         return duplicate(option);
@@ -655,6 +677,7 @@ Status parse_cli(const int argc, char *const argv[],
         options->dump_layer.has_value() || seen_embed_input ||
         seen_embed_output || seen_embed_layer || seen_embedding_pooling ||
         seen_variant_sequence || seen_variant_position ||
+        seen_variant_vcf || seen_variant_reference_path ||
         seen_variant_reference || seen_variant_alternate ||
         seen_variant_window || seen_variant_strand ||
         seen_variant_normalization || seen_gpu_layers) {
@@ -683,6 +706,7 @@ Status parse_cli(const int argc, char *const argv[],
         seen_force_prompt_threshold || seen_temperature || seen_top_k ||
         seen_top_p || seen_seed || options->dump_logits_path.has_value() ||
         options->dump_layer.has_value() || seen_variant_sequence ||
+        seen_variant_vcf || seen_variant_reference_path ||
         seen_variant_position || seen_variant_reference ||
         seen_variant_alternate || seen_variant_window || seen_variant_strand ||
         seen_variant_normalization) {
@@ -718,21 +742,38 @@ Status parse_cli(const int argc, char *const argv[],
               "--dump-tokens; generation/scoring/embedding options are "
               "invalid"};
     }
-    if (!seen_variant_sequence || options->variant_sequence.empty()) {
-      return {ErrorCode::kInvalidArgument,
-              "variant-score requires a nonempty --sequence"};
-    }
-    if (!seen_variant_position) {
-      return {ErrorCode::kInvalidArgument,
-              "variant-score requires --position POS"};
-    }
-    if (!seen_variant_reference || options->variant_reference.empty()) {
-      return {ErrorCode::kInvalidArgument,
-              "variant-score requires a nonempty --ref allele"};
-    }
-    if (!seen_variant_alternate || options->variant_alternate.empty()) {
-      return {ErrorCode::kInvalidArgument,
-              "variant-score requires a nonempty --alt allele"};
+    const bool vcf_mode = seen_variant_vcf || seen_variant_reference_path;
+    if (vcf_mode) {
+      if (!seen_variant_vcf || options->variant_vcf_path.empty() ||
+          !seen_variant_reference_path ||
+          options->variant_reference_path.empty()) {
+        return {ErrorCode::kInvalidArgument,
+                "VCF variant scoring requires nonempty --vcf and --reference "
+                "paths"};
+      }
+      if (seen_variant_sequence || seen_variant_position ||
+          seen_variant_reference || seen_variant_alternate) {
+        return {ErrorCode::kInvalidArgument,
+                "--vcf/--reference cannot be combined with inline "
+                "--sequence/--position/--ref/--alt"};
+      }
+    } else {
+      if (!seen_variant_sequence || options->variant_sequence.empty()) {
+        return {ErrorCode::kInvalidArgument,
+                "variant-score requires a nonempty --sequence or --vcf"};
+      }
+      if (!seen_variant_position) {
+        return {ErrorCode::kInvalidArgument,
+                "variant-score requires --position POS"};
+      }
+      if (!seen_variant_reference || options->variant_reference.empty()) {
+        return {ErrorCode::kInvalidArgument,
+                "variant-score requires a nonempty --ref allele"};
+      }
+      if (!seen_variant_alternate || options->variant_alternate.empty()) {
+        return {ErrorCode::kInvalidArgument,
+                "variant-score requires a nonempty --alt allele"};
+      }
     }
     if (!seen_gpu && requires_gpu)
       return {ErrorCode::kInvalidArgument, "--gpu is required"};
@@ -749,6 +790,7 @@ Status parse_cli(const int argc, char *const argv[],
             "--input, --output, --layer, and --pooling require 'evo embed'"};
   }
   if (seen_variant_sequence || seen_variant_position ||
+      seen_variant_vcf || seen_variant_reference_path ||
       seen_variant_reference || seen_variant_alternate || seen_variant_window ||
       seen_variant_strand || seen_variant_normalization) {
     return {ErrorCode::kInvalidArgument,

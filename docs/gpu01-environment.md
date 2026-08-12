@@ -85,6 +85,8 @@ libnpy at commit
 `890ea4fcda302a580e633c624c6a63e2a5d422f6`, alongside the pinned
 FlashAttention and CUTLASS source trees. The libnpy commit archive has SHA256
 `c7b275c6cb8e46df43a20271e65010bdf63945831f2c0931ea6f2eda6a842acd`.
+The build also binds the container's versioned `/usr/lib64/libz.so.1` through
+`EVO_ZLIB_LIBRARY`, so gzip input needs no separately provisioned headers.
 
 The complete gpu-labeled CTest pass also succeeded on gpu01: `cuda_smoke`,
 `cuda_ops`, `fp8_sass`, `cuda_hyena`, `cuda_attention`, `cuda_model`,

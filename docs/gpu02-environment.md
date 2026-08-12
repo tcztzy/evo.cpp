@@ -11,6 +11,8 @@ Validated on 2026-07-23:
 - image: 4,843,704,320 bytes, SHA256
   `d5f2682c742a4bd1af0f2d70c7c8d5e63bdbc6ca76c41df0c941b31849fe5667`
 - native CUDA target: `sm_80`
+- gzip input links the image's versioned zlib 1.2.11 runtime directly; the
+  build does not require a missing `zlib-devel` package or unversioned symlink
 - aria2 1.37.0 from the user's read-only Nix profile
 - conversion Python 3.12 and CPU PyTorch 2.10.0 from the user's read-only
   Nix profile; the script bootstraps `$HOME/.venv-evo.cpp-convert`
@@ -177,6 +179,12 @@ verified Nix Python >=3.9 is chosen, preferring a canonical `python3-<version>`
 package over an environment wrapper at the same version.
 `EVO_BUILD_JOBS` controls compile parallelism and defaults to 4; reduce it for a
 shared host even though compilation does not occupy a GPU.
+
+The image exposes `/usr/lib64/libz.so.1` but no development header or
+`libz.so` linker symlink. The build entrypoint therefore supplies that exact
+versioned path through `EVO_ZLIB_LIBRARY`; the runtime uses only zlib's stable
+gzip C ABI. `frontend`, `hyenadna_backend`, and `cuda_cli` test plain/gzip
+FASTA, FASTQ, VCF, and reference reads inside the same image.
 
 `gpu02_build.sh` constructs the configured container from
 `containers/evo.cpp-cuda12.8-rocky8.def` when the image is absent, then reuses it

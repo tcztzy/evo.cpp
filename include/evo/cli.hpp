@@ -35,6 +35,8 @@ struct CliOptions final {
   std::size_t embed_layer{0};
   EmbeddingPooling embedding_pooling{EmbeddingPooling::kNone};
   std::string variant_sequence;
+  std::string variant_vcf_path;
+  std::string variant_reference_path;
   std::size_t variant_position_1based{0};
   std::string variant_reference;
   std::string variant_alternate;

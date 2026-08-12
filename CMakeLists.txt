@@ -11,6 +11,7 @@ include(CheckLanguage)
 include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
 find_package(Threads REQUIRED)
+find_library(EVO_ZLIB_LIBRARY NAMES z zlib zlib1 libz.so.1 REQUIRED)
 
 option(EVO_CUDA "Build the CUDA backend" ON)
 option(EVO_NPY "Build the NPY output module" ${EVO_CUDA})
@@ -63,6 +64,7 @@ add_library(
   src/backend.cpp
   src/fp8.cpp
   src/json.cpp
+  src/input_stream.cpp
   src/mapped_file.cpp
   src/model_format.cpp
   src/model_registry.cpp
@@ -72,6 +74,7 @@ add_library(
   src/status.cpp
   src/tokenizer.cpp
   src/variant.cpp
+  src/variant_io.cpp
   src/version.cpp)
 add_library(evo::core ALIAS evo_core)
 target_include_directories(
@@ -86,6 +89,7 @@ set_target_properties(
     POSITION_INDEPENDENT_CODE ON
     VISIBILITY_INLINES_HIDDEN ON)
 evo_configure_target(evo_core)
+target_link_libraries(evo_core PRIVATE "${EVO_ZLIB_LIBRARY}")
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
   target_link_libraries(evo_core PUBLIC stdc++fs)
 endif()

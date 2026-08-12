@@ -3,6 +3,7 @@
 
 import argparse
 import ast
+import gzip
 import json
 import math
 import os
@@ -650,6 +651,53 @@ def main() -> int:
     ):
         raise AssertionError("variant mean normalization is not explicit or exact")
 
+    reference_gz = args.work_dir / "reference.fa.gz"
+    reference_gz.write_bytes(gzip.compress(b">chr1 primary\nAACC\nGGTT\n"))
+    vcf_gz = args.work_dir / "variant.vcf.gz"
+    vcf_gz.write_bytes(
+        gzip.compress(
+            b"##fileformat=VCFv4.3\n"
+            b"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+            b"chr1\t3\trs1\tC\tT\t.\tPASS\t.\n"
+        )
+    )
+    vcf_result = run_checked(
+        [
+            str(args.binary),
+            "variant-score",
+            "-m",
+            str(model),
+            "--vcf",
+            str(vcf_gz),
+            "--reference",
+            str(reference_gz),
+            "--window",
+            "6",
+            "--strand",
+            "forward",
+            "--ctx",
+            "8",
+            "--gpu",
+            gpu_list,
+        ]
+    )
+    vcf_variant = json.loads(vcf_result.stdout)
+    if any(
+        (
+            vcf_variant["source"] != "vcf",
+            vcf_variant["record_index"] != 0,
+            vcf_variant["allele_index"] != 0,
+            vcf_variant["id"] != "rs1",
+            vcf_variant["contig"] != "chr1",
+            vcf_variant["position_coordinate_system"] != "VCF-1-based",
+            vcf_variant["window"]["start"] != 0,
+            vcf_variant["window"]["end"] != 6,
+            vcf_variant["window"]["contig"] != "chr1",
+            vcf_variant["backend"] != "cuda",
+        )
+    ):
+        raise AssertionError("CUDA VCF/reference scoring omitted coordinates")
+
     mismatch_variant = subprocess.run(
         [
             str(args.binary),
@@ -706,6 +754,30 @@ def main() -> int:
         or b"tokens second description=[84,71,67,65]" not in multi_score_result.stderr
     ):
         raise AssertionError("streaming multi-record FASTA lost order or bytes")
+
+    fastq_gz = args.work_dir / "multi-score.fastq.gz"
+    fastq_gz.write_bytes(
+        gzip.compress(b"@first-read\nACGT\n+\nIIII\n@second-read\nTGCA\n+\n!!!!\n")
+    )
+    fastq_result = run_checked(
+        [
+            str(args.binary),
+            "-m",
+            str(model),
+            "--score",
+            str(fastq_gz),
+            "--ctx",
+            "8",
+            "--gpu",
+            gpu_list,
+        ]
+    )
+    fastq_scores = [json.loads(line) for line in fastq_result.stdout.splitlines()]
+    if (
+        [record["name"] for record in fastq_scores] != ["first-read", "second-read"]
+        or any(record["input_format"] != "fastq" for record in fastq_scores)
+    ):
+        raise AssertionError("gzip FASTQ lost record or format metadata")
 
     oversized_score_input = args.work_dir / "oversized-score.fasta"
     oversized_score_input.write_text(">too-long\nACGTACGTA\n")

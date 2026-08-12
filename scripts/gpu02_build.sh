@@ -165,6 +165,7 @@ source_fingerprint_before="$(evo_source_fingerprint "$source_dir")"
   -DCMAKE_BUILD_TYPE=Release \
   -DPython3_EXECUTABLE="$python_bin" \
   -DCUDAToolkit_rt_LIBRARY=/usr/lib64/librt.so \
+  -DEVO_ZLIB_LIBRARY=/usr/lib64/libz.so.1 \
   -DEVO_LIBNPY_SOURCE_DIR="$deps_dir/libnpy-890ea4fcda302a580e633c624c6a63e2a5d422f6" \
   -DEVO_FLASH_ATTENTION_SOURCE_DIR="$deps_dir/flash-attention-628452c73a4fab560189a7caa8702642c6a38235" \
   -DEVO_CUTLASS_SOURCE_DIR="$deps_dir/cutlass-7127592069c2fe01b041e174ba4345ef9b279671"

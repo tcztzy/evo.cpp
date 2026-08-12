@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "evo/sequence_io.hpp"
 
+#include "input_stream.hpp"
+
 #include <algorithm>
 #include <array>
-#include <fstream>
 #include <istream>
 #include <limits>
 #include <string_view>
@@ -13,30 +14,8 @@ namespace {
 
 constexpr std::size_t kMaxFastaHeaderBytes = 1U << 20U;
 
-Status read_bounded_line(std::istream &input, const std::size_t max_bytes,
-                         std::string *const line, bool *const has_line) {
-  line->clear();
-  *has_line = false;
-  bool consumed = false;
-  char character = 0;
-  while (input.get(character)) {
-    consumed = true;
-    if (character == '\n') {
-      *has_line = true;
-      return Status::Ok();
-    }
-    if (line->size() >= max_bytes) {
-      return {ErrorCode::kInvalidArgument,
-              "FASTA line exceeds parser limit of " +
-                  std::to_string(max_bytes) + " bytes"};
-    }
-    line->push_back(character);
-  }
-  if (input.bad()) {
-    return {ErrorCode::kIo, "failed while reading FASTA input"};
-  }
-  *has_line = consumed;
-  return Status::Ok();
+std::size_t allow_cr(const std::size_t limit) noexcept {
+  return limit == std::numeric_limits<std::size_t>::max() ? limit : limit + 1;
 }
 
 Status append_sequence_line(const std::string_view line,
@@ -65,13 +44,23 @@ Status parse_fasta(std::istream &input, const std::size_t max_record_bytes,
   SequenceRecord current;
   bool have_record = false;
   std::size_t line_number = 0;
-  const std::size_t line_limit =
-      std::max(max_record_bytes, kMaxFastaHeaderBytes);
   while (true) {
     std::string line;
     bool has_line = false;
-    auto status = read_bounded_line(input, line_limit, &line, &has_line);
+    const bool header = input.peek() == '>';
+    const std::size_t remaining = have_record
+                                      ? max_record_bytes - current.bytes.size()
+                                      : max_record_bytes;
+    auto status = detail::read_bounded_line(
+        input, header ? kMaxFastaHeaderBytes : allow_cr(remaining), &line,
+        &has_line);
     if (!status.ok()) {
+      if (!header && have_record &&
+          status.code() == ErrorCode::kInvalidArgument) {
+        return {ErrorCode::kInvalidArgument,
+                "FASTA record '" + current.name + "' exceeds maximum " +
+                    std::to_string(max_record_bytes) + " bytes"};
+      }
       return {status.code(),
               status.message() + " at line " + std::to_string(line_number + 1)};
     }
@@ -100,7 +89,7 @@ Status parse_fasta(std::istream &input, const std::size_t max_record_bytes,
           return status;
         }
       }
-      current = {std::string{name}, {}};
+      current = {std::string{name}, {}, SequenceFormat::kFasta};
       have_record = true;
     } else if (!line.empty()) {
       if (!have_record) {
@@ -125,10 +114,135 @@ Status parse_fasta(std::istream &input, const std::size_t max_record_bytes,
   return callback(current);
 }
 
+Status validate_fastq_sequence(const std::string_view line,
+                               const std::size_t line_number) {
+  if (line.empty())
+    return {ErrorCode::kInvalidArgument,
+            "FASTQ sequence is empty at line " + std::to_string(line_number)};
+  for (const char character : line) {
+    if (character == ' ' || character == '\t' || character == '\v' ||
+        character == '\f' || character == '\r') {
+      return {ErrorCode::kInvalidArgument,
+              "FASTQ sequence contains whitespace at line " +
+                  std::to_string(line_number)};
+    }
+  }
+  return Status::Ok();
+}
+
+Status parse_fastq(std::istream &input, const std::size_t max_record_bytes,
+                   const SequenceRecordCallback &callback) {
+  std::size_t line_number = 0;
+  std::size_t records = 0;
+  while (input.peek() != std::char_traits<char>::eof()) {
+    std::string header;
+    bool has_line = false;
+    auto status = detail::read_bounded_line(
+        input, kMaxFastaHeaderBytes, &header, &has_line);
+    ++line_number;
+    if (!status.ok())
+      return {status.code(), status.message() + " at line " +
+                                 std::to_string(line_number)};
+    if (!has_line || header.empty() || header.front() != '@' ||
+        header.size() == 1) {
+      return {ErrorCode::kInvalidArgument,
+              "FASTQ line " + std::to_string(line_number) +
+                  " must contain a nonempty @ header"};
+    }
+    if (header.back() == '\r')
+      header.pop_back();
+    if (header.size() == 1) {
+      return {ErrorCode::kInvalidArgument,
+              "FASTQ line " + std::to_string(line_number) +
+                  " has an empty header"};
+    }
+    const std::string name = header.substr(1);
+
+    std::string sequence;
+    status = detail::read_bounded_line(input, allow_cr(max_record_bytes), &sequence,
+                                       &has_line);
+    ++line_number;
+    if (!status.ok() || !has_line) {
+      return {status.ok() ? ErrorCode::kInvalidArgument : status.code(),
+              status.ok() ? "FASTQ record '" + name +
+                                "' is truncated before its sequence"
+                          : status.message() + " at line " +
+                                std::to_string(line_number)};
+    }
+    if (!sequence.empty() && sequence.back() == '\r')
+      sequence.pop_back();
+    if (sequence.size() > max_record_bytes) {
+      return {ErrorCode::kInvalidArgument,
+              "FASTQ record '" + name + "' exceeds maximum " +
+                  std::to_string(max_record_bytes) + " bytes"};
+    }
+    status = validate_fastq_sequence(sequence, line_number);
+    if (!status.ok())
+      return status;
+
+    std::string plus;
+    status = detail::read_bounded_line(input, kMaxFastaHeaderBytes, &plus,
+                                       &has_line);
+    ++line_number;
+    if (!status.ok() || !has_line) {
+      return {status.ok() ? ErrorCode::kInvalidArgument : status.code(),
+              status.ok() ? "FASTQ record '" + name +
+                                "' is truncated before its + line"
+                          : status.message() + " at line " +
+                                std::to_string(line_number)};
+    }
+    if (!plus.empty() && plus.back() == '\r')
+      plus.pop_back();
+    if (plus.empty() || plus.front() != '+' ||
+        (plus.size() > 1 && plus.substr(1) != name)) {
+      return {ErrorCode::kInvalidArgument,
+              "FASTQ + line does not match record '" + name + "' at line " +
+                  std::to_string(line_number)};
+    }
+
+    std::string quality;
+    status = detail::read_bounded_line(input, allow_cr(max_record_bytes), &quality,
+                                       &has_line);
+    ++line_number;
+    if (!status.ok() || !has_line) {
+      return {status.ok() ? ErrorCode::kInvalidArgument : status.code(),
+              status.ok() ? "FASTQ record '" + name +
+                                "' is truncated before its quality"
+                          : status.message() + " at line " +
+                                std::to_string(line_number)};
+    }
+    if (!quality.empty() && quality.back() == '\r')
+      quality.pop_back();
+    if (quality.size() != sequence.size()) {
+      return {ErrorCode::kInvalidArgument,
+              "FASTQ record '" + name +
+                  "' quality length does not match sequence at line " +
+                  std::to_string(line_number)};
+    }
+    for (const char character : quality) {
+      const auto value = static_cast<unsigned char>(character);
+      if (value < 33U || value > 126U) {
+        return {ErrorCode::kInvalidArgument,
+                "FASTQ record '" + name +
+                    "' has a quality byte outside ASCII 33..126 at line " +
+                    std::to_string(line_number)};
+      }
+    }
+    status = callback({name, std::move(sequence), SequenceFormat::kFastq});
+    if (!status.ok())
+      return status;
+    ++records;
+  }
+  return records == 0
+             ? Status{ErrorCode::kInvalidArgument, "FASTQ contains no records"}
+             : Status::Ok();
+}
+
 Status parse_raw(std::istream &input, const std::string &path,
                  const std::size_t max_record_bytes,
                  const SequenceRecordCallback &callback) {
-  SequenceRecord record{path, {}};
+  SequenceRecord record{path == "-" ? "stdin" : path, {},
+                        SequenceFormat::kRaw};
   std::array<char, 64U * 1024U> buffer{};
   while (input) {
     input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
@@ -139,7 +253,7 @@ Status parse_raw(std::istream &input, const std::string &path,
     const auto bytes = static_cast<std::size_t>(count);
     if (bytes > max_record_bytes - record.bytes.size()) {
       return {ErrorCode::kInvalidArgument,
-              "raw sequence '" + path + "' exceeds maximum " +
+              "raw sequence '" + record.name + "' exceeds maximum " +
                   std::to_string(max_record_bytes) + " bytes"};
     }
     record.bytes.append(buffer.data(), bytes);
@@ -172,21 +286,22 @@ Status stream_sequence_file(const std::string &path,
     return {ErrorCode::kInvalidArgument,
             "sequence record callback must not be empty"};
   }
-  std::ifstream input(path, std::ios::binary);
-  if (!input) {
-    return {ErrorCode::kIo, "cannot open sequence input '" + path + "'"};
-  }
-  const auto first = input.peek();
-  if (first == std::char_traits<char>::eof()) {
-    if (input.bad()) {
-      return {ErrorCode::kIo,
-              "failed while reading sequence input '" + path + "'"};
+  return detail::with_input_stream(path, [&](std::istream &input) {
+    const auto first = input.peek();
+    if (first == std::char_traits<char>::eof()) {
+      if (input.bad()) {
+        return Status{ErrorCode::kIo,
+                      "failed while reading sequence input '" + path + "'"};
+      }
+      return Status{ErrorCode::kInvalidArgument,
+                    "sequence input is empty: '" + path + "'"};
     }
-    return {ErrorCode::kInvalidArgument,
-            "sequence input is empty: '" + path + "'"};
-  }
-  return first == '>' ? parse_fasta(input, max_record_bytes, callback)
-                      : parse_raw(input, path, max_record_bytes, callback);
+    if (first == '>')
+      return parse_fasta(input, max_record_bytes, callback);
+    if (first == '@')
+      return parse_fastq(input, max_record_bytes, callback);
+    return parse_raw(input, path, max_record_bytes, callback);
+  });
 }
 
 Status read_sequence_file(const std::string &path,
@@ -200,6 +315,18 @@ Status read_sequence_file(const std::string &path,
                                 records->push_back(record);
                                 return Status::Ok();
                               });
+}
+
+const char *sequence_format_name(const SequenceFormat format) noexcept {
+  switch (format) {
+  case SequenceFormat::kRaw:
+    return "raw";
+  case SequenceFormat::kFasta:
+    return "fasta";
+  case SequenceFormat::kFastq:
+    return "fastq";
+  }
+  return "unknown";
 }
 
 } // namespace evo

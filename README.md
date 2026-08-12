@@ -87,10 +87,14 @@ same artifact:
 
 ```sh
 build/Release/evo -m "$MODEL" --backend cpu --score sequences.fa --ctx 8192
+gzip -c reads.fastq | \
+  build/Release/evo -m "$MODEL" --backend cpu --score - --ctx 8192
 build/Release/evo serve -m "$MODEL" --backend cpu --ctx 8192 \
   --host 127.0.0.1 --port 8080
 build/Release/evo -m "$MODEL" --gpu 0 --gpu-layers 16 \
   --score sequences.fa --ctx 8192
+build/Release/evo variant-score -m "$MODEL" --vcf variants.vcf.gz \
+  --reference reference.fa.gz --window 8192 --ctx 8192 --gpu 0
 ```
 
 For the second registered family, convert an official HyenaDNA Hugging Face
@@ -113,7 +117,8 @@ Conan recipe revision. CUDA's pinned FlashAttention and CUTLASS source trees
 remain under CMake `FetchContent`; offline builds can supply all three source
 trees through the documented `EVO_*_SOURCE_DIR` cache variables. A CPU-only
 build (`-DEVO_CUDA=OFF`) leaves the NPY module disabled by default and can
-still be configured directly with CMake.
+still be configured directly with CMake. Plain/gzip sequence input links the
+system zlib runtime and does not require zlib headers.
 
 For the checked-in gpu01/gpu02 remote entrypoints, `EVO_REMOTE_ROOT` changes the
 root without rewriting remote `HOME`; source, build, dependency, container, Nix,
@@ -128,6 +133,7 @@ then see the [7B first-divergence audit](docs/vortex-7b-bit-exactness.md),
 [numerical contracts](docs/math-semantics.md),
 [execution profiles and acceptance gates](docs/execution-profiles.md),
 [architecture registry and HyenaDNA boundary](docs/architectures.md),
+[sequence, gzip, stdin, VCF, and reference input](docs/sequence-inputs.md),
 [checkpoint conversion](docs/checkpoint-conversion.md), and
 [artifact acquisition and releases](docs/artifact-distribution.md),
 [embedding outputs](docs/embeddings.md),

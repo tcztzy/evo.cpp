@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import gzip
 import json
 import math
 import os
@@ -193,6 +194,48 @@ def main() -> int:
     if maximum_error > 1e-5:
         raise AssertionError(f"HyenaDNA logits exceeded oracle envelope: {maximum_error}")
 
+    fastq_gz = args.work_dir / "input.fastq.gz"
+    fastq_gz.write_bytes(
+        gzip.compress(b"@read-one\nACGTNACG\n+\nIIIIIIII\n@read-two\nACGT\n+\n!!!!\n")
+    )
+    fastq_score = run(
+        [
+            str(args.binary),
+            "-m",
+            str(converted),
+            "--backend",
+            "cpu",
+            "--ctx",
+            "16",
+            "--score",
+            str(fastq_gz),
+        ]
+    )
+    fastq_documents = [json.loads(line) for line in fastq_score.stdout.splitlines()]
+    if (
+        [item["name"] for item in fastq_documents] != ["read-one", "read-two"]
+        or any(item["input_format"] != "fastq" for item in fastq_documents)
+    ):
+        raise AssertionError("gzip FASTQ score did not preserve record metadata")
+
+    stdin_score = run(
+        [
+            str(args.binary),
+            "-m",
+            str(converted),
+            "--backend",
+            "cpu",
+            "--ctx",
+            "16",
+            "--score",
+            "-",
+        ],
+        input=">stdin-record\nACGTNACG\n",
+    )
+    stdin_document = json.loads(stdin_score.stdout)
+    if stdin_document["name"] != "stdin-record" or stdin_document["input_format"] != "fasta":
+        raise AssertionError("stdin FASTA score did not use the sequence stream")
+
     generated = run(
         [
             str(args.binary),
@@ -268,6 +311,79 @@ def main() -> int:
     )
     if len(json.loads(variant.stdout)["strands"]) != 2:
         raise AssertionError("HyenaDNA variant scoring omitted a strand")
+
+    reference = args.work_dir / "reference.fa.gz"
+    reference.write_bytes(gzip.compress(b">chr1 primary\nAACC\nGGTT\n>chr2\nTTTT\n"))
+    vcf = args.work_dir / "variants.vcf.gz"
+    vcf.write_bytes(
+        gzip.compress(
+            b"##fileformat=VCFv4.3\n"
+            b"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+            b"chr1\t3\trs1\tC\tT,G\t.\tPASS\t.\n"
+        )
+    )
+    vcf_score = run(
+        [
+            str(args.binary),
+            "variant-score",
+            "-m",
+            str(converted),
+            "--backend",
+            "cpu",
+            "--ctx",
+            "16",
+            "--vcf",
+            str(vcf),
+            "--reference",
+            str(reference),
+            "--window",
+            "6",
+            "--strand",
+            "both",
+        ]
+    )
+    vcf_documents = [json.loads(line) for line in vcf_score.stdout.splitlines()]
+    if (
+        len(vcf_documents) != 2
+        or [item["allele_index"] for item in vcf_documents] != [0, 1]
+        or any(item["source"] != "vcf" for item in vcf_documents)
+        or any(item["contig"] != "chr1" for item in vcf_documents)
+        or any(item["window"]["start"] != 0 or item["window"]["end"] != 6 for item in vcf_documents)
+        or any(item["position_coordinate_system"] != "VCF-1-based" for item in vcf_documents)
+    ):
+        raise AssertionError("VCF/reference batch score omitted coordinate metadata")
+
+    late_vcf = args.work_dir / "late-error.vcf"
+    late_vcf.write_text(
+        "##fileformat=VCFv4.3\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+        "chr1\t3\tvalid\tC\tT\t.\tPASS\t.\n"
+        "chr1\t4\tmismatch\tA\tT\t.\tPASS\t.\n",
+        encoding="ascii",
+    )
+    late = subprocess.run(
+        [
+            str(args.binary),
+            "variant-score",
+            "-m",
+            str(converted),
+            "--backend",
+            "cpu",
+            "--ctx",
+            "16",
+            "--vcf",
+            str(late_vcf),
+            "--reference",
+            str(reference),
+            "--window",
+            "6",
+        ],
+        text=True,
+        capture_output=True,
+    )
+    complete = late.stdout.splitlines()
+    if late.returncode == 0 or len(complete) != 1 or json.loads(complete[0])["id"] != "valid":
+        raise AssertionError("late VCF failure did not preserve exactly one complete JSONL row")
 
     port = free_port()
     server = subprocess.Popen(

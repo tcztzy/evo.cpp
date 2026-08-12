@@ -22,6 +22,7 @@
 #include "evo/sequence_io.hpp"
 #include "evo/tokenizer.hpp"
 #include "evo/variant.hpp"
+#include "evo/variant_io.hpp"
 
 namespace evo::cpu {
 namespace {
@@ -160,7 +161,9 @@ void print_score(const SequenceRecord &record,
   const double mean = total / static_cast<double>(scores.size());
   std::cout << "{\"name\":";
   write_json_string(std::cout, record.name);
-  std::cout << ",\"backend\":\"cpu\",\"profile\":\"cpu-f32\",\"model_id\":";
+  std::cout << ",\"input_format\":\""
+            << sequence_format_name(record.format)
+            << "\",\"backend\":\"cpu\",\"profile\":\"cpu-f32\",\"model_id\":";
   write_json_string(std::cout, config.model_id);
   std::cout << ",\"tokens\":" << record.bytes.size()
             << ",\"scored_tokens\":" << scores.size()
@@ -309,31 +312,36 @@ struct StrandScore final {
   double delta{0.0};
 };
 
-Status run_variant(const CliOptions &options, const Model &model) {
+Status run_variant_one(const CliOptions &options, const Model &model,
+                       const std::string_view sequence,
+                       const std::size_t position_1based,
+                       const std::string_view reference,
+                       const std::string_view alternate,
+                       const std::size_t coordinate_offset,
+                       const VcfRecord *const vcf) {
   VariantWindow window;
-  auto status = make_variant_window(
-      options.variant_sequence, options.variant_position_1based,
-      options.variant_reference, options.variant_alternate,
-      options.variant_window_tokens, &window);
+  auto status = make_variant_window(sequence, position_1based, reference,
+                                    alternate, options.variant_window_tokens,
+                                    &window);
   if (!status.ok())
     return status;
   std::vector<StrandScore> scores;
-  const auto add = [&](const std::string_view reference,
-                       const std::string_view alternate,
+  const auto add = [&](const std::string_view strand_reference,
+                       const std::string_view strand_alternate,
                        const VariantStrand strand) -> Status {
     StrandScore score;
     score.strand = variant_strand_name(strand);
-    auto inner = sequence_score(reference, model, options.context_size,
+    auto inner = sequence_score(strand_reference, model, options.context_size,
                                 &score.reference);
     if (!inner.ok())
       return inner;
-    inner = sequence_score(alternate, model, options.context_size,
+    inner = sequence_score(strand_alternate, model, options.context_size,
                            &score.alternate);
     if (!inner.ok())
       return inner;
     if (options.variant_normalization == VariantNormalization::kMean) {
-      score.reference /= static_cast<double>(reference.size() - 1);
-      score.alternate /= static_cast<double>(alternate.size() - 1);
+      score.reference /= static_cast<double>(strand_reference.size() - 1);
+      score.alternate /= static_cast<double>(strand_alternate.size() - 1);
     }
     score.delta = score.alternate - score.reference;
     scores.push_back(score);
@@ -345,13 +353,14 @@ Status run_variant(const CliOptions &options, const Model &model) {
       return status;
   }
   if (options.variant_strand != VariantStrand::kForward) {
-    std::string reference;
-    std::string alternate;
-    status = reverse_complement(window.reference, &reference);
+    std::string reverse_reference;
+    std::string reverse_alternate;
+    status = reverse_complement(window.reference, &reverse_reference);
     if (status.ok())
-      status = reverse_complement(window.alternate, &alternate);
+      status = reverse_complement(window.alternate, &reverse_alternate);
     if (status.ok())
-      status = add(reference, alternate, VariantStrand::kReverse);
+      status = add(reverse_reference, reverse_alternate,
+                   VariantStrand::kReverse);
     if (!status.ok())
       return status;
   }
@@ -359,30 +368,96 @@ Status run_variant(const CliOptions &options, const Model &model) {
   for (const auto &score : scores)
     aggregate += score.delta;
   aggregate /= static_cast<double>(scores.size());
-  std::cout << "{\"position\":" << options.variant_position_1based
-            << ",\"position_coordinate_system\":\"1-based\",\"reference\":";
-  write_json_string(std::cout, options.variant_reference);
-  std::cout << ",\"alternate\":";
-  write_json_string(std::cout, options.variant_alternate);
-  std::cout << ",\"window\":{\"start\":" << window.reference_start
-            << ",\"end\":" << window.reference_end
-            << ",\"coordinate_system\":\"0-based-half-open\"}"
-            << ",\"normalization\":\""
-            << variant_normalization_name(options.variant_normalization)
-            << "\",\"backend\":\"cpu\",\"profile\":\"cpu-f32\",\"strands\":[";
+  std::ostringstream output;
+  output << "{\"source\":\"" << (vcf == nullptr ? "inline" : "vcf")
+         << "\"";
+  if (vcf != nullptr) {
+    output << ",\"record_index\":" << vcf->record_index
+           << ",\"allele_index\":" << vcf->allele_index
+           << ",\"vcf_line\":" << vcf->line_number << ",\"id\":";
+    write_json_string(output, vcf->id);
+    output << ",\"contig\":";
+    write_json_string(output, vcf->contig);
+  }
+  output << ",\"position\":"
+         << (vcf == nullptr ? position_1based : vcf->position_1based)
+         << ",\"position_coordinate_system\":\""
+         << (vcf == nullptr ? "1-based" : "VCF-1-based")
+         << "\",\"reference\":";
+  write_json_string(output, reference);
+  output << ",\"alternate\":";
+  write_json_string(output, alternate);
+  output << ",\"window\":{\"start\":"
+         << coordinate_offset + window.reference_start << ",\"end\":"
+         << coordinate_offset + window.reference_end
+         << ",\"coordinate_system\":\"0-based-half-open\"";
+  if (vcf != nullptr) {
+    output << ",\"contig\":";
+    write_json_string(output, vcf->contig);
+  }
+  output << ",\"reference_sequence\":";
+  write_json_string(output, window.reference);
+  output << ",\"alternate_sequence\":";
+  write_json_string(output, window.alternate);
+  output << ",\"reference_tokens\":" << window.reference.size()
+         << ",\"alternate_tokens\":" << window.alternate.size() << '}'
+         << ",\"normalization\":\""
+         << variant_normalization_name(options.variant_normalization)
+         << "\",\"backend\":\"cpu\",\"profile\":\"cpu-f32\",\"model_id\":";
+  write_json_string(output, model.config().model_id);
+  output << ",\"strands\":[";
   for (std::size_t index = 0; index < scores.size(); ++index) {
     if (index != 0)
-      std::cout.put(',');
-    std::cout << "{\"strand\":\"" << scores[index].strand
-              << "\",\"reference_log_likelihood\":" << std::setprecision(17)
-              << scores[index].reference
-              << ",\"alternate_log_likelihood\":" << scores[index].alternate
-              << ",\"delta\":" << scores[index].delta << '}';
+      output.put(',');
+    output << "{\"strand\":\"" << scores[index].strand
+           << "\",\"reference_log_likelihood\":" << std::setprecision(17)
+           << scores[index].reference
+           << ",\"alternate_log_likelihood\":" << scores[index].alternate
+           << ",\"reference_scored_tokens\":"
+           << window.reference.size() - 1
+           << ",\"alternate_scored_tokens\":" << window.alternate.size() - 1
+           << ",\"delta\":" << scores[index].delta << '}';
   }
-  std::cout << "],\"aggregation\":\""
-            << (scores.size() == 1 ? "single_strand" : "mean_across_strands")
-            << "\",\"score\":" << aggregate << "}\n";
-  return Status::Ok();
+  output << "],\"aggregation\":\""
+         << (scores.size() == 1 ? "single_strand" : "mean_across_strands")
+         << "\",\"score\":" << aggregate << "}\n";
+  const auto document = output.str();
+  std::cout.write(document.data(), static_cast<std::streamsize>(document.size()));
+  return std::cout ? Status::Ok()
+                   : Status{ErrorCode::kIo,
+                            "failed writing variant score JSONL"};
+}
+
+Status run_variant(const CliOptions &options, const Model &model) {
+  if (options.variant_vcf_path.empty()) {
+    return run_variant_one(
+        options, model, options.variant_sequence,
+        options.variant_position_1based, options.variant_reference,
+        options.variant_alternate, 0, nullptr);
+  }
+  const auto status = stream_vcf_file(
+      options.variant_vcf_path, [&](const VcfRecord &record) -> Status {
+        ReferenceSlice slice;
+        auto inner = fetch_reference_slice(
+            options.variant_reference_path, record.contig,
+            record.position_1based, record.reference, record.alternate,
+            options.variant_window_tokens, &slice);
+        if (!inner.ok())
+          return {inner.code(), "VCF line " +
+                                    std::to_string(record.line_number) + ": " +
+                                    inner.message()};
+        const std::size_t local_position =
+            record.position_1based - slice.start;
+        return run_variant_one(options, model, slice.sequence, local_position,
+                               record.reference, record.alternate, slice.start,
+                               &record);
+      });
+  if (!status.ok())
+    return status;
+  std::cout.flush();
+  return std::cout ? Status::Ok()
+                   : Status{ErrorCode::kIo,
+                            "failed writing variant score JSONL"};
 }
 
 const char *pooling_name(const EmbeddingPooling pooling) noexcept {
@@ -469,7 +544,8 @@ Status run_embed(const CliOptions &options, const Model &model) {
           return status;
         manifest << "{\"record_index\":" << record_index << ",\"name\":";
         write_json_string(manifest, record.name);
-        manifest << ",\"file\":";
+        manifest << ",\"input_format\":\""
+                 << sequence_format_name(record.format) << "\",\"file\":";
         write_json_string(manifest, filename.str());
         manifest << ",\"source_tokens\":" << tokens.size() << ",\"shape\":["
                  << rows << ',' << width

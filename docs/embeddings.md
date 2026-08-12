@@ -1,7 +1,8 @@
 # Intermediate embeddings
 
-The embedding command captures the F32 block output of a zero-based Evo 2
-layer for each FASTA or raw sequence record:
+The embedding command captures the F32 block output of a zero-based model
+layer for each FASTA, FASTQ, or raw sequence record. Plain files, gzip files,
+and stdin (`--input -`) share the same bounded stream:
 
 ```sh
 evo embed -m evo2.safetensors.index.json \
@@ -20,7 +21,7 @@ stdout. Record names never become paths.
 
 Each manifest row records:
 
-- input `record_index`, `name`, and `source_tokens`;
+- input `record_index`, `name`, `input_format`, and `source_tokens`;
 - NPY `file`, two-dimensional `shape`, and `dtype=float32`;
 - zero-based `layer` and `point=block_output`;
 - explicit `pooling`, `backend`, model `profile`, and `model_id` when present.
@@ -41,6 +42,10 @@ If a later FASTA record or inference operation fails, the command exits
 nonzero. Previously completed NPY files and manifest lines remain valid;
 incomplete NPY files are removed. Existing nonempty output directories are
 rejected to prevent accidental overwrites.
+
+FASTQ quality is validated but is not part of the embedding. Full format,
+gzip, stdin, and late-error semantics are documented in
+[sequence and variant input](sequence-inputs.md).
 
 For embedding applications, use `evo_context_embed()` from the C ABI described
 in [c-api.md](c-api.md). Its callback receives chunk rows, hidden width, and

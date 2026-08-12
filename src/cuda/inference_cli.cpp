@@ -30,6 +30,7 @@
 #include "evo/sequence_io.hpp"
 #include "evo/tokenizer.hpp"
 #include "evo/variant.hpp"
+#include "evo/variant_io.hpp"
 
 namespace evo::cuda {
 namespace {
@@ -223,7 +224,9 @@ void print_score_record(const SequenceRecord &record,
 
   std::cout << "{\"name\":";
   write_json_string(std::cout, record.name);
-  std::cout << ",\"backend\":\"cuda\",\"profile\":";
+  std::cout << ",\"input_format\":\""
+            << sequence_format_name(record.format)
+            << "\",\"backend\":\"cuda\",\"profile\":";
   write_json_string(std::cout,
                     inference_profile_name(config.inference_profile));
   std::cout << ",\"model_id\":";
@@ -270,7 +273,8 @@ void write_embedding_metadata(
     const EmbeddingPooling pooling, const RuntimeModelConfig &config) {
   output << "{\"record_index\":" << record_index << ",\"name\":";
   write_json_string(output, record.name);
-  output << ",\"file\":";
+  output << ",\"input_format\":\""
+         << sequence_format_name(record.format) << "\",\"file\":";
   write_json_string(output, filename);
   output << ",\"source_tokens\":" << source_tokens << ",\"shape\":[" << rows
          << ',' << columns << "],\"layer\":" << layer
@@ -724,20 +728,25 @@ Status score_variant_strand(const std::string_view reference,
   return Status::Ok();
 }
 
-Status run_variant_score(const CliOptions &options, PipelineModel *const model,
-                         MemoryTracker *const memory, Metrics *const metrics) {
+Status run_variant_one(const CliOptions &options,
+                       const std::string_view sequence,
+                       const std::size_t position_1based,
+                       const std::string_view reference,
+                       const std::string_view alternate,
+                       const std::size_t coordinate_offset,
+                       const VcfRecord *const vcf, PipelineModel *const model,
+                       MemoryTracker *const memory, Metrics *const metrics) {
   VariantWindow window;
-  auto status = make_variant_window(
-      options.variant_sequence, options.variant_position_1based,
-      options.variant_reference, options.variant_alternate,
-      options.variant_window_tokens, &window);
+  auto status = make_variant_window(sequence, position_1based, reference,
+                                    alternate, options.variant_window_tokens,
+                                    &window);
   if (!status.ok())
     return status;
 
   if (options.dump_tokens) {
     const auto dump = [](const std::string_view label,
-                         const std::string_view sequence) {
-      const auto tokens = encode_bytes(sequence);
+                         const std::string_view window_sequence) {
+      const auto tokens = encode_bytes(window_sequence);
       std::cerr << "tokens " << label << "=[";
       for (std::size_t index = 0; index < tokens.size(); ++index) {
         if (index != 0)
@@ -764,17 +773,19 @@ Status run_variant_score(const CliOptions &options, PipelineModel *const model,
   }
   if (options.variant_strand == VariantStrand::kReverse ||
       options.variant_strand == VariantStrand::kBoth) {
-    std::string reverse_reference;
-    status = reverse_complement(window.reference, &reverse_reference);
+    std::string reverse_reference_sequence;
+    status =
+        reverse_complement(window.reference, &reverse_reference_sequence);
     if (!status.ok())
       return status;
-    std::string reverse_alternate;
-    status = reverse_complement(window.alternate, &reverse_alternate);
+    std::string reverse_alternate_sequence;
+    status = reverse_complement(window.alternate, &reverse_alternate_sequence);
     if (!status.ok())
       return status;
     VariantStrandScore result;
     status = score_variant_strand(
-        reverse_reference, reverse_alternate, VariantStrand::kReverse,
+        reverse_reference_sequence, reverse_alternate_sequence,
+        VariantStrand::kReverse,
         options.variant_normalization, model, metrics, &result);
     if (!status.ok())
       return status;
@@ -788,56 +799,110 @@ Status run_variant_score(const CliOptions &options, PipelineModel *const model,
   for (const auto &score : scores)
     aggregate += score.delta;
   aggregate /= static_cast<double>(scores.size());
-  std::cout << "{\"position\":" << options.variant_position_1based
-            << ",\"position_coordinate_system\":\"1-based\",\"reference\":";
-  write_json_string(std::cout, options.variant_reference);
-  std::cout << ",\"alternate\":";
-  write_json_string(std::cout, options.variant_alternate);
-  std::cout << ",\"window\":{\"start\":" << window.reference_start
-            << ",\"end\":" << window.reference_end
-            << ",\"coordinate_system\":\"0-based-half-open\""
-            << ",\"reference_sequence\":";
-  write_json_string(std::cout, window.reference);
-  std::cout << ",\"alternate_sequence\":";
-  write_json_string(std::cout, window.alternate);
-  std::cout << ",\"reference_tokens\":" << window.reference.size()
-            << ",\"alternate_tokens\":" << window.alternate.size() << '}'
-            << ",\"normalization\":\""
-            << variant_normalization_name(options.variant_normalization)
-            << "\",\"backend\":\"cuda\",\"profile\":\""
-            << inference_profile_name(model->config().inference_profile)
-            << "\",\"test_fixture\":"
-            << (model->config().test_fixture ? "true" : "false")
-            << ",\"model_id\":";
-  if (model->config().model_id.empty()) {
-    std::cout << "null";
-  } else {
-    write_json_string(std::cout, model->config().model_id);
+  std::ostringstream output;
+  output << "{\"source\":\"" << (vcf == nullptr ? "inline" : "vcf")
+         << "\"";
+  if (vcf != nullptr) {
+    output << ",\"record_index\":" << vcf->record_index
+           << ",\"allele_index\":" << vcf->allele_index
+           << ",\"vcf_line\":" << vcf->line_number << ",\"id\":";
+    write_json_string(output, vcf->id);
+    output << ",\"contig\":";
+    write_json_string(output, vcf->contig);
   }
-  std::cout << ",\"strands\":[";
+  output << ",\"position\":"
+         << (vcf == nullptr ? position_1based : vcf->position_1based)
+         << ",\"position_coordinate_system\":\""
+         << (vcf == nullptr ? "1-based" : "VCF-1-based")
+         << "\",\"reference\":";
+  write_json_string(output, reference);
+  output << ",\"alternate\":";
+  write_json_string(output, alternate);
+  output << ",\"window\":{\"start\":"
+         << coordinate_offset + window.reference_start << ",\"end\":"
+         << coordinate_offset + window.reference_end
+         << ",\"coordinate_system\":\"0-based-half-open\"";
+  if (vcf != nullptr) {
+    output << ",\"contig\":";
+    write_json_string(output, vcf->contig);
+  }
+  output << ",\"reference_sequence\":";
+  write_json_string(output, window.reference);
+  output << ",\"alternate_sequence\":";
+  write_json_string(output, window.alternate);
+  output << ",\"reference_tokens\":" << window.reference.size()
+         << ",\"alternate_tokens\":" << window.alternate.size() << '}'
+         << ",\"normalization\":\""
+         << variant_normalization_name(options.variant_normalization)
+         << "\",\"backend\":\"cuda\",\"profile\":\""
+         << inference_profile_name(model->config().inference_profile)
+         << "\",\"test_fixture\":"
+         << (model->config().test_fixture ? "true" : "false")
+         << ",\"model_id\":";
+  if (model->config().model_id.empty()) {
+    output << "null";
+  } else {
+    write_json_string(output, model->config().model_id);
+  }
+  output << ",\"strands\":[";
   for (std::size_t index = 0; index < scores.size(); ++index) {
     if (index != 0)
-      std::cout.put(',');
+      output.put(',');
     const auto &score = scores[index];
-    std::cout << "{\"strand\":\"" << score.strand
-              << "\",\"reference_log_likelihood\":" << std::setprecision(17)
-              << score.reference_log_likelihood
-              << ",\"alternate_log_likelihood\":"
-              << score.alternate_log_likelihood
-              << ",\"reference_scored_tokens\":"
-              << score.reference_scored_tokens
-              << ",\"alternate_scored_tokens\":"
-              << score.alternate_scored_tokens << ",\"delta\":" << score.delta
-              << '}';
+    output << "{\"strand\":\"" << score.strand
+           << "\",\"reference_log_likelihood\":" << std::setprecision(17)
+           << score.reference_log_likelihood
+           << ",\"alternate_log_likelihood\":"
+           << score.alternate_log_likelihood
+           << ",\"reference_scored_tokens\":"
+           << score.reference_scored_tokens
+           << ",\"alternate_scored_tokens\":"
+           << score.alternate_scored_tokens << ",\"delta\":" << score.delta
+           << '}';
   }
-  std::cout << "],\"aggregation\":\""
-            << (scores.size() == 1 ? "single_strand" : "mean_across_strands")
-            << "\",\"score\":" << aggregate << "}\n";
-  std::cout.flush();
+  output << "],\"aggregation\":\""
+         << (scores.size() == 1 ? "single_strand" : "mean_across_strands")
+         << "\",\"score\":" << aggregate << "}\n";
+  const auto document = output.str();
+  std::cout.write(document.data(), static_cast<std::streamsize>(document.size()));
   if (!std::cout) {
     return {ErrorCode::kIo, "failed to write variant score JSON to stdout"};
   }
   return Status::Ok();
+}
+
+Status run_variant_score(const CliOptions &options, PipelineModel *const model,
+                         MemoryTracker *const memory, Metrics *const metrics) {
+  if (options.variant_vcf_path.empty()) {
+    return run_variant_one(
+        options, options.variant_sequence, options.variant_position_1based,
+        options.variant_reference, options.variant_alternate, 0, nullptr,
+        model, memory, metrics);
+  }
+  const auto status = stream_vcf_file(
+      options.variant_vcf_path, [&](const VcfRecord &record) -> Status {
+        ReferenceSlice slice;
+        auto inner = fetch_reference_slice(
+            options.variant_reference_path, record.contig,
+            record.position_1based, record.reference, record.alternate,
+            options.variant_window_tokens, &slice);
+        if (!inner.ok()) {
+          return {inner.code(), "VCF line " +
+                                    std::to_string(record.line_number) + ": " +
+                                    inner.message()};
+        }
+        const std::size_t local_position =
+            record.position_1based - slice.start;
+        return run_variant_one(options, slice.sequence, local_position,
+                               record.reference, record.alternate, slice.start,
+                               &record, model, memory, metrics);
+      });
+  if (!status.ok())
+    return status;
+  std::cout.flush();
+  return std::cout ? Status::Ok()
+                   : Status{ErrorCode::kIo,
+                            "failed writing variant score JSONL"};
 }
 
 Status run_embed(const CliOptions &options, PipelineModel *const model,

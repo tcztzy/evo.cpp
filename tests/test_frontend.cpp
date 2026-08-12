@@ -20,6 +20,7 @@
 #include "evo/sequence_io.hpp"
 #include "evo/tokenizer.hpp"
 #include "evo/variant.hpp"
+#include "evo/variant_io.hpp"
 
 namespace {
 
@@ -66,6 +67,99 @@ public:
 
 private:
   std::string path_;
+};
+
+class TemporaryGzipFile final {
+public:
+  explicit TemporaryGzipFile(const std::string_view contents) {
+    auto pattern =
+        (std::filesystem::temp_directory_path() / "evo-frontend-gzip-XXXXXX")
+            .string();
+    std::vector<char> writable(pattern.begin(), pattern.end());
+    writable.push_back('\0');
+    const int descriptor = ::mkstemp(writable.data());
+    if (descriptor < 0)
+      std::abort();
+    ::close(descriptor);
+    path_ = writable.data();
+    std::vector<unsigned char> compressed{
+        0x1fU, 0x8bU, 0x08U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0xffU};
+    std::size_t offset = 0;
+    do {
+      const std::size_t size =
+          std::min<std::size_t>(65535, contents.size() - offset);
+      const bool final = offset + size == contents.size();
+      compressed.push_back(final ? 0x01U : 0x00U);
+      const auto length = static_cast<std::uint16_t>(size);
+      const auto inverted = static_cast<std::uint16_t>(~length);
+      compressed.push_back(static_cast<unsigned char>(length & 0xffU));
+      compressed.push_back(static_cast<unsigned char>(length >> 8U));
+      compressed.push_back(static_cast<unsigned char>(inverted & 0xffU));
+      compressed.push_back(static_cast<unsigned char>(inverted >> 8U));
+      for (std::size_t index = 0; index < size; ++index) {
+        compressed.push_back(
+            static_cast<unsigned char>(contents[offset + index]));
+      }
+      offset += size;
+    } while (offset < contents.size());
+    std::uint32_t crc = 0xffffffffU;
+    for (const char character : contents) {
+      crc ^= static_cast<unsigned char>(character);
+      for (unsigned bit = 0; bit < 8; ++bit)
+        crc = (crc >> 1U) ^ ((crc & 1U) != 0 ? 0xedb88320U : 0U);
+    }
+    crc ^= 0xffffffffU;
+    const auto append_u32 = [&compressed](const std::uint32_t value) {
+      for (unsigned shift = 0; shift < 32; shift += 8) {
+        compressed.push_back(
+            static_cast<unsigned char>((value >> shift) & 0xffU));
+      }
+    };
+    append_u32(crc);
+    append_u32(static_cast<std::uint32_t>(contents.size()));
+    std::ofstream output(path_, std::ios::binary | std::ios::trunc);
+    output.write(reinterpret_cast<const char *>(compressed.data()),
+                 static_cast<std::streamsize>(compressed.size()));
+    if (!output) {
+      std::abort();
+    }
+  }
+
+  ~TemporaryGzipFile() {
+    std::error_code error;
+    std::filesystem::remove(path_, error);
+  }
+
+  TemporaryGzipFile(const TemporaryGzipFile &) = delete;
+  TemporaryGzipFile &operator=(const TemporaryGzipFile &) = delete;
+
+  [[nodiscard]] const std::string &path() const noexcept { return path_; }
+
+private:
+  std::string path_;
+};
+
+class ScopedStdin final {
+public:
+  explicit ScopedStdin(const std::string &path) {
+    saved_ = ::dup(STDIN_FILENO);
+    const int input = ::open(path.c_str(), O_RDONLY);
+    if (saved_ < 0 || input < 0 || ::dup2(input, STDIN_FILENO) < 0)
+      std::abort();
+    ::close(input);
+  }
+
+  ~ScopedStdin() {
+    if (::dup2(saved_, STDIN_FILENO) < 0)
+      std::abort();
+    ::close(saved_);
+  }
+
+  ScopedStdin(const ScopedStdin &) = delete;
+  ScopedStdin &operator=(const ScopedStdin &) = delete;
+
+private:
+  int saved_{-1};
 };
 
 evo::Status parse(std::vector<std::string> arguments,
@@ -174,6 +268,53 @@ void test_sequence_reader() {
   check(!status.ok() && delivered == 1 &&
             status.message().find("whitespace at line 4") != std::string::npos,
         "later FASTA errors preserve completed callbacks and fail the stream");
+
+  TemporaryFile fastq{"@read-one\nACGT\n+\nIIII\n"
+                      "@read-two description\r\nN\r\n"
+                      "+read-two description\r\n!\r\n"};
+  status = evo::read_sequence_file(fastq.path(), &records);
+  check(status.ok() && records.size() == 2 &&
+            records[0].name == "read-one" && records[0].bytes == "ACGT" &&
+            records[0].format == evo::SequenceFormat::kFastq &&
+            records[1].name == "read-two description" &&
+            records[1].bytes == "N",
+        "strict FASTQ preserves names, CRLF normalization, and records");
+
+  TemporaryFile late_fastq{"@one\nAC\n+\nII\n@two\nACG\n+\nII\n"};
+  delivered = 0;
+  status = evo::stream_sequence_file(
+      late_fastq.path(), 8, [&](const evo::SequenceRecord &record) {
+        ++delivered;
+        check(record.name == "one" && record.bytes == "AC",
+              "FASTQ delivers a complete record before a later error");
+        return evo::Status::Ok();
+      });
+  check(!status.ok() && delivered == 1 &&
+            status.message().find("quality length") != std::string::npos,
+        "FASTQ late validation errors preserve completed callbacks");
+
+  TemporaryGzipFile gzip_fasta{">gzip-one\nACGT\n>gzip-two\nNN\n"};
+  status = evo::read_sequence_file(gzip_fasta.path(), &records);
+  check(status.ok() && records.size() == 2 &&
+            records[0].name == "gzip-one" && records[0].bytes == "ACGT" &&
+            records[0].format == evo::SequenceFormat::kFasta,
+        "gzip FASTA is transparently decompressed without extension guessing");
+
+  std::vector<std::string> stdin_names;
+  {
+    ScopedStdin redirected{gzip_fasta.path()};
+    status = evo::stream_sequence_file(
+        "-", 8, [&](const evo::SequenceRecord &record) {
+          stdin_names.push_back(record.name);
+          return evo::Status::Ok();
+        });
+  }
+  check(status.ok() &&
+            stdin_names == std::vector<std::string>({"gzip-one", "gzip-two"}),
+        "stdin accepts the same transparently compressed sequence stream");
+  check(std::string_view{evo::sequence_format_name(evo::SequenceFormat::kFastq)} ==
+            "fastq",
+        "sequence format names are stable output metadata");
 }
 
 void test_sampler() {
@@ -259,6 +400,50 @@ void test_variant() {
   check(
       !status.ok() && status.message().find("two tokens") != std::string::npos,
       "variant likelihood requires two-token reference and alternate windows");
+
+  TemporaryGzipFile reference{">chr1 primary contig\nAACC\nGGTT\n"
+                              ">chr2\nTTTT\n"};
+  evo::ReferenceSlice slice;
+  status = evo::fetch_reference_slice(reference.path(), "chr1", 3, "C", "T",
+                                      6, &slice);
+  check(status.ok() && slice.contig == "chr1" && slice.sequence == "AACCGG" &&
+            slice.start == 0 && slice.end == 6 && slice.contig_length == 8,
+        "reference FASTA lookup returns a global 0-based half-open slice");
+  status = evo::fetch_reference_slice(reference.path(), "chr1", 3, "G", "T",
+                                      6, &slice);
+  check(!status.ok() && status.message().find("does not match") !=
+                            std::string::npos,
+        "VCF REF mismatch against reference FASTA fails explicitly");
+
+  TemporaryGzipFile vcf{
+      "##fileformat=VCFv4.3\n"
+      "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+      "chr1\t3\trs1\tC\tT,G\t.\tPASS\t.\n"};
+  std::vector<evo::VcfRecord> variants;
+  status = evo::stream_vcf_file(vcf.path(), [&](const evo::VcfRecord &record) {
+    variants.push_back(record);
+    return evo::Status::Ok();
+  });
+  check(status.ok() && variants.size() == 2 &&
+            variants[0].record_index == 0 && variants[0].allele_index == 0 &&
+            variants[0].contig == "chr1" && variants[0].position_1based == 3 &&
+            variants[1].allele_index == 1 && variants[1].alternate == "G",
+        "gzip VCF streams one ordered event per alternate allele");
+
+  TemporaryFile late_vcf{
+      "##fileformat=VCFv4.3\n"
+      "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+      "chr1\t3\trs1\tC\tT\t.\tPASS\t.\n"
+      "chr1\tbad\trs2\tC\tA\t.\tPASS\t.\n"};
+  std::size_t delivered = 0;
+  status = evo::stream_vcf_file(
+      late_vcf.path(), [&](const evo::VcfRecord &) {
+        ++delivered;
+        return evo::Status::Ok();
+      });
+  check(!status.ok() && delivered == 1 &&
+            status.message().find("VCF POS") != std::string::npos,
+        "later VCF errors preserve complete prior variant callbacks");
 }
 
 void test_cli() {
@@ -409,6 +594,28 @@ void test_cli() {
             options.variant_strand == evo::VariantStrand::kBoth &&
             options.variant_normalization == evo::VariantNormalization::kSum,
         "variant-score defaults to context window, both strands, and sum");
+  status = parse({"evo", "variant-score", "-m", "model.safetensors",
+                  "--vcf", "variants.vcf.gz", "--reference",
+                  "reference.fa.gz", "--window", "8", "--backend", "cpu"},
+                 &options);
+  check(status.ok() && options.variant_vcf_path == "variants.vcf.gz" &&
+            options.variant_reference_path == "reference.fa.gz" &&
+            options.variant_sequence.empty(),
+        "variant-score retains gzip VCF and reference FASTA paths");
+  status = parse({"evo", "variant-score", "-m", "model.safetensors",
+                  "--vcf", "variants.vcf", "--reference", "reference.fa",
+                  "--sequence", "AACCGGTT", "--position", "3", "--ref",
+                  "C", "--alt", "T", "--backend", "cpu"},
+                 &options);
+  check(!status.ok() &&
+            status.message().find("cannot be combined") != std::string::npos,
+        "VCF batch mode rejects contradictory inline coordinates");
+  status = parse({"evo", "variant-score", "-m", "model.safetensors",
+                  "--vcf", "variants.vcf", "--backend", "cpu"},
+                 &options);
+  check(!status.ok() && status.message().find("--reference") !=
+                            std::string::npos,
+        "VCF batch mode requires a reference FASTA path");
   status = parse({"evo", "variant-score", "-m", "model.safetensors",
                   "--sequence", "AACCGGTT", "--position", "3", "--ref", "C",
                   "--alt", "T", "--window", "9", "--ctx", "8", "--gpu", "0"},
