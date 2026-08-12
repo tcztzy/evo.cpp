@@ -4,8 +4,10 @@
 
 **English** | [简体中文](README.zh_CN.md)
 
-`evo.cpp` is a focused C++17/CUDA runtime for batch-1 Evo 2 inference. It
-runs the official 1B, 7B, 20B, and 40B checkpoints on one to four NVIDIA GPUs
+`evo.cpp` is a focused C++17/CUDA runtime and local server for Evo 2 inference.
+Its exact kernels retain batch-one semantics while the server runs isolated
+request contexts against shared immutable weights. It runs the official 1B,
+7B, 20B, and 40B checkpoints on one to four NVIDIA GPUs
 from strictly validated Safetensors—without PyTorch, Vortex, Transformer
 Engine, Python, or Hopper-only FP8 instructions at inference time.
 
@@ -22,7 +24,8 @@ Engine, Python, or Hopper-only FP8 instructions at inference time.
   software, enabling exact inference on A800-class GPUs.
 - **A runtime, not a framework distribution.** The executable is purpose-built
   C++/CUDA with bounded model loading, scoring, generation, multi-GPU pipeline
-  parallelism, and white-box tensor dumps.
+  parallelism, embeddings, variant scoring, a native HTTP server, and white-box
+  tensor dumps.
 - **Exactness is fast.** On one A800, exact 7B prefill reaches
   1,071.5 / 7,619.2 / 11,369.3 tok/s at 16 / 128 / 1,024 tokens—
   1.80× / 1.60× / 1.21× the warmed official runtime in the same comparison.
@@ -72,6 +75,8 @@ build/Release/evo embed -m "$MODEL" --input sequences.fa \
 build/Release/evo variant-score -m "$MODEL" --sequence AACCGGTT \
   --position 3 --ref C --alt T --window 6 --strand both \
   --normalization sum --ctx 8192 --gpu 0
+build/Release/evo serve -m "$MODEL" --ctx 8192 --gpu 0 \
+  --host 127.0.0.1 --port 8080 --max-queue 64 --max-batch 4
 ```
 
 This requires Conan 2. The checked-in `conan.lock` fixes libnpy 1.0.1 and its
@@ -96,6 +101,7 @@ then see the [7B first-divergence audit](docs/vortex-7b-bit-exactness.md),
 [artifact acquisition and releases](docs/artifact-distribution.md),
 [embedding outputs](docs/embeddings.md),
 [variant scoring](docs/variant-scoring.md),
+[native server](docs/server.md),
 [reproducible GPU environment](docs/gpu02-environment.md).
 
 `evo.cpp` is an independent Apache-2.0 project, not an Arc Institute or NVIDIA

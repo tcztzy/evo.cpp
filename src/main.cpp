@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "evo/cli.hpp"
+#include "evo/server.hpp"
 #include "evo/status.hpp"
 #include "evo/tokenizer.hpp"
 #include "evo/version.hpp"
@@ -69,12 +70,17 @@ int main(const int argc, char **argv) {
       }
     }
 
-#if defined(EVO_HAS_CUDA)
 #if defined(EVO_ALLOW_TEST_FIXTURE)
     constexpr bool allow_test_fixture = true;
 #else
     constexpr bool allow_test_fixture = false;
 #endif
+    if (options.mode == evo::RunMode::kServe) {
+      status = evo::run_server(options, allow_test_fixture);
+      return status.ok() ? 0 : fail(status);
+    }
+
+#if defined(EVO_HAS_CUDA)
     status = evo::cuda::run_inference_cli(options, allow_test_fixture);
     return status.ok() ? 0 : fail(status);
 #else

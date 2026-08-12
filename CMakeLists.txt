@@ -10,6 +10,7 @@ include(CTest)
 include(CheckLanguage)
 include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
+find_package(Threads REQUIRED)
 
 option(EVO_CUDA "Build the CUDA backend" ON)
 option(EVO_NPY "Build the NPY output module" ${EVO_CUDA})
@@ -57,6 +58,7 @@ add_library(
   src/cli.cpp
   src/cpu_reference.cpp
   src/fp8.cpp
+  src/json.cpp
   src/mapped_file.cpp
   src/model_format.cpp
   src/model_registry.cpp
@@ -79,6 +81,21 @@ set_target_properties(
     POSITION_INDEPENDENT_CODE ON
     VISIBILITY_INLINES_HIDDEN ON)
 evo_configure_target(evo_core)
+
+add_library(evo_server_core STATIC src/scheduler.cpp)
+target_include_directories(
+  evo_server_core
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+target_link_libraries(evo_server_core PRIVATE Threads::Threads)
+set_target_properties(
+  evo_server_core
+  PROPERTIES
+    CXX_VISIBILITY_PRESET hidden
+    POSITION_INDEPENDENT_CODE ON
+    VISIBILITY_INLINES_HIDDEN ON)
+evo_configure_target(evo_server_core)
 
 add_library(evo_c SHARED src/c_api.cpp)
 add_library(evo::evo ALIAS evo_c)
@@ -156,8 +173,9 @@ if(EVO_NPY)
   evo_configure_target(evo_npy)
 endif()
 
-add_executable(evo src/main.cpp)
-target_link_libraries(evo PRIVATE evo_core)
+add_executable(evo src/main.cpp src/server.cpp)
+target_link_libraries(
+  evo PRIVATE evo_core evo_server_core evo_c Threads::Threads)
 evo_configure_target(evo)
 
 add_executable(evo-inspect src/inspect_main.cpp)
@@ -177,7 +195,6 @@ if(EVO_CUDA)
   if(NOT CMAKE_CUDA_ARCHITECTURES)
     set(CMAKE_CUDA_ARCHITECTURES 80)
   endif()
-  find_package(Threads REQUIRED)
   find_package(CUDAToolkit 12 REQUIRED)
 
   set(EVO_FLASH_ATTENTION_SOURCE_DIR "" CACHE PATH
@@ -365,9 +382,11 @@ if(EVO_CUDA)
     add_executable(
       evo-cuda-cli-test-bin
       src/main.cpp
+      src/server.cpp
       src/cuda/inference_cli.cpp)
     target_link_libraries(
-      evo-cuda-cli-test-bin PRIVATE evo_cuda evo::npy)
+      evo-cuda-cli-test-bin
+      PRIVATE evo_cuda evo::npy evo_server_core evo_c Threads::Threads)
     target_compile_definitions(
       evo-cuda-cli-test-bin
       PRIVATE EVO_HAS_CUDA=1 EVO_ALLOW_TEST_FIXTURE=1)
@@ -396,7 +415,11 @@ install(
   PROGRAMS tools/evo_fetch.py
   DESTINATION "${CMAKE_INSTALL_BINDIR}"
   RENAME evo-fetch)
-install(DIRECTORY include/evo DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+install(
+  DIRECTORY include/evo
+  DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+  PATTERN "json.hpp" EXCLUDE
+  PATTERN "server.hpp" EXCLUDE)
 install(
   FILES configs/model-registry.json
   DESTINATION "${CMAKE_INSTALL_DATADIR}/evo/configs")
@@ -466,6 +489,11 @@ if(BUILD_TESTING)
   target_link_libraries(evo-frontend-tests PRIVATE evo_core)
   evo_configure_target(evo-frontend-tests)
   add_test(NAME frontend COMMAND evo-frontend-tests)
+
+  add_executable(evo-server-core-tests tests/test_server.cpp)
+  target_link_libraries(evo-server-core-tests PRIVATE evo_server_core evo_core)
+  evo_configure_target(evo-server-core-tests)
+  add_test(NAME server_core COMMAND evo-server-core-tests)
 
   if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
     target_link_libraries(evo-model-format-tests PRIVATE stdc++fs)
@@ -672,6 +700,13 @@ if(BUILD_TESTING)
         --binary $<TARGET_FILE:evo-cuda-cli-test-bin>
         --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_tiny_model.py
         --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/cuda_cli)
+    add_test(
+      NAME cuda_server
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cuda_server.py
+        --binary $<TARGET_FILE:evo-cuda-cli-test-bin>
+        --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_tiny_model.py
+        --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/cuda_server)
     add_executable(evo-cuda-c-api-tests tests/test_cuda_c_api.c)
     target_link_libraries(evo-cuda-c-api-tests PRIVATE evo::evo)
     if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
@@ -710,6 +745,12 @@ if(BUILD_TESTING)
       cuda_cli
       PROPERTIES
         LABELS "gpu;cuda;multi_gpu"
+        SKIP_RETURN_CODE 77
+        ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools")
+    set_tests_properties(
+      cuda_server
+      PROPERTIES
+        LABELS "gpu;cuda"
         SKIP_RETURN_CODE 77
         ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools")
     set_tests_properties(

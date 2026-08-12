@@ -109,6 +109,22 @@ std::string_view cli_usage() noexcept {
          "  evo variant-score -m MODEL --sequence DNA --position POS --ref "
          "REF --alt ALT --window N --strand forward|reverse|both "
          "--normalization sum|mean --gpu 0,1,2,3\n\n"
+         "  evo serve -m MODEL --ctx N --gpu 0,1,2,3 [server options]\n\n"
+         "Server:\n"
+         "  --host ADDRESS              IPv4 bind address (default: "
+         "127.0.0.1)\n"
+         "  --port N                    TCP port; 0 selects a free port "
+         "(default: 8080)\n"
+         "  --max-queue N               Pending request limit (default: "
+         "64)\n"
+         "  --max-batch N               Isolated contexts per microbatch "
+         "(default: 4)\n"
+         "  --batch-window-ms N         Coalescing window in milliseconds "
+         "(default: 2)\n"
+         "  --max-request-bytes N       HTTP body limit (default: 1048576)\n"
+         "  --max-sequence-bytes N      Per-sequence limit (default: --ctx)\n"
+         "  --max-embedding-values N    Embedding response value limit "
+         "(default: 1048576)\n\n"
          "Sampling:\n"
          "  --temp F       Temperature > 0 (default: 1)\n"
          "  --top-k K      Keep K logits; 0 disables, 1 is greedy (default: "
@@ -135,10 +151,13 @@ Status parse_cli(const int argc, char *const argv[],
   const bool embed_command = argc > 1 && std::string_view{argv[1]} == "embed";
   const bool variant_command =
       argc > 1 && std::string_view{argv[1]} == "variant-score";
+  const bool server_command = argc > 1 && std::string_view{argv[1]} == "serve";
   if (embed_command) {
     options->mode = RunMode::kEmbed;
   } else if (variant_command) {
     options->mode = RunMode::kVariantScore;
+  } else if (server_command) {
+    options->mode = RunMode::kServe;
   }
   bool seen_model = false;
   bool seen_prompt = false;
@@ -163,8 +182,17 @@ Status parse_cli(const int argc, char *const argv[],
   bool seen_variant_window = false;
   bool seen_variant_strand = false;
   bool seen_variant_normalization = false;
+  bool seen_server_host = false;
+  bool seen_server_port = false;
+  bool seen_server_max_queue = false;
+  bool seen_server_max_batch = false;
+  bool seen_server_batch_window = false;
+  bool seen_server_max_request = false;
+  bool seen_server_max_sequence = false;
+  bool seen_server_max_embedding = false;
 
-  const int option_start = embed_command || variant_command ? 2 : 1;
+  const int option_start =
+      embed_command || variant_command || server_command ? 2 : 1;
   for (int index = option_start; index < argc; ++index) {
     const std::string_view option{argv[index]};
     std::string_view value;
@@ -319,6 +347,101 @@ Status parse_cli(const int argc, char *const argv[],
         return {ErrorCode::kInvalidArgument,
                 "--normalization must be one of sum or mean"};
       }
+    } else if (option == "--host") {
+      if (seen_server_host)
+        return duplicate(option);
+      seen_server_host = true;
+      status = value_after(argc, argv, &index, option, &value);
+      if (!status.ok())
+        return status;
+      if (value.empty())
+        return {ErrorCode::kInvalidArgument, "--host must not be empty"};
+      options->server_host = value;
+    } else if (option == "--port") {
+      if (seen_server_port)
+        return duplicate(option);
+      seen_server_port = true;
+      status = value_after(argc, argv, &index, option, &value);
+      if (!status.ok())
+        return status;
+      if (!parse_unsigned(value, &options->server_port))
+        return {ErrorCode::kInvalidArgument,
+                "--port must be an integer in [0, 65535]"};
+    } else if (option == "--max-queue") {
+      if (seen_server_max_queue)
+        return duplicate(option);
+      seen_server_max_queue = true;
+      status = value_after(argc, argv, &index, option, &value);
+      if (!status.ok())
+        return status;
+      if (!parse_unsigned(value, &options->server_max_queue) ||
+          options->server_max_queue == 0 || options->server_max_queue > 4096) {
+        return {ErrorCode::kInvalidArgument,
+                "--max-queue must be an integer in [1, 4096]"};
+      }
+    } else if (option == "--max-batch") {
+      if (seen_server_max_batch)
+        return duplicate(option);
+      seen_server_max_batch = true;
+      status = value_after(argc, argv, &index, option, &value);
+      if (!status.ok())
+        return status;
+      if (!parse_unsigned(value, &options->server_max_batch) ||
+          options->server_max_batch == 0 || options->server_max_batch > 256) {
+        return {ErrorCode::kInvalidArgument,
+                "--max-batch must be an integer in [1, 256]"};
+      }
+    } else if (option == "--batch-window-ms") {
+      if (seen_server_batch_window)
+        return duplicate(option);
+      seen_server_batch_window = true;
+      status = value_after(argc, argv, &index, option, &value);
+      if (!status.ok())
+        return status;
+      if (!parse_unsigned(value, &options->server_batch_window_ms) ||
+          options->server_batch_window_ms > 1000) {
+        return {ErrorCode::kInvalidArgument,
+                "--batch-window-ms must be an integer in [0, 1000]"};
+      }
+    } else if (option == "--max-request-bytes") {
+      if (seen_server_max_request)
+        return duplicate(option);
+      seen_server_max_request = true;
+      status = value_after(argc, argv, &index, option, &value);
+      if (!status.ok())
+        return status;
+      if (!parse_unsigned(value, &options->server_max_request_bytes) ||
+          options->server_max_request_bytes < 256 ||
+          options->server_max_request_bytes > (64U << 20U)) {
+        return {ErrorCode::kInvalidArgument,
+                "--max-request-bytes must be an integer in [256, 67108864]"};
+      }
+    } else if (option == "--max-sequence-bytes") {
+      if (seen_server_max_sequence)
+        return duplicate(option);
+      seen_server_max_sequence = true;
+      status = value_after(argc, argv, &index, option, &value);
+      if (!status.ok())
+        return status;
+      if (!parse_unsigned(value, &options->server_max_sequence_bytes) ||
+          options->server_max_sequence_bytes < 2 ||
+          options->server_max_sequence_bytes > 1'048'576) {
+        return {ErrorCode::kInvalidArgument,
+                "--max-sequence-bytes must be an integer in [2, 1048576]"};
+      }
+    } else if (option == "--max-embedding-values") {
+      if (seen_server_max_embedding)
+        return duplicate(option);
+      seen_server_max_embedding = true;
+      status = value_after(argc, argv, &index, option, &value);
+      if (!status.ok())
+        return status;
+      if (!parse_unsigned(value, &options->server_max_embedding_values) ||
+          options->server_max_embedding_values == 0 ||
+          options->server_max_embedding_values > (1U << 28U)) {
+        return {ErrorCode::kInvalidArgument,
+                "--max-embedding-values must be an integer in [1, 268435456]"};
+      }
     } else if (option == "-n" || option == "--tokens") {
       if (seen_tokens)
         return duplicate(option);
@@ -454,6 +577,42 @@ Status parse_cli(const int argc, char *const argv[],
   if (!seen_model || options->model_path.empty()) {
     return {ErrorCode::kInvalidArgument,
             "a nonempty model path is required with -m MODEL"};
+  }
+  const bool seen_server_option =
+      seen_server_host || seen_server_port || seen_server_max_queue ||
+      seen_server_max_batch || seen_server_batch_window ||
+      seen_server_max_request || seen_server_max_sequence ||
+      seen_server_max_embedding;
+  if (server_command) {
+    if (seen_prompt || seen_score || seen_tokens ||
+        seen_force_prompt_threshold || seen_temperature || seen_top_k ||
+        seen_top_p || seen_seed || seen_dump_tokens ||
+        options->dump_logits_path.has_value() ||
+        options->dump_layer.has_value() || seen_embed_input ||
+        seen_embed_output || seen_embed_layer || seen_embedding_pooling ||
+        seen_variant_sequence || seen_variant_position ||
+        seen_variant_reference || seen_variant_alternate ||
+        seen_variant_window || seen_variant_strand ||
+        seen_variant_normalization) {
+      return {ErrorCode::kInvalidArgument,
+              "serve accepts server options, --ctx, and --gpu only"};
+    }
+    if (!seen_gpu)
+      return {ErrorCode::kInvalidArgument, "--gpu is required"};
+    if (options->server_max_batch > options->server_max_queue) {
+      return {ErrorCode::kInvalidArgument,
+              "--max-batch must not exceed --max-queue"};
+    }
+    if (!seen_server_max_sequence)
+      options->server_max_sequence_bytes = options->context_size;
+    if (options->server_max_sequence_bytes > options->context_size) {
+      return {ErrorCode::kInvalidArgument,
+              "--max-sequence-bytes must not exceed --ctx"};
+    }
+    return Status::Ok();
+  }
+  if (seen_server_option) {
+    return {ErrorCode::kInvalidArgument, "server options require 'evo serve'"};
   }
   if (embed_command) {
     if (seen_prompt || seen_score || seen_tokens ||

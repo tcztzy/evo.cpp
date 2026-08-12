@@ -428,6 +428,62 @@ void test_cli() {
   check(!status.ok() && status.message().find("only valid for generation") !=
                             std::string::npos,
         "teacher-forcing threshold is rejected for score mode");
+
+  status = parse({"evo",
+                  "serve",
+                  "-m",
+                  "model.safetensors",
+                  "--ctx",
+                  "4096",
+                  "--gpu",
+                  "0,1",
+                  "--host",
+                  "0.0.0.0",
+                  "--port",
+                  "0",
+                  "--max-queue",
+                  "32",
+                  "--max-batch",
+                  "8",
+                  "--batch-window-ms",
+                  "5",
+                  "--max-request-bytes",
+                  "8192",
+                  "--max-sequence-bytes",
+                  "2048",
+                  "--max-embedding-values",
+                  "65536"},
+                 &options);
+  check(status.ok() && options.mode == evo::RunMode::kServe &&
+            options.server_host == "0.0.0.0" && options.server_port == 0 &&
+            options.server_max_queue == 32 && options.server_max_batch == 8 &&
+            options.server_batch_window_ms == 5 &&
+            options.server_max_request_bytes == 8192 &&
+            options.server_max_sequence_bytes == 2048 &&
+            options.server_max_embedding_values == 65536,
+        "serve retains explicit network, batching, and resource limits");
+  status = parse(
+      {"evo", "serve", "-m", "model.safetensors", "--ctx", "16", "--gpu", "0"},
+      &options);
+  check(status.ok() && options.server_max_sequence_bytes == 16,
+        "serve defaults sequence limit to context capacity");
+  status = parse({"evo", "serve", "-m", "model.safetensors", "--ctx", "8",
+                  "--gpu", "0", "--max-sequence-bytes", "9"},
+                 &options);
+  check(!status.ok() &&
+            status.message().find("must not exceed --ctx") != std::string::npos,
+        "serve rejects a sequence limit larger than context capacity");
+  status = parse({"evo", "serve", "-m", "model.safetensors", "--gpu", "0",
+                  "--max-queue", "2", "--max-batch", "3"},
+                 &options);
+  check(!status.ok() &&
+            status.message().find("--max-batch") != std::string::npos,
+        "serve rejects a batch larger than the bounded queue");
+  status = parse(
+      {"evo", "-m", "a", "-p", "A", "-n", "1", "--gpu", "0", "--port", "8080"},
+      &options);
+  check(!status.ok() && status.message().find("evo serve") != std::string::npos,
+        "server-only options require the serve subcommand");
 }
 
 } // namespace

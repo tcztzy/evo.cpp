@@ -4,8 +4,9 @@
 
 [English](README.md) | **简体中文**
 
-`evo.cpp` 是专注于 batch-1 Evo 2 推理的 C++17/CUDA runtime。它从严格验证的
-Safetensors 运行官方 1B、7B、20B 和 40B checkpoint，支持 1–4 张 NVIDIA GPU；
+`evo.cpp` 是专注于 Evo 2 推理的 C++17/CUDA runtime 与本地服务。exact kernel
+保持 batch-1 数值语义，服务端则让多个隔离 request context 共享只读模型权重。
+它从严格验证的 Safetensors 运行官方 1B、7B、20B 和 40B checkpoint，支持 1–4 张 NVIDIA GPU；
 推理过程不依赖 PyTorch、Vortex、Transformer Engine、Python，也不要求 Hopper
 专属 FP8 指令。
 
@@ -19,8 +20,8 @@ Safetensors 运行官方 1B、7B、20B 和 40B checkpoint，支持 1–4 张 NVI
   Transformer Engine 的固定 E4M3 与 Hopper QGMMA 行为。`evo.cpp` 在软件中复现
   这些舍入和累加边界，因此可在 A800 级 GPU 上进行精确推理。
 - **它是 runtime，不是 framework 发行包。**核心是专用 C++/CUDA executable，
-  提供有界模型加载、scoring、generation、多 GPU pipeline parallelism 和白盒
-  tensor dump。
+  提供有界模型加载、scoring、generation、embedding、variant scoring、原生 HTTP
+  服务、多 GPU pipeline parallelism 和白盒 tensor dump。
 - **精确也可以很快。**单张 A800 上，exact 7B prefill 在
   16 / 128 / 1,024 tokens 下达到 1,071.5 / 7,619.2 / 11,369.3 tok/s，
   是同场预热官方 runtime 的 1.80× / 1.60× / 1.21×。
@@ -68,6 +69,8 @@ build/Release/evo embed -m "$MODEL" --input sequences.fa \
 build/Release/evo variant-score -m "$MODEL" --sequence AACCGGTT \
   --position 3 --ref C --alt T --window 6 --strand both \
   --normalization sum --ctx 8192 --gpu 0
+build/Release/evo serve -m "$MODEL" --ctx 8192 --gpu 0 \
+  --host 127.0.0.1 --port 8080 --max-queue 64 --max-batch 4
 ```
 
 构建依赖 Conan 2。仓库内的 `conan.lock` 固定了 libnpy 1.0.1 及其 Conan
@@ -90,6 +93,7 @@ recipe revision。CUDA 使用的 FlashAttention 与 CUTLASS 仍由 CMake
 [artifact 获取与 release](docs/artifact-distribution.md)、
 [embedding 输出契约](docs/embeddings.md)、
 [变异评分契约](docs/variant-scoring.md)、
+[原生服务契约](docs/server.md)、
 [可复现 GPU 环境](docs/gpu02-environment.md)。
 
 `evo.cpp` 是 Apache-2.0 独立项目，不属于 Arc Institute 或 NVIDIA。模型架构和

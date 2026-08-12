@@ -14,7 +14,7 @@
 
 namespace evo {
 
-enum class RunMode { kGenerate, kScore, kEmbed, kVariantScore };
+enum class RunMode { kGenerate, kScore, kEmbed, kVariantScore, kServe };
 
 enum class EmbeddingPooling { kNone, kMean, kLast };
 
@@ -39,6 +39,14 @@ struct CliOptions final {
   std::size_t variant_window_tokens{0};
   VariantStrand variant_strand{VariantStrand::kBoth};
   VariantNormalization variant_normalization{VariantNormalization::kSum};
+  std::string server_host{"127.0.0.1"};
+  std::uint16_t server_port{8080};
+  std::size_t server_max_queue{64};
+  std::size_t server_max_batch{4};
+  std::size_t server_batch_window_ms{2};
+  std::size_t server_max_request_bytes{1U << 20U};
+  std::size_t server_max_sequence_bytes{0};
+  std::size_t server_max_embedding_values{1U << 20U};
   std::size_t generated_tokens{0};
   std::size_t context_size{8192};
   std::optional<std::size_t> force_prompt_threshold;

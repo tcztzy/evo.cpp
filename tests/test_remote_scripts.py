@@ -66,6 +66,20 @@ def check_remote_helper(source_dir: Path) -> None:
             str(fingerprint_root),
         )
         assert first_fingerprint.returncode == 0, first_fingerprint.stderr
+        bytecode = fingerprint_root / "src" / "__pycache__"
+        bytecode.mkdir()
+        (bytecode / "sample.cpython-313.pyc").write_bytes(b"test artifact")
+        artifact_fingerprint = run_bash(
+            "-c",
+            '. "$1"; evo_source_fingerprint "$2"',
+            "remote-helper-test",
+            str(helper),
+            str(fingerprint_root),
+        )
+        assert artifact_fingerprint.returncode == 0, artifact_fingerprint.stderr
+        assert artifact_fingerprint.stdout == first_fingerprint.stdout, (
+            "runtime Python cache artifacts must not stale the source fingerprint"
+        )
         source.write_text("second\n", encoding="utf-8")
         second_fingerprint = run_bash(
             "-c",

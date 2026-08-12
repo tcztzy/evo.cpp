@@ -55,7 +55,11 @@ evo_source_fingerprint() {
         if test -f "$entry"; then
           printf '%s\0' "$entry"
         elif test -d "$entry"; then
-          find "$entry" -type f -print0
+          find "$entry" -type f \
+            ! -path '*/__pycache__/*' \
+            ! -path '*/.pytest_cache/*' \
+            ! -path '*/.ruff_cache/*' \
+            ! -name '*.pyc' ! -name '*.pyo' -print0
         fi
       done | LC_ALL=C sort -z
     )
