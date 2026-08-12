@@ -1,8 +1,10 @@
 # Official model-size exactness record
 
 This record answers a stricter question than “does the model run?”: does the
-native runtime execute the same inference as the pinned Vortex/PyTorch model,
-with zero unequal raw elements?
+native runtime execute the registered model's pinned reference contract? Evo 2
+uses zero-unequal raw-element gates. ESMC uses the fixed F32 operation contract
+and official portable-F32 tolerance gate documented below; those two meanings
+must not be conflated.
 
 ## Result
 
@@ -20,14 +22,40 @@ boundary:
 | `evo2_7b_262k` | unsupported | no ID-specific real-checkpoint raw-bit gate |
 | `evo2_40b_base` | unsupported | no ID-specific real-checkpoint raw-bit gate |
 | `evo2_40b_bionemo_bf16` | unsupported | BioNeMo tolerance/behavioral validation is not a raw-bit Vortex gate |
-| `esmc_300m` | pending | pinned official logits/final-hidden oracle gate is scheduled in T22 |
-| `esmc_600m` | pending | pinned official logits/final-hidden oracle gate is scheduled in T22 |
-| `esmc_6b` | pending | pinned official logits/final-hidden oracle gate is scheduled in T22 |
+| `esmc_300m` | validated | `esmc-official-oracle/2026-08-12/esmc_300m` |
+| `esmc_600m` | validated | `esmc-official-oracle/2026-08-12/esmc_600m` |
+| `esmc_6b` | validated | `esmc-official-oracle/2026-08-12/esmc_6b` |
 
 The unsupported IDs remain registry entries for acquisition, conversion, and
 explicit approximate execution. The exact loader rejects them before weight
-upload. Promotion requires its own pinned source/artifact hashes, independent
-oracle, zero-unequal raw-bit report, and generated-byte record.
+upload. Promotion requires its own pinned source/artifact hashes and an
+architecture-appropriate independent oracle; only the Evo 2 raw-bit contract
+also requires zero unequal elements and a generated-byte record.
+
+## ESMC official-oracle validation
+
+The three canonical Biohub checkpoints were converted from their registered
+F32 Safetensors revisions and executed on one A800 with CUDA 12.8. The oracle
+uses Biohub Transformers commit
+`3a8956fb4d4ea16b0ec8e71deef2c2909b6a5cbf`, its pure-PyTorch RoPE path,
+manual F32 attention, and no Transformer Engine fused reductions. Input was
+`LAGV<mask>ERT`, encoded with CLS/EOS to 10 rows. Required thresholds were
+cosine `>= 0.99999`, maximum absolute error `<= 5e-3`, and mean absolute error
+`<= 5e-4` for both final hidden state and masked-LM logits.
+
+| Model | Final hidden: cosine / max / mean | Logits: cosine / max / mean | Result |
+|---|---|---|---|
+| `esmc_300m` | `0.9999999999987222` / `8.94e-7` / `5.28e-8` | `0.9999999999999001` / `5.34e-5` / `1.11e-5` | pass |
+| `esmc_600m` | `0.9999999999998460` / `3.28e-7` / `1.86e-8` | `0.9999999999999791` / `4.77e-5` / `3.16e-6` | pass |
+| `esmc_6b` | `0.9999999999995867` / `1.67e-5` / `8.73e-7` | `0.9999999999999727` / `5.53e-5` / `6.43e-6` | pass |
+
+Evidence directories on gpu02 are
+`$HOME/evo.cpp-artifacts/t22-esmc-300m-58eb96f`,
+`$HOME/evo.cpp-artifacts/t22-esmc-600m-58eb96f`, and
+`$HOME/evo.cpp-artifacts/t22-esmc-6b-6aa9e42`. Their comparison-file SHA256
+values are respectively `00970b1eb492f47407d1b08ef9d792ada9ec03ab7cdedd204faf7d14b7e96571`,
+`715634166d47835aa7187f743ec5fba512263ddc77191b732d1420cf699313b9`,
+and `fbd94db9e97d3ddfae7c80b6fb8738cda8352c0c164238d4aebbc89424d320cf`.
 
 The official 1B, 7B, 20B, and 40B paths all completed real-checkpoint GPU
 prefill and cached generation on A800 GPUs. The acceptance gate compared raw

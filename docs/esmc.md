@@ -175,3 +175,11 @@ For logits and final hidden states the required thresholds are
 `max_abs <= 5e-3`, `mean_abs <= 5e-4`, and cosine similarity `>= 0.99999`.
 Per-model evidence and current promotion status are recorded in
 [model-size validation](model-size-validation.md).
+
+All three canonical sizes passed that gate on gpu02. For 300M, 600M, and 6B,
+the worst logits maximum absolute errors were respectively `5.34e-5`,
+`4.77e-5`, and `5.53e-5`; the worst final-hidden maximum absolute errors were
+`8.94e-7`, `3.28e-7`, and `1.67e-5`. Every logits and hidden cosine exceeded
+`0.999999999998`. The archived gate also records the converted artifact,
+official oracle, native NPY outputs, comparison JSON, GPU state, binary hash,
+and recursive artifact hashes.

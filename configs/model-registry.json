@@ -266,7 +266,7 @@
     },
     "esmc_300m": {
       "family": "esmc", "architecture": "ESMC", "profile": "300m",
-      "exact_support": "pending", "exact_evidence": null,
+      "exact_support": "validated", "exact_evidence": "esmc-official-oracle/2026-08-12/esmc_300m",
       "hosted_alias": "esmc-300m-2024-12",
       "source_repo": "biohub/ESMC-300M",
       "source_revision": "a59b831785f907e96e6a246b1d142bfb76df31ee",
@@ -281,7 +281,7 @@
     },
     "esmc_600m": {
       "family": "esmc", "architecture": "ESMC", "profile": "600m",
-      "exact_support": "pending", "exact_evidence": null,
+      "exact_support": "validated", "exact_evidence": "esmc-official-oracle/2026-08-12/esmc_600m",
       "hosted_alias": "esmc-600m-2024-12",
       "source_repo": "biohub/ESMC-600M",
       "source_revision": "a7e82012c83126b9eedb055fea9fa84b6c02f094",
@@ -296,7 +296,7 @@
     },
     "esmc_6b": {
       "family": "esmc", "architecture": "ESMC", "profile": "6b",
-      "exact_support": "pending", "exact_evidence": null,
+      "exact_support": "validated", "exact_evidence": "esmc-official-oracle/2026-08-12/esmc_6b",
       "hosted_alias": "esmc-6b-2024-12",
       "source_repo": "biohub/ESMC-6B",
       "source_revision": "45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a",

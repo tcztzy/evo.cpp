@@ -24,6 +24,38 @@ revision is `d529aa57c30771814217ad89baaeaf6e2315c7d7`; gpu02 uses
 `https://hf-mirror.com` (equivalent to `HF_ENDPOINT=https://hf-mirror.com`)
 because the canonical endpoint is not reachable from the server.
 
+For ESMC, the same shared high-capacity `HF_HOME` contains the three exact
+Biohub revisions. The 2026-08-12 acceptance run rehashed all 21 registered
+config, tokenizer, index, and weight files: 21/21 matched the registry. The
+reference container receives this directory as a read-only bind; verification
+receipts and converted artifacts are written under the user's acceptance
+directory, never into the shared model cache.
+
+## Biohub ESMC official-oracle acceptance
+
+The ESMC gate used the CUDA runtime image above and the PyTorch 26.06 reference
+image with SHA256
+`1df753c08c3169357e5ecfb9497873250f78efbf1080494550b59d9ce5fe0943`.
+The official implementation was Biohub Transformers commit
+`3a8956fb4d4ea16b0ec8e71deef2c2909b6a5cbf`, pinned to portable F32 RoPE,
+attention, and reduction paths. All runs used idle GPU1. The final 6B native
+binary SHA256 was
+`0cb1fb2d5132e239af3a9d010ff7a1fff96918a6b3d82bb5f40b9c8c342b449e`.
+
+| Model | Load / 10-token prefill | Final-hidden max / cosine | Logits max / cosine | Evidence directory |
+|---|---|---|---|---|
+| 300M | `2.484 s` / `0.151 s` | `8.94e-7` / `0.9999999999987222` | `5.34e-5` / `0.9999999999999001` | `$HOME/evo.cpp-artifacts/t22-esmc-300m-58eb96f` |
+| 600M | `5.471 s` / `0.154 s` | `3.28e-7` / `0.9999999999998460` | `4.77e-5` / `0.9999999999999791` | `$HOME/evo.cpp-artifacts/t22-esmc-600m-58eb96f` |
+| 6B | `41.126 s` / `0.227 s` | `1.67e-5` / `0.9999999999995867` | `5.53e-5` / `0.9999999999999727` | `$HOME/evo.cpp-artifacts/t22-esmc-6b-6aa9e42` |
+
+The converted 300M and 600M artifact SHA256 values are
+`c0793de7f4d0abdb1244ea62cca611618c827ff8d6e6bf66d6d873e2ad18afe4`
+and `83a1d997745ade957e423e487cdb0f080060f9aaa29fff6357cf6a74dbdc5e4d`.
+The 6B index SHA256 is
+`ba64951eb9168e58d26109b95ad5dcecd48ce73632dcf569d3aca8587e62c11a`;
+its six shard hashes are retained in the acceptance directory's
+`artifact-sha256.txt`.
+
 Official checkpoint parts:
 
 | File | Bytes | SHA256 |
