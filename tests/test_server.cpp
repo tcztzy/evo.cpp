@@ -54,27 +54,31 @@ void test_json() {
 
 void test_scheduler() {
   using namespace std::chrono_literals;
-  evo::DynamicScheduler scheduler{8, 2, 40ms};
-  std::atomic<int> entered{0};
-  auto task = [&entered](const evo::CancellationToken &) {
-    ++entered;
-    std::this_thread::sleep_for(30ms);
-    return evo::ServerResponse{200, "application/json", "{}"};
-  };
-  auto first = scheduler.submit(task);
-  auto second = scheduler.submit(task);
-  check(first.has_value() && second.has_value(),
-        "scheduler accepts work below its queue limit");
-  if (first && second) {
-    check(first->future().get().http_status == 200 &&
-              second->future().get().http_status == 200,
-          "scheduled tasks complete independently");
+  {
+    evo::DynamicScheduler scheduler{8, 2, 5s};
+    std::atomic<int> entered{0};
+    auto task = [&entered](const evo::CancellationToken &) {
+      ++entered;
+      std::this_thread::sleep_for(30ms);
+      return evo::ServerResponse{200, "application/json", "{}"};
+    };
+    auto first = scheduler.submit(task);
+    auto second = scheduler.submit(task);
+    check(first.has_value() && second.has_value(),
+          "scheduler accepts work below its queue limit");
+    if (first && second) {
+      check(first->future().get().http_status == 200 &&
+                second->future().get().http_status == 200,
+            "scheduled tasks complete independently");
+    }
+    const auto metrics = scheduler.metrics();
+    check(entered == 2 && metrics.submitted == 2 && metrics.batches == 1 &&
+              metrics.batch_items == 2 && metrics.active_peak == 2 &&
+              metrics.completed == 2,
+          "batch window coalesces requests while retaining isolated tasks");
   }
-  const auto metrics = scheduler.metrics();
-  check(entered == 2 && metrics.submitted == 2 && metrics.batches == 1 &&
-            metrics.batch_items == 2 && metrics.active_peak == 2 &&
-            metrics.completed == 2,
-        "batch window coalesces requests while retaining isolated tasks");
+
+  evo::DynamicScheduler scheduler{8, 1, 0ms};
 
   auto cancelled = scheduler.submit([](const evo::CancellationToken &) {
     return evo::ServerResponse{200, "application/json", "{}"};

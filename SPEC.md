@@ -155,3 +155,4 @@ B32|2026-08-12|BioNeMo 容器的可选 FlashAttention Triton RoPE 找不到无�
 B33|2026-08-12|ESMC 验收脚本在 gpu02 宿主直接启动容器构建的 CUDA binary→动态链接器找不到 `libcudart.so.12`|V16,V30
 B34|2026-08-12|初次 oracle 隐式采用可选 Transformer Engine fused reduction，与原生/官方 portable fallback 的顺序不同且将 hidden 微差放大为 logits 超阈值→oracle manifest 固定并校验官方 PyTorch F32 fallback|R8,V26,V30
 B35|2026-08-12|ESMC gpu02 gate 默认在低配额 `$HOME` 建 HF cache，违背集群共享高容量缓存约定并触发重复下载→统一 export C15 `HF_HOME`，repo cache 固定其 `hub/` child|C15,V34
+B36|2026-08-12|全量本机回归偶发让 test thread 在两次顺序 submit 间停顿超过 40ms，合法形成 2 batches 却被脆弱时序断言判失败→batch contract 使用宽窗口，取消/异常 case 隔离到 zero-window scheduler|V16
