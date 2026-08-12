@@ -11,6 +11,9 @@
 推理过程不依赖 PyTorch、Vortex、Transformer Engine、Python，也不要求 Hopper
 专属 FP8 指令。architecture registry 还通过相同 CLI、C ABI、embedding、
 variant 与 server surface 在 CPU 上运行官方 F32 HyenaDNA causal-LM family。
+此外，runtime 原生支持 Biohub ESMC 300M、600M 与 6B F32 蛋白质 masked
+encoder，在 CPU 或单张 CUDA GPU 上输出逐 token logits 与官方 hidden-state
+索引下的 embedding；产品推理路径同样不依赖 Python、PyTorch 或 Transformers。
 
 ## 为什么选择 evo.cpp？
 
@@ -125,6 +128,27 @@ build/Release/evo -m hyenadna.safetensors --backend cpu \
   --ctx 1026 --score sequences.fa
 ```
 
+Biohub ESMC 使用固定 revision/hash receipt 与独立的 torch-free 转换器：
+
+```sh
+python3 tools/evo_fetch.py source esmc_300m > fetch.json
+RECEIPT="$(python3 -c 'import json; print(json.load(open("fetch.json"))["receipt"])')"
+PYTHONPATH=tools python3 tools/convert_esmc_checkpoint.py \
+  --receipt "$RECEIPT" --output /models/esmc-300m.safetensors
+
+build/Release/evo logits -m /models/esmc-300m.safetensors \
+  --input proteins.fa --output logits --ctx 2048 --gpu 0
+build/Release/evo embed -m /models/esmc-300m.safetensors \
+  --input proteins.fa --output embeddings --layer 30 \
+  --pooling none --ctx 2048 --gpu 0
+```
+
+ESMC 是一次性双向 encoder：v1 仅支持 `logits` 与 `embed`，上下文上限 2048
+tokens（含自动添加的 `<cls>`/`<eos>`），CUDA 仅支持单卡 `exact`；generation、
+causal score、variant score、KV cache、multi-GPU 与 hybrid placement 会显式返回
+unsupported。三个尺寸的固定上游身份、tokenizer、许可证、artifact 与 oracle
+契约见[原生 Biohub ESMC 推理](docs/esmc.md)。
+
 所有命令默认使用 `--profile exact`，长 context 也不例外。
 `--profile fast-q8-kv` 是必须显式选择的实验性近似分页 cache 模式；runtime
 绝不会只因 context 变长而自动启用它。
@@ -149,6 +173,7 @@ recipe revision。CUDA 使用的 FlashAttention 与 CUTLASS 仍由 CMake
 [数值契约](docs/math-semantics.md)、[checkpoint 转换](docs/checkpoint-conversion.md)和
 [执行 profile 与验收 gate](docs/execution-profiles.md)、
 [architecture registry 与 HyenaDNA 边界](docs/architectures.md)、
+[原生 Biohub ESMC 推理](docs/esmc.md)、
 [sequence、gzip、stdin、VCF 与 reference 输入](docs/sequence-inputs.md)、
 [artifact 获取与 release](docs/artifact-distribution.md)、
 [embedding 输出契约](docs/embeddings.md)、

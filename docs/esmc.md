@@ -98,6 +98,19 @@ For a disconnected conversion host, populate the cache once and repeat the
 source command with `--local-files-only`. Corrupt or incomplete cached bytes
 fail rather than being trusted.
 
+On gpu02, keep Hugging Face objects in the high-capacity shared cache. The
+maintained acceptance runner exports this default and passes its `hub/` child
+to the fetcher explicitly:
+
+```sh
+export HF_HOME=/build/grp_icg/users/tang/.cache/huggingface
+python3 tools/evo_fetch.py --cache-dir "$HF_HOME/hub" \
+  --local-files-only source esmc_6b
+```
+
+`EVO_ESMC_HF_HOME` and `EVO_ESMC_CACHE_DIR` are explicit runner overrides;
+ordinary gpu02 validation must not reconstruct checkpoints below `$HOME`.
+
 Converted runtime weights can also be distributed in a Hugging Face repository
 with the standard `evo-artifact.json` manifest described in
 [artifact acquisition](artifact-distribution.md). Use
