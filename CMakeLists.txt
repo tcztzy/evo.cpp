@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.25)
 project(
   evo_cpp
   VERSION 0.1.0
-  DESCRIPTION "evo.cpp: native Evo 2 inference engine"
+  DESCRIPTION "evo.cpp: native biological-sequence model runtime"
   LANGUAGES C CXX)
 
 include(CTest)
@@ -677,6 +677,11 @@ if(BUILD_TESTING)
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_release_pipeline.py
       --source-dir ${CMAKE_CURRENT_SOURCE_DIR}
       --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/release-pipeline)
+  add_test(
+    NAME documentation_contract
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_documentation_contract.py
+      --source-dir ${CMAKE_CURRENT_SOURCE_DIR})
 
   add_test(
     NAME converter_roundtrip

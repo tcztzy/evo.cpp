@@ -54,13 +54,26 @@ def main() -> int:
     expected_digest = hashlib.sha256(payload).hexdigest()
     if any(
         (
-            metadata["schema_version"] != 1,
+            metadata["schema_version"] != 2,
+            metadata["artifact_kind"] != "runtime-binary",
             metadata["sha256"] != expected_digest,
             metadata["size"] != len(payload),
             metadata["version"] != "0.1.0",
             metadata["backend"] != "cuda-exact",
             metadata["cuda_version"] != "12.8",
             metadata["build_image"] != "nvidia/cuda@sha256:" + "b" * 64,
+            metadata["registered_architectures"]
+            != ["StripedHyena2", "HyenaDNA"],
+            metadata["runtime_profiles"]
+            != ["evo2-runtime-v1", "hyenadna-runtime-v1"],
+            metadata["execution_profiles"]
+            != ["exact", "fast-q8-kv", "cpu-f32"],
+            metadata["model_registry"]["installed_path"]
+            != "share/evo/configs/model-registry.json",
+            metadata["model_registry"]["sha256"]
+            != hashlib.sha256(
+                (args.source_dir / "configs" / "model-registry.json").read_bytes()
+            ).hexdigest(),
             metadata["contains_model_weights"] is not False,
             result.stdout.strip() != f"{expected_digest}  {archive.name}",
         )

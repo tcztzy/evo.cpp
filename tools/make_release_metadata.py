@@ -66,8 +66,12 @@ def main() -> int:
             raise ValueError("release platform must be a nonempty token")
         if not args.backend or any(character.isspace() for character in args.backend):
             raise ValueError("release backend must be a nonempty token")
+        registry = source_dir / "configs" / "model-registry.json"
+        if not registry.is_file():
+            raise ValueError("source tree does not contain the model registry")
         metadata = {
-            "schema_version": 1,
+            "schema_version": 2,
+            "artifact_kind": "runtime-binary",
             "artifact": archive.name,
             "size": archive.stat().st_size,
             "sha256": sha256_file(archive),
@@ -79,7 +83,13 @@ def main() -> int:
             "backend": args.backend,
             "cuda_version": args.cuda_version,
             "build_image": args.build_image,
-            "runtime_profile": "evo2-runtime-v1",
+            "registered_architectures": ["StripedHyena2", "HyenaDNA"],
+            "runtime_profiles": ["evo2-runtime-v1", "hyenadna-runtime-v1"],
+            "execution_profiles": ["exact", "fast-q8-kv", "cpu-f32"],
+            "model_registry": {
+                "installed_path": "share/evo/configs/model-registry.json",
+                "sha256": sha256_file(registry),
+            },
             "contains_model_weights": False,
         }
         args.output.parent.mkdir(parents=True, exist_ok=True)

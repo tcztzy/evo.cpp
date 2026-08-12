@@ -1,6 +1,6 @@
 # evo.cpp
 
-**Exact, fast Evo 2 inference without Python.**
+**A local, embeddable runtime for biological-sequence foundation models.**
 
 **English** | [简体中文](README.zh_CN.md)
 
@@ -139,7 +139,13 @@ then see the [7B first-divergence audit](docs/vortex-7b-bit-exactness.md),
 [embedding outputs](docs/embeddings.md),
 [variant scoring](docs/variant-scoring.md),
 [native server](docs/server.md),
+[compatibility policy](docs/compatibility.md),
+[correctness and benchmark matrix](docs/benchmark-matrix.md),
 [reproducible GPU environment](docs/gpu02-environment.md).
+
+Contributors should start with [CONTRIBUTING.md](CONTRIBUTING.md); it defines
+the gates for new architectures, backends, profiles, public interfaces, and
+performance claims.
 
 `evo.cpp` is an independent Apache-2.0 project, not an Arc Institute or NVIDIA
 project. Model architecture and checkpoints come from the

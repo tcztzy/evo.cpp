@@ -1,6 +1,6 @@
 # evo.cpp
 
-**不用 Python，精确而快速地运行 Evo 2。**
+**面向生物序列基础模型的本地、可嵌入推理 runtime。**
 
 [English](README.md) | **简体中文**
 
@@ -128,7 +128,12 @@ recipe revision。CUDA 使用的 FlashAttention 与 CUTLASS 仍由 CMake
 [embedding 输出契约](docs/embeddings.md)、
 [变异评分契约](docs/variant-scoring.md)、
 [原生服务契约](docs/server.md)、
+[兼容性策略](docs/compatibility.md)、
+[正确性与 benchmark matrix](docs/benchmark-matrix.md)、
 [可复现 GPU 环境](docs/gpu02-environment.md)。
+
+准备贡献新 architecture、backend、profile、公共接口或性能结论时，请先阅读
+[CONTRIBUTING.md](CONTRIBUTING.md) 中的验收要求。
 
 `evo.cpp` 是 Apache-2.0 独立项目，不属于 Arc Institute 或 NVIDIA。模型架构和
 checkpoint 来自 [Arc Institute 官方 Evo 2 项目](https://github.com/arcinstitute/evo2)，

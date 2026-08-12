@@ -71,7 +71,7 @@ T8|x|设计并实现 fast/quantized profiles + 数值/科学 benchmark gates|V1,
 T9|x|实现向量化 CPU backend 与显式 CPU+GPU offload policy|V2,V7,V9,V10,V16,I2,I3
 T10|x|抽象 architecture registry；接入第二个生物序列模型 family|V7,V8,V10,V11,V16,I2,I3,I4
 T11|x|补 FASTQ/gzip/stdin/VCF/reference IO 与坐标输出格式|V3,V5,V6,V12,V16,I5,I6
-T12|.|完善贡献指南、兼容策略、benchmark matrix 与 release 文档|V7,V14,V15,V16,I8
+T12|x|完善贡献指南、兼容策略、benchmark matrix 与 release 文档|V7,V14,V15,V16,I8
 
 ## §B BUGS
 

@@ -96,7 +96,7 @@ Status parse_gpu_list(const std::string_view text,
 } // namespace
 
 std::string_view cli_usage() noexcept {
-  return "evo - native Evo 2 inference engine (1B, 7B, 20B, 40B)\n\n"
+  return "evo - native biological-sequence model runtime\n\n"
          "Usage:\n"
          "  evo --help\n"
          "  evo --version\n"
