@@ -210,6 +210,7 @@ public:
       : model_(std::move(model)), context_size_(context_size),
         maximum_sequence_(maximum_sequence),
         maximum_embedding_values_(maximum_embedding_values),
+        backend_(evo_backend_name(evo_model_backend(model_.get()))),
         model_id_(evo_model_id(model_.get())),
         architecture_(evo_model_architecture(model_.get())),
         profile_(evo_model_profile(model_.get())),
@@ -221,6 +222,7 @@ public:
   [[nodiscard]] const std::string &model_id() const noexcept {
     return model_id_;
   }
+  [[nodiscard]] const std::string &backend() const noexcept { return backend_; }
   [[nodiscard]] const std::string &architecture() const noexcept {
     return architecture_;
   }
@@ -865,6 +867,7 @@ private:
   std::size_t context_size_{0};
   std::size_t maximum_sequence_{0};
   std::size_t maximum_embedding_values_{0};
+  std::string backend_;
   std::string model_id_;
   std::string architecture_;
   std::string profile_;
@@ -1113,7 +1116,9 @@ std::string health_body(const Runtime &runtime, const CliOptions &options) {
   append_json_string(&body, runtime.model_id());
   body.append(",\"architecture\":");
   append_json_string(&body, runtime.architecture());
-  body.append(",\"backend\":\"cuda\",\"profile\":");
+  body.append(",\"backend\":");
+  append_json_string(&body, runtime.backend());
+  body.append(",\"profile\":");
   append_json_string(&body, runtime.profile());
   body.append(",\"execution_profile\":");
   append_json_string(&body,
@@ -1289,9 +1294,13 @@ Status run_server(const CliOptions &options, const bool allow_test_fixture) {
   for (const int device : options.gpu_ids)
     devices.push_back(static_cast<std::int32_t>(device));
   evo_model_params model_params = evo_model_default_params();
-  model_params.backend = EVO_BACKEND_CUDA;
-  model_params.devices = devices.data();
-  model_params.device_count = devices.size();
+  model_params.backend = options.backend == ExecutionBackend::kCpu
+                             ? EVO_BACKEND_CPU
+                             : EVO_BACKEND_CUDA;
+  if (model_params.backend == EVO_BACKEND_CUDA) {
+    model_params.devices = devices.data();
+    model_params.device_count = devices.size();
+  }
   if (allow_test_fixture)
     model_params.flags |= EVO_MODEL_FLAG_TEST_ONLY_ALLOW_SYNTHETIC;
   evo_model *raw_model = nullptr;

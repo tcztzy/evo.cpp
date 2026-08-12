@@ -4,10 +4,11 @@
 
 **English** | [简体中文](README.zh_CN.md)
 
-`evo.cpp` is a focused C++17/CUDA runtime and local server for Evo 2 inference.
-Its exact kernels retain batch-one semantics while the server runs isolated
-request contexts against shared immutable weights. It runs the official 1B,
-7B, 20B, and 40B checkpoints on one to four NVIDIA GPUs
+`evo.cpp` is a focused C++17 runtime and local server for Evo 2 inference,
+with portable CPU execution and exact or accelerated CUDA profiles. Its exact
+kernels retain batch-one semantics while the server runs isolated request
+contexts against shared immutable weights. It runs the official 1B, 7B, 20B,
+and 40B checkpoints on one to four NVIDIA GPUs
 from strictly validated Safetensors—without PyTorch, Vortex, Transformer
 Engine, Python, or Hopper-only FP8 instructions at inference time.
 
@@ -77,6 +78,17 @@ build/Release/evo variant-score -m "$MODEL" --sequence AACCGGTT \
   --normalization sum --ctx 8192 --gpu 0
 build/Release/evo serve -m "$MODEL" --ctx 8192 --gpu 0 \
   --host 127.0.0.1 --port 8080 --max-queue 64 --max-batch 4
+```
+
+Portable CPU inference and explicit CUDA-prefix/CPU-suffix placement use the
+same artifact:
+
+```sh
+build/Release/evo -m "$MODEL" --backend cpu --score sequences.fa --ctx 8192
+build/Release/evo serve -m "$MODEL" --backend cpu --ctx 8192 \
+  --host 127.0.0.1 --port 8080
+build/Release/evo -m "$MODEL" --gpu 0 --gpu-layers 16 \
+  --score sequences.fa --ctx 8192
 ```
 
 All commands default to `--profile exact`, including at long context lengths.

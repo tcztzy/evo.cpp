@@ -300,6 +300,31 @@ void test_cli() {
         "teacher-forced prompt threshold CLI parses");
   check(options.inference_profile == evo::InferenceProfile::kFastQ8Kv,
         "explicit approximate execution profile parses");
+  status = parse({"evo", "-m", "model.safetensors", "--score", "input.fa",
+                  "--backend", "cpu"},
+                 &options);
+  check(status.ok() && options.backend == evo::ExecutionBackend::kCpu &&
+            options.inference_profile == evo::InferenceProfile::kCpuF32 &&
+            options.gpu_ids.empty(),
+        "CPU backend selects explicit non-exact profile without a GPU list");
+  status = parse({"evo", "-m", "model.safetensors", "--score", "input.fa",
+                  "--backend", "cpu", "--gpu", "0"},
+                 &options);
+  check(!status.ok() &&
+            status.message().find("GPU options") != std::string::npos,
+        "CPU backend rejects contradictory GPU placement");
+  status = parse({"evo", "-m", "model.safetensors", "--score", "input.fa",
+                  "--gpu", "0", "--gpu-layers", "17"},
+                 &options);
+  check(status.ok() && options.gpu_layers == 17 &&
+            options.inference_profile == evo::InferenceProfile::kCpuF32,
+        "hybrid offload retains its explicit CUDA prefix length");
+  status = parse({"evo", "-m", "model.safetensors", "--score", "input.fa",
+                  "--gpu-layers", "17"},
+                 &options);
+  check(!status.ok() && status.message().find("requires an explicit --gpu") !=
+                            std::string::npos,
+        "hybrid offload never auto-selects a CUDA device");
   status = parse({"evo", "-m", "model.safetensors", "-p", "A", "-n", "1",
                   "--gpu", "0", "--dump-layer", "50:layer.npy"},
                  &options);

@@ -78,3 +78,9 @@ The CPU attention implementation materializes a score vector for clarity.
 Native non-cached BF16 prefill follows PyTorch SDPA's pinned FlashAttention
 standard/split-KV dispatch, while exact cached generation follows the explicit
 CrossAttention implementation described above.
+
+The production portable CPU backend is a distinct `cpu-f32` execution profile.
+It consumes the validated mapped tensor views directly, vectorizes BF16 dot
+products where the host ISA permits, and retains F32 block arithmetic. An
+explicit hybrid boundary transfers BF16-rounded CUDA prefix activations to the
+same CPU suffix. Neither CPU path is bit-equivalent to the CUDA exact profile.

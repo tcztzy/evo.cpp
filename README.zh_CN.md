@@ -4,8 +4,9 @@
 
 [English](README.md) | **简体中文**
 
-`evo.cpp` 是专注于 Evo 2 推理的 C++17/CUDA runtime 与本地服务。exact kernel
-保持 batch-1 数值语义，服务端则让多个隔离 request context 共享只读模型权重。
+`evo.cpp` 是专注于 Evo 2 推理的 C++17 runtime 与本地服务，既支持可移植 CPU
+执行，也支持 exact 或加速 CUDA profile。exact kernel 保持 batch-1 数值语义，
+服务端则让多个隔离 request context 共享只读模型权重。
 它从严格验证的 Safetensors 运行官方 1B、7B、20B 和 40B checkpoint，支持 1–4 张 NVIDIA GPU；
 推理过程不依赖 PyTorch、Vortex、Transformer Engine、Python，也不要求 Hopper
 专属 FP8 指令。
@@ -71,6 +72,16 @@ build/Release/evo variant-score -m "$MODEL" --sequence AACCGGTT \
   --normalization sum --ctx 8192 --gpu 0
 build/Release/evo serve -m "$MODEL" --ctx 8192 --gpu 0 \
   --host 127.0.0.1 --port 8080 --max-queue 64 --max-batch 4
+```
+
+同一 artifact 也可用于可移植 CPU 推理和显式 CUDA 前缀/CPU 后缀放置：
+
+```sh
+build/Release/evo -m "$MODEL" --backend cpu --score sequences.fa --ctx 8192
+build/Release/evo serve -m "$MODEL" --backend cpu --ctx 8192 \
+  --host 127.0.0.1 --port 8080
+build/Release/evo -m "$MODEL" --gpu 0 --gpu-layers 16 \
+  --score sequences.fa --ctx 8192
 ```
 
 所有命令默认使用 `--profile exact`，长 context 也不例外。

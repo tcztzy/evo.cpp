@@ -8,6 +8,43 @@ with a different execution profile does not change its weights or identity.
 The CLI, native server, C API, and metrics expose the selected execution
 profile. Context length never selects one implicitly.
 
+## `cpu-f32` (portable, approximate)
+
+```sh
+evo -m /models/evo2-7b.safetensors.index.json \
+  --backend cpu --ctx 8192 --score sequences.fa
+```
+
+`cpu-f32` reads the same mmap-backed BF16/F32/E4M3 artifact and keeps mutable
+recurrent and attention caches per context. Linear dot products dispatch to
+AVX2/FMA on supported x86-64 hosts, NEON on AArch64, and a scalar fallback
+elsewhere. Block arithmetic is portable F32 and is deliberately reported as
+`cpu-f32`, never as raw-bit `exact`.
+
+CPU+GPU placement is also explicit:
+
+```sh
+evo -m /models/evo2-7b.safetensors.index.json \
+  --gpu 0 --gpu-layers 16 --ctx 8192 --score sequences.fa
+```
+
+This runs the first 16 blocks on CUDA, transfers each BF16-rounded block output
+to the host, and runs the remaining blocks plus the output head with the
+`cpu-f32` backend. No free-memory heuristic changes this boundary. Omitting
+`--gpu-layers` selects the ordinary all-CUDA backend; `--backend cpu` selects
+the ordinary all-CPU backend. Hybrid mode currently supports generation and
+scoring. Embeddings, variant scoring, and serving fail explicitly rather than
+silently changing placement.
+
+The synthetic CPU fixture is gated against CUDA `exact` at minimum cosine
+`0.999`, logit MAE at most `0.1`, top-1 agreement at least `0.95`, and full
+within-task rank and variant-effect sign agreement. As with the Q8 fixture,
+this is a regression envelope, not a real-checkpoint accuracy claim. The
+current fixture records minimum cosine `0.9994086228`, logit MAE
+`0.008008694`, maximum absolute logit error `0.04118952`, maximum absolute
+biological-score error `0.004971327`, and full top-1, rank, and variant-sign
+agreement.
+
 ## `exact` (default)
 
 ```sh

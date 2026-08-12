@@ -34,8 +34,8 @@ static void test_model_fixture(const char *path) {
         "model exposes the strict artifact profile");
   context_params.context_size = 8;
   check(evo_context_create(model, &context_params, &context) ==
-            EVO_STATUS_UNSUPPORTED,
-        "unimplemented CPU inference fails explicitly");
+            EVO_STATUS_MODEL_FORMAT,
+        "metadata-only fixture cannot create an inference context");
   check(context == NULL, "failed context creation leaves output null");
   evo_model_free(model);
 }

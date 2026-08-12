@@ -126,8 +126,10 @@ std::string_view cli_usage() noexcept {
          "  --max-embedding-values N    Embedding response value limit "
          "(default: 1048576)\n\n"
          "Execution profile:\n"
-         "  --profile exact|fast-q8-kv  BF16 exact or explicit paged-Q8 KV "
-         "semantics (default: exact)\n\n"
+         "  --backend auto|cpu|cuda     Runtime backend (default: auto)\n"
+         "  --gpu-layers N              Explicit CUDA prefix + CPU suffix\n"
+         "  --profile exact|fast-q8-kv|cpu-f32\n"
+         "                 Explicit arithmetic/cache semantics\n\n"
          "Sampling:\n"
          "  --temp F       Temperature > 0 (default: 1)\n"
          "  --top-k K      Keep K logits; 0 disables, 1 is greedy (default: "
@@ -169,6 +171,7 @@ Status parse_cli(const int argc, char *const argv[],
   bool seen_context = false;
   bool seen_force_prompt_threshold = false;
   bool seen_gpu = false;
+  bool seen_gpu_layers = false;
   bool seen_temperature = false;
   bool seen_top_k = false;
   bool seen_top_p = false;
@@ -194,6 +197,7 @@ Status parse_cli(const int argc, char *const argv[],
   bool seen_server_max_sequence = false;
   bool seen_server_max_embedding = false;
   bool seen_profile = false;
+  bool seen_backend = false;
 
   const int option_start =
       embed_command || variant_command || server_command ? 2 : 1;
@@ -446,6 +450,16 @@ Status parse_cli(const int argc, char *const argv[],
         return {ErrorCode::kInvalidArgument,
                 "--max-embedding-values must be an integer in [1, 268435456]"};
       }
+    } else if (option == "--backend") {
+      if (seen_backend)
+        return duplicate(option);
+      seen_backend = true;
+      status = value_after(argc, argv, &index, option, &value);
+      if (!status.ok())
+        return status;
+      status = parse_execution_backend(value, &options->backend);
+      if (!status.ok())
+        return status;
     } else if (option == "--profile") {
       if (seen_profile)
         return duplicate(option);
@@ -456,6 +470,7 @@ Status parse_cli(const int argc, char *const argv[],
       status = parse_inference_profile(value, &options->inference_profile);
       if (!status.ok())
         return status;
+      options->profile_explicit = true;
     } else if (option == "-n" || option == "--tokens") {
       if (seen_tokens)
         return duplicate(option);
@@ -508,6 +523,18 @@ Status parse_cli(const int argc, char *const argv[],
       status = parse_gpu_list(value, &options->gpu_ids);
       if (!status.ok())
         return status;
+    } else if (option == "--gpu-layers") {
+      if (seen_gpu_layers)
+        return duplicate(option);
+      seen_gpu_layers = true;
+      status = value_after(argc, argv, &index, option, &value);
+      if (!status.ok())
+        return status;
+      std::size_t layers = 0;
+      if (!parse_unsigned(value, &layers) || layers == 0 || layers > 4096)
+        return {ErrorCode::kInvalidArgument,
+                "--gpu-layers must be an integer in [1, 4096]"};
+      options->gpu_layers = layers;
     } else if (option == "--temp") {
       if (seen_temperature)
         return duplicate(option);
@@ -592,6 +619,29 @@ Status parse_cli(const int argc, char *const argv[],
     return {ErrorCode::kInvalidArgument,
             "a nonempty model path is required with -m MODEL"};
   }
+  if (options->backend == ExecutionBackend::kCpu) {
+    if (seen_gpu || seen_gpu_layers)
+      return {ErrorCode::kInvalidArgument,
+              "--backend cpu cannot be combined with GPU options"};
+    if (seen_profile && options->inference_profile != InferenceProfile::kCpuF32)
+      return {
+          ErrorCode::kInvalidArgument,
+          "--backend cpu requires --profile cpu-f32 when profile is explicit"};
+    options->inference_profile = InferenceProfile::kCpuF32;
+  } else if (seen_gpu_layers) {
+    if (!seen_gpu)
+      return {ErrorCode::kInvalidArgument,
+              "--gpu-layers requires an explicit --gpu device list"};
+    if (seen_profile && options->inference_profile != InferenceProfile::kCpuF32)
+      return {
+          ErrorCode::kInvalidArgument,
+          "hybrid offload requires --profile cpu-f32 when profile is explicit"};
+    options->inference_profile = InferenceProfile::kCpuF32;
+  } else if (options->inference_profile == InferenceProfile::kCpuF32) {
+    return {ErrorCode::kInvalidArgument,
+            "--profile cpu-f32 requires --backend cpu"};
+  }
+  const bool requires_gpu = options->backend != ExecutionBackend::kCpu;
   const bool seen_server_option =
       seen_server_host || seen_server_port || seen_server_max_queue ||
       seen_server_max_batch || seen_server_batch_window ||
@@ -607,11 +657,11 @@ Status parse_cli(const int argc, char *const argv[],
         seen_variant_sequence || seen_variant_position ||
         seen_variant_reference || seen_variant_alternate ||
         seen_variant_window || seen_variant_strand ||
-        seen_variant_normalization) {
+        seen_variant_normalization || seen_gpu_layers) {
       return {ErrorCode::kInvalidArgument,
               "serve accepts server options, --ctx, and --gpu only"};
     }
-    if (!seen_gpu)
+    if (!seen_gpu && requires_gpu)
       return {ErrorCode::kInvalidArgument, "--gpu is required"};
     if (options->server_max_batch > options->server_max_queue) {
       return {ErrorCode::kInvalidArgument,
@@ -652,7 +702,7 @@ Status parse_cli(const int argc, char *const argv[],
     if (!seen_embed_layer) {
       return {ErrorCode::kInvalidArgument, "embed requires --layer INDEX"};
     }
-    if (!seen_gpu)
+    if (!seen_gpu && requires_gpu)
       return {ErrorCode::kInvalidArgument, "--gpu is required"};
     return Status::Ok();
   }
@@ -684,7 +734,7 @@ Status parse_cli(const int argc, char *const argv[],
       return {ErrorCode::kInvalidArgument,
               "variant-score requires a nonempty --alt allele"};
     }
-    if (!seen_gpu)
+    if (!seen_gpu && requires_gpu)
       return {ErrorCode::kInvalidArgument, "--gpu is required"};
     if (!seen_variant_window)
       options->variant_window_tokens = options->context_size;
@@ -708,7 +758,7 @@ Status parse_cli(const int argc, char *const argv[],
     return {ErrorCode::kInvalidArgument,
             "specify exactly one of -p PROMPT or --score INPUT"};
   }
-  if (!seen_gpu) {
+  if (!seen_gpu && requires_gpu) {
     return {ErrorCode::kInvalidArgument, "--gpu is required"};
   }
   if (seen_prompt) {

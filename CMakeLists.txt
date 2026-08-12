@@ -57,6 +57,9 @@ add_library(
   evo_core STATIC
   src/cli.cpp
   src/cpu_reference.cpp
+  src/cpu/model.cpp
+  src/cpu/inference_cli.cpp
+  src/backend.cpp
   src/fp8.cpp
   src/json.cpp
   src/mapped_file.cpp
@@ -82,6 +85,9 @@ set_target_properties(
     POSITION_INDEPENDENT_CODE ON
     VISIBILITY_INLINES_HIDDEN ON)
 evo_configure_target(evo_core)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
+  target_link_libraries(evo_core PUBLIC stdc++fs)
+endif()
 
 add_library(evo_server_core STATIC src/scheduler.cpp)
 target_include_directories(
@@ -281,7 +287,7 @@ if(EVO_CUDA)
     target_compile_options(evo_cuda PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Werror>)
   endif()
 
-  target_sources(evo PRIVATE src/cuda/inference_cli.cpp)
+  target_sources(evo PRIVATE src/cuda/inference_cli.cpp src/cuda/hybrid_cli.cpp)
   target_link_libraries(evo PRIVATE evo_cuda evo::npy)
   target_compile_definitions(evo PRIVATE EVO_HAS_CUDA=1)
   target_link_libraries(evo_c PRIVATE evo_cuda)
@@ -384,7 +390,8 @@ if(EVO_CUDA)
       evo-cuda-cli-test-bin
       src/main.cpp
       src/server.cpp
-      src/cuda/inference_cli.cpp)
+      src/cuda/inference_cli.cpp
+      src/cuda/hybrid_cli.cpp)
     target_link_libraries(
       evo-cuda-cli-test-bin
       PRIVATE evo_cuda evo::npy evo_server_core evo_c Threads::Threads)
@@ -500,15 +507,43 @@ if(BUILD_TESTING)
   evo_configure_target(evo-server-core-tests)
   add_test(NAME server_core COMMAND evo-server-core-tests)
 
-  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
-    target_link_libraries(evo-model-format-tests PRIVATE stdc++fs)
-    target_link_libraries(evo-frontend-tests PRIVATE stdc++fs)
-  endif()
-
   add_executable(evo-cpu-reference-tests tests/test_cpu_reference.cpp)
   target_link_libraries(evo-cpu-reference-tests PRIVATE evo_core)
   evo_configure_target(evo-cpu-reference-tests)
   add_test(NAME cpu_reference COMMAND evo-cpu-reference-tests)
+
+  add_executable(evo-cpu-model-tests tests/test_cpu_model.cpp)
+  target_link_libraries(evo-cpu-model-tests PRIVATE evo_core)
+  evo_configure_target(evo-cpu-model-tests)
+  add_executable(evo-cpu-cli-test-bin src/main.cpp src/server.cpp)
+  target_link_libraries(
+    evo-cpu-cli-test-bin
+    PRIVATE evo_core evo_server_core evo_c Threads::Threads)
+  target_compile_definitions(
+    evo-cpu-cli-test-bin PRIVATE EVO_ALLOW_TEST_FIXTURE=1)
+  evo_configure_target(evo-cpu-cli-test-bin)
+  add_executable(evo-cpu-c-api-tests tests/test_cpu_c_api.c)
+  target_link_libraries(evo-cpu-c-api-tests PRIVATE evo::evo)
+  if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(
+      evo-cpu-c-api-tests PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
+    if(EVO_WARNINGS_AS_ERRORS)
+      target_compile_options(evo-cpu-c-api-tests PRIVATE -Werror)
+    endif()
+  elseif(MSVC)
+    target_compile_options(evo-cpu-c-api-tests PRIVATE /W4)
+  endif()
+  add_test(
+    NAME cpu_backend
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cpu_backend.py
+      --binary $<TARGET_FILE:evo-cpu-model-tests>
+      --c-api-binary $<TARGET_FILE:evo-cpu-c-api-tests>
+      --cli-binary $<TARGET_FILE:evo-cpu-cli-test-bin>
+      --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_tiny_model.py
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/cpu-backend)
+  set_tests_properties(
+    cpu_backend PROPERTIES ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools")
 
   add_executable(evo-fp8-tests tests/test_fp8.cpp)
   target_link_libraries(evo-fp8-tests PRIVATE evo_core)
@@ -726,6 +761,14 @@ if(BUILD_TESTING)
         --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_tiny_model.py
         --gate ${CMAKE_CURRENT_SOURCE_DIR}/tools/evo_profile_gate.py
         --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/cuda_profile)
+    add_test(
+      NAME cuda_hybrid
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cuda_hybrid.py
+        --binary $<TARGET_FILE:evo-cuda-cli-test-bin>
+        --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_tiny_model.py
+        --gate ${CMAKE_CURRENT_SOURCE_DIR}/tools/evo_profile_gate.py
+        --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/cuda_hybrid)
     add_executable(evo-cuda-c-api-tests tests/test_cuda_c_api.c)
     target_link_libraries(evo-cuda-c-api-tests PRIVATE evo::evo)
     if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
@@ -774,6 +817,12 @@ if(BUILD_TESTING)
         ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools")
     set_tests_properties(
       cuda_profile
+      PROPERTIES
+        LABELS "gpu;cuda"
+        SKIP_RETURN_CODE 77
+        ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools")
+    set_tests_properties(
+      cuda_hybrid
       PROPERTIES
         LABELS "gpu;cuda"
         SKIP_RETURN_CODE 77

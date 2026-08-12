@@ -9,6 +9,8 @@ const char *inference_profile_name(const InferenceProfile profile) noexcept {
     return "exact";
   case InferenceProfile::kFastQ8Kv:
     return "fast-q8-kv";
+  case InferenceProfile::kCpuF32:
+    return "cpu-f32";
   }
   return "unknown";
 }
@@ -25,8 +27,12 @@ Status parse_inference_profile(const std::string_view text,
     *profile = InferenceProfile::kFastQ8Kv;
     return Status::Ok();
   }
+  if (text == "cpu-f32") {
+    *profile = InferenceProfile::kCpuF32;
+    return Status::Ok();
+  }
   return {ErrorCode::kInvalidArgument,
-          "profile must be one of exact or fast-q8-kv"};
+          "profile must be one of exact, fast-q8-kv, or cpu-f32"};
 }
 
 bool inference_profile_is_exact(const InferenceProfile profile) noexcept {

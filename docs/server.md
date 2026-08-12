@@ -2,8 +2,9 @@
 
 `evo serve` loads one validated Evo 2 artifact and exposes generation,
 likelihood scoring, intermediate embeddings, and strand-aware variant scoring
-over HTTP/1.1. The production process is C++17/CUDA only; Python is not in the
-runtime dependency graph.
+over HTTP/1.1. The production process is C++17; Python is not in the runtime
+dependency graph. The same process can use the portable CPU backend or the
+exact/fast CUDA profiles, and requests never switch backend implicitly.
 
 ## Start the server
 
@@ -17,17 +18,28 @@ evo serve -m /models/evo2-7b.safetensors.index.json \
   --max-embedding-values 1048576
 ```
 
+For CPU serving, select the backend explicitly and omit GPU-only flags:
+
+```sh
+evo serve -m /models/evo2-7b.safetensors.index.json \
+  --backend cpu --ctx 8192 \
+  --host 127.0.0.1 --port 8080 \
+  --max-queue 64 --max-batch 4
+```
+
 The default bind address is loopback. Binding `0.0.0.0` is an explicit
 operator choice; the native server does not provide TLS or authentication, so
 put it behind an authenticated reverse proxy before exposing it outside a
 trusted host. Only numeric IPv4 bind addresses are accepted.
 
-`--profile` is `exact` by default. `fast-q8-kv` explicitly selects the
+The CUDA backend uses `exact` by default. `fast-q8-kv` explicitly selects the
 experimental approximate paged-Q8 cache; context length never changes the
-profile. Every inference response reports its execution `profile`. `/health`
-uses `profile` for artifact metadata and `execution_profile` for this runtime
-selection. See [execution profiles](execution-profiles.md) for the numerical
-and biological acceptance gates.
+profile. The CPU backend always reports `cpu-f32`. Every inference response
+reports its execution `profile`, and `/health` reports both `backend` and
+`execution_profile`. See [execution profiles](execution-profiles.md) for the
+numerical and biological acceptance gates. Hybrid `--gpu-layers` serving is
+currently rejected because request-level GPU-prefix/CPU-suffix isolation is
+not yet part of the server contract.
 
 `--max-queue` bounds pending inference work. `--max-batch` is the maximum
 number of isolated request contexts launched together after the
@@ -113,7 +125,7 @@ can observe cancellation.
 
 The HTTP body, sequence, context, embedding output, pending queue, simultaneous
 connection, and JSON nesting sizes are independently bounded. Over-limit input
-uses HTTP 413, a full queue uses 503, malformed requests use 400, and CUDA
+uses HTTP 413, a full queue uses 503, malformed requests use 400, and backend
 runtime failures use 503. Error responses have the stable shape:
 
 ```json

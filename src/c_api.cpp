@@ -7,6 +7,7 @@
 #include <exception>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <set>
 #include <string>
@@ -14,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include "evo/cpu/model.hpp"
 #include "evo/model_format.hpp"
 #include "evo/profile.hpp"
 #include "evo/sampler.hpp"
@@ -123,6 +125,8 @@ struct ModelState final {
   std::size_t embedding_width{0};
   std::size_t layer_count{0};
   bool allow_synthetic{false};
+  std::mutex cpu_mutex;
+  std::unique_ptr<evo::cpu::Model> cpu_weights;
 #if defined(EVO_HAS_CUDA)
   std::unique_ptr<evo::cuda::PipelineModel> cuda_weights;
 #endif
@@ -139,6 +143,7 @@ struct evo_context final {
   std::size_t capacity{0};
   evo::InferenceProfile profile{evo::InferenceProfile::kExact};
   bool failed{false};
+  std::unique_ptr<evo::cpu::Context> cpu;
 #if defined(EVO_HAS_CUDA)
   std::unique_ptr<evo::cuda::PipelineModel> cuda;
 #endif
@@ -345,7 +350,7 @@ evo_status evo_context_create(const evo_model *const model,
       return publish(EVO_STATUS_INVALID_ARGUMENT,
                      "invalid_argument: invalid context parameters");
     }
-    [[maybe_unused]] const evo::InferenceProfile profile =
+    evo::InferenceProfile profile =
         (options.flags & EVO_CONTEXT_FLAG_FAST_Q8_KV) != 0
             ? evo::InferenceProfile::kFastQ8Kv
             : evo::InferenceProfile::kExact;
@@ -356,8 +361,33 @@ evo_status evo_context_create(const evo_model *const model,
                      "maximum");
     }
     if (model->state->backend == EVO_BACKEND_CPU) {
-      return publish(EVO_STATUS_UNSUPPORTED,
-                     "unsupported: CPU inference backend is not implemented");
+      if (options.flags != 0) {
+        return publish(EVO_STATUS_INVALID_ARGUMENT,
+                       "invalid_argument: CPU contexts do not accept CUDA KV "
+                       "profile flags");
+      }
+      profile = evo::InferenceProfile::kCpuF32;
+      std::lock_guard<std::mutex> lock{model->state->cpu_mutex};
+      if (!model->state->cpu_weights) {
+        auto weights = std::make_unique<evo::cpu::Model>();
+        const auto load_status =
+            weights->load(model->state->file, model->state->allow_synthetic);
+        if (!load_status.ok())
+          return publish(load_status);
+        model->state->cpu_weights = std::move(weights);
+      }
+      auto cpu = std::make_unique<evo::cpu::Context>();
+      const auto status = cpu->initialize_shared(*model->state->cpu_weights,
+                                                 options.context_size);
+      if (!status.ok())
+        return publish(status);
+      auto handle = std::make_unique<evo_context>();
+      handle->state = model->state;
+      handle->capacity = options.context_size;
+      handle->profile = profile;
+      handle->cpu = std::move(cpu);
+      *context_out = handle.release();
+      return publish(evo::Status::Ok());
     }
 #if defined(EVO_HAS_CUDA)
     if (model->state->backend != EVO_BACKEND_CUDA) {
@@ -390,6 +420,8 @@ evo_status evo_context_create(const evo_model *const model,
 void evo_context_free(evo_context *const context) { delete context; }
 
 size_t evo_context_position(const evo_context *const context) {
+  if (context != nullptr && context->cpu)
+    return context->cpu->position();
 #if defined(EVO_HAS_CUDA)
   return context == nullptr || !context->cuda ? 0 : context->cuda->position();
 #else
@@ -437,6 +469,38 @@ evo_status evo_context_prefill(evo_context *const context,
     // advance. Keep the context poisoned unless every chunk and callback
     // completes.
     context->failed = true;
+    if (context->cpu) {
+      const std::size_t chunk_capacity = context->cpu->activation_capacity();
+      const std::size_t columns = context->cpu->config().vocab_size;
+      std::size_t offset = 0;
+      bool first = true;
+      while (offset < tokens.size()) {
+        const std::size_t rows =
+            std::min(chunk_capacity, tokens.size() - offset);
+        const std::vector<evo::TokenId> chunk(
+            tokens.begin() + static_cast<std::ptrdiff_t>(offset),
+            tokens.begin() + static_cast<std::ptrdiff_t>(offset + rows));
+        std::vector<float> logits;
+        const auto status = first ? context->cpu->prefill(chunk, &logits)
+                                  : context->cpu->prefill_chunk(chunk, &logits);
+        if (!status.ok())
+          return publish(status);
+        if (logits.size() != rows * columns)
+          return publish(EVO_STATUS_INTERNAL,
+                         "internal: CPU backend returned incomplete logits");
+        const evo_status callback_status =
+            callback(logits.data(), rows, columns, offset, user_data);
+        if (callback_status != EVO_STATUS_OK) {
+          return publish(valid_status(callback_status) ? callback_status
+                                                       : EVO_STATUS_INTERNAL,
+                         "callback: logits consumer aborted CPU prefill");
+        }
+        offset += rows;
+        first = false;
+      }
+      context->failed = false;
+      return publish(evo::Status::Ok());
+    }
 #if defined(EVO_HAS_CUDA)
     const std::size_t chunk_capacity = context->cuda->activation_capacity();
     const std::size_t columns = context->cuda->config().vocab_size;
@@ -498,6 +562,27 @@ evo_status evo_context_decode(evo_context *const context, const uint32_t token,
                      "invalid_argument: decode token/context is invalid");
     }
     context->failed = true;
+    if (context->cpu) {
+      std::vector<float> logits;
+      const auto status =
+          context->cpu->decode(static_cast<evo::TokenId>(token), &logits);
+      if (!status.ok())
+        return publish(status);
+      const std::size_t columns = context->cpu->config().vocab_size;
+      if (logits.size() != columns)
+        return publish(
+            EVO_STATUS_INTERNAL,
+            "internal: CPU backend returned incomplete decode logits");
+      const evo_status callback_status =
+          callback(logits.data(), 1, columns, offset, user_data);
+      if (callback_status != EVO_STATUS_OK) {
+        return publish(valid_status(callback_status) ? callback_status
+                                                     : EVO_STATUS_INTERNAL,
+                       "callback: logits consumer aborted CPU decode");
+      }
+      context->failed = false;
+      return publish(evo::Status::Ok());
+    }
 #if defined(EVO_HAS_CUDA)
     std::vector<float> logits;
     const auto status =
@@ -557,6 +642,41 @@ evo_status evo_context_embed(evo_context *const context,
                      "a nonempty sequence within capacity");
     }
     context->failed = true;
+    if (context->cpu) {
+      const std::size_t chunk_capacity = context->cpu->activation_capacity();
+      const std::size_t columns = context->cpu->config().width;
+      std::size_t offset = 0;
+      bool first = true;
+      while (offset < tokens.size()) {
+        const std::size_t rows =
+            std::min(chunk_capacity, tokens.size() - offset);
+        const std::vector<evo::TokenId> chunk(
+            tokens.begin() + static_cast<std::ptrdiff_t>(offset),
+            tokens.begin() + static_cast<std::ptrdiff_t>(offset + rows));
+        std::vector<float> embedding;
+        const auto status =
+            first ? context->cpu->prefill_embedding(chunk, layer, &embedding)
+                  : context->cpu->prefill_chunk_embedding(chunk, layer,
+                                                          &embedding);
+        if (!status.ok())
+          return publish(status);
+        if (embedding.size() != rows * columns)
+          return publish(
+              EVO_STATUS_INTERNAL,
+              "internal: CPU backend returned incomplete embeddings");
+        const evo_status callback_status =
+            callback(embedding.data(), rows, columns, offset, user_data);
+        if (callback_status != EVO_STATUS_OK) {
+          return publish(valid_status(callback_status) ? callback_status
+                                                       : EVO_STATUS_INTERNAL,
+                         "callback: embedding consumer aborted CPU inference");
+        }
+        offset += rows;
+        first = false;
+      }
+      context->failed = false;
+      return publish(evo::Status::Ok());
+    }
 #if defined(EVO_HAS_CUDA)
     const std::size_t chunk_capacity = context->cuda->activation_capacity();
     const std::size_t columns = context->cuda->config().width;

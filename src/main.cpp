@@ -5,12 +5,14 @@
 #include <string_view>
 
 #include "evo/cli.hpp"
+#include "evo/cpu/inference_cli.hpp"
 #include "evo/server.hpp"
 #include "evo/status.hpp"
 #include "evo/tokenizer.hpp"
 #include "evo/version.hpp"
 
 #if defined(EVO_HAS_CUDA)
+#include "evo/cuda/hybrid_cli.hpp"
 #include "evo/cuda/inference_cli.hpp"
 #endif
 
@@ -80,13 +82,21 @@ int main(const int argc, char **argv) {
       return status.ok() ? 0 : fail(status);
     }
 
+    if (options.backend == evo::ExecutionBackend::kCpu) {
+      status = evo::cpu::run_inference_cli(options, allow_test_fixture);
+      return status.ok() ? 0 : fail(status);
+    }
 #if defined(EVO_HAS_CUDA)
+    if (options.gpu_layers.has_value()) {
+      status = evo::cuda::run_hybrid_cli(options, allow_test_fixture);
+      return status.ok() ? 0 : fail(status);
+    }
     status = evo::cuda::run_inference_cli(options, allow_test_fixture);
     return status.ok() ? 0 : fail(status);
 #else
     return fail({evo::ErrorCode::kUnsupported,
-                 "this evo binary was built without CUDA support; rebuild with "
-                 "-DEVO_CUDA=ON"});
+                 "this evo binary was built without CUDA support; pass "
+                 "--backend cpu or rebuild with -DEVO_CUDA=ON"});
 #endif
   } catch (const std::exception &error) {
     return fail({evo::ErrorCode::kInternal, error.what()});

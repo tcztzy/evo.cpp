@@ -2130,6 +2130,7 @@ struct PipelineModel::Impl final {
   RuntimeModelConfig config;
   std::size_t context_capacity{0};
   std::size_t arena_capacity{0};
+  std::size_t layer_limit{0};
   std::size_t position{0};
   bool q8_kv_cache{false};
   bool loaded{false};
@@ -2188,8 +2189,8 @@ struct PipelineModel::Impl final {
                                std::vector<float> *const logits,
                                const std::vector<LayerDump> &dumps,
                                LayerCapture *const capture = nullptr) {
-    if (!loaded || logits == nullptr || tokens.empty() ||
-        tokens.size() > arena_capacity) {
+    if (!loaded || layer_limit != config.layers || logits == nullptr ||
+        tokens.empty() || tokens.size() > arena_capacity) {
       return {ErrorCode::kInvalidArgument,
               "pipeline model forward arguments are invalid"};
     }
@@ -2289,6 +2290,60 @@ struct PipelineModel::Impl final {
       cached_attention = uses_cached_attention(mode);
     return Status::Ok();
   }
+
+  [[nodiscard]] Status forward_prefix(const std::vector<TokenId> &tokens,
+                                      const ForwardMode mode,
+                                      std::vector<float> *const hidden) {
+    if (!loaded || layer_limit == 0 || layer_limit >= config.layers ||
+        hidden == nullptr || tokens.empty() || tokens.size() > arena_capacity) {
+      return {ErrorCode::kInvalidArgument,
+              "CUDA prefix forward arguments are invalid"};
+    }
+    if (is_initial_prefill(mode)) {
+      position = 0;
+      state_valid = false;
+      for (auto &stage : stages) {
+        auto status = stage->prepare_prefill(tokens.size());
+        if (!status.ok())
+          return status;
+      }
+    } else if (!state_valid || position > context_capacity ||
+               tokens.size() > context_capacity - position ||
+               (is_decode(mode) && tokens.size() != 1)) {
+      return {ErrorCode::kInvalidArgument,
+              "CUDA prefix continuation has invalid state or capacity"};
+    }
+    auto status = stages.front()->embed(tokens);
+    if (!status.ok()) {
+      state_valid = false;
+      return status;
+    }
+    const std::size_t rows = tokens.size();
+    for (std::size_t stage_index = 0; stage_index < stages.size();
+         ++stage_index) {
+      if (stage_index != 0) {
+        status = transfer_hidden(stages[stage_index - 1].get(),
+                                 stages[stage_index].get(), rows);
+        if (!status.ok())
+          break;
+      }
+      status = stages[stage_index]->run_blocks(rows, mode);
+      if (!status.ok())
+        break;
+    }
+    if (status.ok()) {
+      auto &tail = *stages.back();
+      status =
+          tail.capture_buffer(tail.arena.hidden, rows, config.width, hidden);
+    }
+    if (!status.ok()) {
+      state_valid = false;
+      return {status.code(), "CUDA prefix forward: " + status.message()};
+    }
+    position = is_initial_prefill(mode) ? rows : position + rows;
+    state_valid = true;
+    return Status::Ok();
+  }
 };
 
 PipelineModel::PipelineModel() : impl_(std::make_unique<Impl>()) {}
@@ -2300,7 +2355,8 @@ Status PipelineModel::load(const ModelFile &model,
                            const std::vector<int> &devices,
                            const std::size_t context_capacity,
                            const bool allow_test_fixture,
-                           const InferenceProfile profile) {
+                           const InferenceProfile profile,
+                           const std::size_t requested_layer_limit) {
   if (impl_->loaded || context_capacity == 0 || devices.empty() ||
       devices.size() > 4) {
     return {ErrorCode::kInvalidArgument,
@@ -2319,6 +2375,14 @@ Status PipelineModel::load(const ModelFile &model,
   if (!status.ok())
     return status;
   candidate->config.inference_profile = profile;
+  candidate->layer_limit = requested_layer_limit == 0 ? candidate->config.layers
+                                                      : requested_layer_limit;
+  if (candidate->layer_limit == 0 ||
+      candidate->layer_limit > candidate->config.layers ||
+      devices.size() > candidate->layer_limit) {
+    return {ErrorCode::kInvalidArgument,
+            "CUDA layer limit must cover at least one layer per device"};
+  }
   if (!candidate->config.test_fixture &&
       context_capacity > candidate->config.max_seqlen) {
     return {ErrorCode::kInvalidArgument,
@@ -2334,16 +2398,16 @@ Status PipelineModel::load(const ModelFile &model,
   std::vector<std::size_t> layer_ends;
   layer_ends.reserve(stage_count);
   if (candidate->config.test_fixture) {
-    const std::size_t base_layers = candidate->config.layers / stage_count;
-    const std::size_t extra_layers = candidate->config.layers % stage_count;
+    const std::size_t base_layers = candidate->layer_limit / stage_count;
+    const std::size_t extra_layers = candidate->layer_limit % stage_count;
     std::size_t end = 0;
     for (std::size_t index = 0; index < stage_count; ++index) {
       end += base_layers + (index < extra_layers ? 1 : 0);
       layer_ends.push_back(end);
     }
   } else {
-    std::vector<std::size_t> layer_bytes(candidate->config.layers, 0);
-    for (std::size_t layer = 0; layer < candidate->config.layers; ++layer) {
+    std::vector<std::size_t> layer_bytes(candidate->layer_limit, 0);
+    for (std::size_t layer = 0; layer < candidate->layer_limit; ++layer) {
       const std::string prefix = "blocks." + std::to_string(layer) + ".";
       for (const auto &tensor : model.tensors()) {
         if (tensor.name.compare(0, prefix.size(), prefix) == 0) {
@@ -2363,13 +2427,13 @@ Status PipelineModel::load(const ModelFile &model,
     for (std::size_t stage = 0; stage < stage_count; ++stage) {
       const std::size_t remaining_stages = stage_count - stage;
       if (remaining_stages == 1) {
-        layer_ends.push_back(candidate->config.layers);
+        layer_ends.push_back(candidate->layer_limit);
         break;
       }
       const std::size_t target =
           (remaining_bytes + remaining_stages - 1) / remaining_stages;
       const std::size_t latest_end =
-          candidate->config.layers - (remaining_stages - 1);
+          candidate->layer_limit - (remaining_stages - 1);
       std::size_t end = begin;
       std::size_t assigned = 0;
       while (end < latest_end && (end == begin || assigned < target)) {
@@ -2489,7 +2553,9 @@ Status PipelineModel::load(const ModelFile &model,
       total_bytes({&head.embedding, &head.unembed, &head.final_norm});
   candidate->loaded = true;
   const auto warmup_tokens =
-      backend_warmup_tokens(candidate->config, candidate->arena_capacity);
+      candidate->layer_limit == candidate->config.layers
+          ? backend_warmup_tokens(candidate->config, candidate->arena_capacity)
+          : 0;
   if (warmup_tokens != 0) {
     const std::vector<TokenId> tokens(warmup_tokens, static_cast<TokenId>('A'));
     std::vector<float> logits;
@@ -2515,6 +2581,7 @@ Status PipelineModel::initialize_shared(const PipelineModel &source,
   }
   auto candidate = std::make_unique<Impl>();
   candidate->config = source.impl_->config;
+  candidate->layer_limit = source.impl_->layer_limit;
   candidate->config.inference_profile = profile;
   if (!candidate->config.test_fixture &&
       context_capacity > candidate->config.max_seqlen) {
@@ -2579,7 +2646,9 @@ Status PipelineModel::initialize_shared(const PipelineModel &source,
     return status;
   candidate->loaded = true;
   const auto warmup_tokens =
-      backend_warmup_tokens(candidate->config, candidate->arena_capacity);
+      candidate->layer_limit == candidate->config.layers
+          ? backend_warmup_tokens(candidate->config, candidate->arena_capacity)
+          : 0;
   if (warmup_tokens != 0) {
     const std::vector<TokenId> tokens(warmup_tokens, static_cast<TokenId>('A'));
     std::vector<float> logits;
@@ -2689,6 +2758,21 @@ Status PipelineModel::decode_with_dumps(const TokenId token,
   const auto mode = impl_->cached_attention ? ForwardMode::kCachedDecode
                                             : ForwardMode::kDecode;
   return impl_->forward(std::vector<TokenId>{token}, mode, logits, dumps);
+}
+
+Status PipelineModel::prefill_prefix(const std::vector<TokenId> &tokens,
+                                     std::vector<float> *const hidden) {
+  return impl_->forward_prefix(tokens, ForwardMode::kPrefill, hidden);
+}
+
+Status PipelineModel::prefill_chunk_prefix(const std::vector<TokenId> &tokens,
+                                           std::vector<float> *const hidden) {
+  return impl_->forward_prefix(tokens, ForwardMode::kContinue, hidden);
+}
+
+Status PipelineModel::decode_prefix(const TokenId token,
+                                    std::vector<float> *const hidden) {
+  return impl_->forward_prefix({token}, ForwardMode::kDecode, hidden);
 }
 
 const RuntimeModelConfig &PipelineModel::config() const noexcept {

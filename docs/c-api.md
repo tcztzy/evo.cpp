@@ -23,6 +23,9 @@ and other languages with a C foreign-function interface.
   owning independent streams, activation arenas, and recurrent/KV caches. A
   context retains the model state, so `evo_model_free()` may be called after
   context creation. Each context itself is mutable and single-threaded.
+- A CPU model handle shares the mmap-backed artifact directly. CPU contexts
+  allocate only mutable caches and report `cpu-f32`; AVX2/FMA, NEON, and scalar
+  kernels have the same public callback and ownership contract.
 
 ## Minimal use
 
@@ -50,7 +53,9 @@ evo_context_free(ctx);
 `fast-q8-kv` execution profile. With zero flags, every context is `exact`
 regardless of `context_size`; insufficient memory is an error rather than an
 implicit profile change. `evo_context_profile()` returns the selected execution
-profile. By contrast, `evo_model_profile()` returns artifact metadata.
+profile. A model loaded with `EVO_BACKEND_CPU` accepts zero context flags and
+reports `cpu-f32`. By contrast, `evo_model_profile()` returns artifact
+metadata.
 
 `evo_context_prefill()` accepts an opaque batch and emits logits through a
 chunk callback. The callback view is borrowed and valid only during that call;
@@ -63,11 +68,12 @@ output of a zero-based intermediate layer. Query
 downstream tensor storage. Pooling is deliberately caller-controlled in the C
 ABI; the CLI supplies exact `none`, `mean`, and `last` policies.
 
-The exact CUDA backend currently accepts one sequence per batch. Larger batch
+Current CPU and CUDA backends accept one sequence per batch. Larger batch
 objects are ABI-valid but return `EVO_STATUS_UNSUPPORTED` at execution time,
 rather than silently changing semantics. CPU artifact loading and metadata are
 available in CPU-only builds; CPU inference remains an explicit unsupported
-operation until the native CPU backend lands.
+operation. CPU+GPU layer placement is a CLI policy; the stable C ABI requires
+the caller to choose one backend per model handle.
 
 ## Installation
 

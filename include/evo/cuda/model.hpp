@@ -163,10 +163,12 @@ public:
   PipelineModel(PipelineModel &&) noexcept;
   PipelineModel &operator=(PipelineModel &&) noexcept;
 
-  [[nodiscard]] Status
-  load(const ModelFile &model, const std::vector<int> &devices,
-       std::size_t context_capacity, bool allow_test_fixture = false,
-       InferenceProfile profile = InferenceProfile::kExact);
+  [[nodiscard]] Status load(const ModelFile &model,
+                            const std::vector<int> &devices,
+                            std::size_t context_capacity,
+                            bool allow_test_fixture = false,
+                            InferenceProfile profile = InferenceProfile::kExact,
+                            std::size_t layer_limit = 0);
   // Creates independent mutable cache/arena/stream state while retaining the
   // source model's immutable device-weight allocations.
   [[nodiscard]] Status
@@ -199,6 +201,11 @@ public:
   [[nodiscard]] Status decode_with_dumps(TokenId token,
                                          std::vector<float> *logits,
                                          const std::vector<LayerDump> &dumps);
+  [[nodiscard]] Status prefill_prefix(const std::vector<TokenId> &tokens,
+                                      std::vector<float> *hidden);
+  [[nodiscard]] Status prefill_chunk_prefix(const std::vector<TokenId> &tokens,
+                                            std::vector<float> *hidden);
+  [[nodiscard]] Status decode_prefix(TokenId token, std::vector<float> *hidden);
 
   [[nodiscard]] const RuntimeModelConfig &config() const noexcept;
   [[nodiscard]] const std::vector<StageAssignment> &stages() const noexcept;
