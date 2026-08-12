@@ -33,7 +33,7 @@ if(NOT invalid_error MATCHES "invalid_argument: a nonempty model path is require
 endif()
 
 execute_process(
-  COMMAND "${EVO_BINARY}" -m fake.safetensors -p "Aé" -n 1 --gpu 0,1 --dump-tokens
+  COMMAND "${EVO_BINARY}" -m fake.safetensors -p "Aé" -n 1 --gpu 0 --dump-tokens
   RESULT_VARIABLE token_result
   OUTPUT_VARIABLE token_output
   ERROR_VARIABLE token_error)

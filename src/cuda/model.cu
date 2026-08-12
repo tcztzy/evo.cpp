@@ -1080,6 +1080,79 @@ struct SingleGpuModel::Impl final {
                          &layer->l3);
   }
 
+  [[nodiscard]] Status allocate_layer_state(Layer *const layer) {
+    if (layer->type == MixerType::kAttention) {
+      return q8_kv_cache
+                 ? layer->kv_cache.allocate_q8_paged(
+                       device, context_capacity, config.heads,
+                       config.head_dim(), kQ8KvPageTokens, stream)
+                 : layer->kv_cache.allocate(device, context_capacity,
+                                            config.heads, config.head_dim());
+    }
+    auto status = layer->short_cache.allocate(
+        device, config.width * 3, config.short_filter_length, stream);
+    if (!status.ok())
+      return status;
+    if (layer->type == MixerType::kHcs) {
+      return layer->inner_cache.allocate(device, config.width,
+                                         config.hcs_filter_length, stream);
+    }
+    if (layer->type == MixerType::kHcm) {
+      return layer->inner_cache.allocate(device, config.width,
+                                         config.hcm_filter_length, stream);
+    }
+    return layer->iir_cache.allocate(device, config.width, config.state_size,
+                                     stream);
+  }
+
+  [[nodiscard]] Status share_weights_from(const Impl &source) {
+    const auto share = [](const DeviceBuffer &input,
+                          DeviceBuffer *const output) -> Status {
+      return input.valid() ? output->share_from(input) : Status::Ok();
+    };
+    for (const auto &[input, output] :
+         {std::pair{&source.embedding, &embedding},
+          std::pair{&source.unembed, &unembed},
+          std::pair{&source.final_norm, &final_norm}}) {
+      auto status = share(*input, output);
+      if (!status.ok())
+        return status;
+    }
+    layers.reserve(source.layers.size());
+    for (const auto &source_layer : source.layers) {
+      layers.emplace_back();
+      auto &target = layers.back();
+      target.type = source_layer.type;
+      target.software_fp8_projection = source_layer.software_fp8_projection;
+      target.projection_input_scale = source_layer.projection_input_scale;
+      target.projection_output_scale = source_layer.projection_output_scale;
+      for (const auto &[input, output] :
+           {std::pair{&source_layer.pre_norm, &target.pre_norm},
+            std::pair{&source_layer.post_norm, &target.post_norm},
+            std::pair{&source_layer.projection, &target.projection},
+            std::pair{&source_layer.output_weight, &target.output_weight},
+            std::pair{&source_layer.output_bias, &target.output_bias},
+            std::pair{&source_layer.short_filter, &target.short_filter},
+            std::pair{&source_layer.inner_filter, &target.inner_filter},
+            std::pair{&source_layer.direct, &target.direct},
+            std::pair{&source_layer.log_poles, &target.log_poles},
+            std::pair{&source_layer.residues, &target.residues},
+            std::pair{&source_layer.inverse_frequency,
+                      &target.inverse_frequency},
+            std::pair{&source_layer.l1, &target.l1},
+            std::pair{&source_layer.l2, &target.l2},
+            std::pair{&source_layer.l3, &target.l3}}) {
+        auto status = share(*input, output);
+        if (!status.ok())
+          return status;
+      }
+      auto status = allocate_layer_state(&target);
+      if (!status.ok())
+        return status;
+    }
+    return Status::Ok();
+  }
+
   [[nodiscard]] Status load_layer(const ModelFile &model,
                                   const std::size_t index, Layer *const layer) {
     layer->type = config.mixer_types[index];
@@ -1116,12 +1189,7 @@ struct SingleGpuModel::Impl final {
                         stream, &layer->inverse_frequency);
       if (!status.ok())
         return status;
-      return q8_kv_cache
-                 ? layer->kv_cache.allocate_q8_paged(
-                       device, context_capacity, config.heads,
-                       config.head_dim(), kQ8KvPageTokens, stream)
-                 : layer->kv_cache.allocate(device, context_capacity,
-                                            config.heads, config.head_dim());
+      return allocate_layer_state(layer);
     }
 
     if (config.hyena_projection_dtype == HyenaProjectionDType::kE4M3Sw) {
@@ -1159,10 +1227,6 @@ struct SingleGpuModel::Impl final {
                            device, stream, &layer->short_filter);
     if (!status.ok())
       return status;
-    status = layer->short_cache.allocate(device, config.width * 3,
-                                         config.short_filter_length, stream);
-    if (!status.ok())
-      return status;
 
     if (layer->type == MixerType::kHcs) {
       status =
@@ -1171,8 +1235,7 @@ struct SingleGpuModel::Impl final {
                         device, stream, &layer->inner_filter);
       if (!status.ok())
         return status;
-      return layer->inner_cache.allocate(device, config.width,
-                                         config.hcs_filter_length, stream);
+      return allocate_layer_state(layer);
     }
     if (layer->type == MixerType::kHcm) {
       status = upload_tensor(
@@ -1193,8 +1256,7 @@ struct SingleGpuModel::Impl final {
                              {config.width}, device, stream, &layer->direct);
       if (!status.ok())
         return status;
-      return layer->inner_cache.allocate(device, config.width,
-                                         config.hcm_filter_length, stream);
+      return allocate_layer_state(layer);
     }
     status = upload_tensor(model, prefix + ".filter.D", TensorDType::kBF16,
                            {config.width}, device, stream, &layer->direct);
@@ -1211,8 +1273,7 @@ struct SingleGpuModel::Impl final {
                            device, stream, &layer->residues);
     if (!status.ok())
       return status;
-    return layer->iir_cache.allocate(device, config.width, config.state_size,
-                                     stream);
+    return allocate_layer_state(layer);
   }
 
   [[nodiscard]] Status prepare_prefill(const std::size_t rows) {
@@ -2356,6 +2417,95 @@ Status PipelineModel::load(const ModelFile &model,
   return Status::Ok();
 }
 
+Status PipelineModel::initialize_shared(const PipelineModel &source,
+                                        const std::size_t context_capacity) {
+  if (impl_->loaded || !source.impl_->loaded || context_capacity == 0) {
+    return {ErrorCode::kInvalidArgument,
+            "shared pipeline initialization requires a loaded source, "
+            "nonzero context, and an unloaded target"};
+  }
+  auto candidate = std::make_unique<Impl>();
+  candidate->config = source.impl_->config;
+  if (!candidate->config.test_fixture &&
+      context_capacity > candidate->config.max_seqlen) {
+    return {ErrorCode::kInvalidArgument,
+            "requested context exceeds model maximum of " +
+                std::to_string(candidate->config.max_seqlen)};
+  }
+  candidate->context_capacity = context_capacity;
+  candidate->arena_capacity = std::min(
+      context_capacity, candidate->config.test_fixture ? kTestFixtureArenaTokens
+                                                       : kMaximumArenaTokens);
+  candidate->q8_kv_cache = context_capacity >= kQ8KvContextThreshold;
+  candidate->assignments = source.impl_->assignments;
+  for (auto &assignment : candidate->assignments) {
+    assignment.cache_bytes = 0;
+    assignment.arena_bytes = 0;
+  }
+  candidate->stages.reserve(source.impl_->stages.size());
+  for (std::size_t index = 0; index < source.impl_->stages.size(); ++index) {
+    const auto &source_stage = *source.impl_->stages[index];
+    auto stage = std::make_unique<SingleGpuModel::Impl>();
+    stage->config = candidate->config;
+    stage->device = source_stage.device;
+    stage->context_capacity = context_capacity;
+    stage->arena_capacity = candidate->arena_capacity;
+    stage->layer_offset = source_stage.layer_offset;
+    stage->q8_kv_cache = candidate->q8_kv_cache;
+    auto status = select_device(stage->device);
+    if (!status.ok())
+      return status;
+    status = stage->stream.create();
+    if (!status.ok())
+      return status;
+    status = stage->cached_attention_blas.create();
+    if (!status.ok())
+      return status;
+    status = stage->blas.create();
+    if (!status.ok())
+      return status;
+    status = stage->share_weights_from(source_stage);
+    if (!status.ok()) {
+      return {status.code(), "share pipeline stage " + std::to_string(index) +
+                                 " weights: " + status.message()};
+    }
+    status = stage->allocate_arena();
+    if (!status.ok()) {
+      return {status.code(), "allocate shared pipeline stage " +
+                                 std::to_string(index) +
+                                 " arena: " + status.message()};
+    }
+    status = stage->stream.synchronize();
+    if (!status.ok())
+      return status;
+    auto &memory = candidate->assignments[index];
+    for (const auto &layer : stage->layers)
+      memory.cache_bytes += layer_cache_bytes(layer);
+    memory.arena_bytes = arena_bytes(stage->arena);
+    candidate->stages.push_back(std::move(stage));
+  }
+  auto status = candidate->enable_stage_peers();
+  if (!status.ok())
+    return status;
+  candidate->loaded = true;
+  const auto warmup_tokens =
+      backend_warmup_tokens(candidate->config, candidate->arena_capacity);
+  if (warmup_tokens != 0) {
+    const std::vector<TokenId> tokens(warmup_tokens, static_cast<TokenId>('A'));
+    std::vector<float> logits;
+    status = candidate->forward(tokens, ForwardMode::kPrefill, &logits, {});
+    if (!status.ok()) {
+      return {status.code(),
+              "warm up shared CUDA pipeline: " + status.message()};
+    }
+    candidate->position = 0;
+    candidate->state_valid = false;
+    candidate->cached_attention = false;
+  }
+  impl_ = std::move(candidate);
+  return Status::Ok();
+}
+
 Status PipelineModel::prefill(const std::vector<TokenId> &tokens,
                               std::vector<float> *const logits,
                               const std::optional<LayerDump> &dump) {
@@ -2437,6 +2587,55 @@ std::size_t PipelineModel::activation_capacity() const noexcept {
 
 bool PipelineModel::uses_q8_kv_cache() const noexcept {
   return impl_->q8_kv_cache;
+}
+
+bool PipelineModel::shares_weights_with(
+    const PipelineModel &other) const noexcept {
+  if (!impl_->loaded || !other.impl_->loaded ||
+      impl_->stages.size() != other.impl_->stages.size()) {
+    return false;
+  }
+  const auto same = [](const DeviceBuffer &left,
+                       const DeviceBuffer &right) noexcept {
+    return left.data() == right.data() && left.bytes() == right.bytes();
+  };
+  for (std::size_t index = 0; index < impl_->stages.size(); ++index) {
+    const auto &left = *impl_->stages[index];
+    const auto &right = *other.impl_->stages[index];
+    if (left.layers.size() != right.layers.size())
+      return false;
+    for (const auto &[left_buffer, right_buffer] :
+         {std::pair{&left.embedding, &right.embedding},
+          std::pair{&left.unembed, &right.unembed},
+          std::pair{&left.final_norm, &right.final_norm}}) {
+      if (!same(*left_buffer, *right_buffer))
+        return false;
+    }
+    for (std::size_t layer = 0; layer < left.layers.size(); ++layer) {
+      const auto &left_layer = left.layers[layer];
+      const auto &right_layer = right.layers[layer];
+      for (const auto &[left_buffer, right_buffer] :
+           {std::pair{&left_layer.pre_norm, &right_layer.pre_norm},
+            std::pair{&left_layer.post_norm, &right_layer.post_norm},
+            std::pair{&left_layer.projection, &right_layer.projection},
+            std::pair{&left_layer.output_weight, &right_layer.output_weight},
+            std::pair{&left_layer.output_bias, &right_layer.output_bias},
+            std::pair{&left_layer.short_filter, &right_layer.short_filter},
+            std::pair{&left_layer.inner_filter, &right_layer.inner_filter},
+            std::pair{&left_layer.direct, &right_layer.direct},
+            std::pair{&left_layer.log_poles, &right_layer.log_poles},
+            std::pair{&left_layer.residues, &right_layer.residues},
+            std::pair{&left_layer.inverse_frequency,
+                      &right_layer.inverse_frequency},
+            std::pair{&left_layer.l1, &right_layer.l1},
+            std::pair{&left_layer.l2, &right_layer.l2},
+            std::pair{&left_layer.l3, &right_layer.l3}}) {
+        if (!same(*left_buffer, *right_buffer))
+          return false;
+      }
+    }
+  }
+  return true;
 }
 
 } // namespace evo::cuda

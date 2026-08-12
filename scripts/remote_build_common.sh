@@ -50,8 +50,8 @@ evo_source_fingerprint() {
     while IFS= read -r -d '' path; do
       evo_sha256_file "$path"
     done < <(
-      for entry in CMakeLists.txt conanfile.py configs include scripts src \
-          tests third_party/flash-attention-shim tools; do
+      for entry in CMakeLists.txt cmake conanfile.py configs include scripts \
+          src tests third_party/flash-attention-shim tools; do
         if test -f "$entry"; then
           printf '%s\0' "$entry"
         elif test -d "$entry"; then

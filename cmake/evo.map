@@ -1,0 +1,6 @@
+{
+  global:
+    evo_*;
+  local:
+    *;
+};

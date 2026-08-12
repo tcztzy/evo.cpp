@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "evo/cuda/runtime.hpp"
 
+#include <new>
 #include <string>
 #include <utility>
 
@@ -132,13 +133,15 @@ Status Stream::synchronize() const {
 DeviceBuffer::~DeviceBuffer() { reset(); }
 
 DeviceBuffer::DeviceBuffer(DeviceBuffer &&other) noexcept
-    : data_(std::exchange(other.data_, nullptr)),
+    : allocation_(std::move(other.allocation_)),
+      data_(std::exchange(other.data_, nullptr)),
       bytes_(std::exchange(other.bytes_, 0)),
       device_(std::exchange(other.device_, -1)) {}
 
 DeviceBuffer &DeviceBuffer::operator=(DeviceBuffer &&other) noexcept {
   if (this != &other) {
     reset();
+    allocation_ = std::move(other.allocation_);
     data_ = std::exchange(other.data_, nullptr);
     bytes_ = std::exchange(other.bytes_, 0);
     device_ = std::exchange(other.device_, -1);
@@ -157,26 +160,47 @@ Status DeviceBuffer::allocate(const int device, const std::size_t bytes) {
   auto status = select_device(device);
   if (!status.ok())
     return status;
-  status = cuda_status(cudaMalloc(&data_, bytes), "cudaMalloc");
+  void *allocation = nullptr;
+  status = cuda_status(cudaMalloc(&allocation, bytes), "cudaMalloc");
   if (!status.ok()) {
-    data_ = nullptr;
     return status;
   }
+  try {
+    allocation_ = std::shared_ptr<void>(allocation, [device](void *pointer) {
+      if (pointer == nullptr)
+        return;
+      int previous = -1;
+      static_cast<void>(cudaGetDevice(&previous));
+      static_cast<void>(cudaSetDevice(device));
+      static_cast<void>(cudaFree(pointer));
+      if (previous >= 0 && previous != device)
+        static_cast<void>(cudaSetDevice(previous));
+    });
+  } catch (const std::bad_alloc &) {
+    static_cast<void>(cudaFree(allocation));
+    return {ErrorCode::kInternal,
+            "allocate device-buffer ownership metadata failed"};
+  }
+  data_ = allocation;
   bytes_ = bytes;
   device_ = device;
   return Status::Ok();
 }
 
-void DeviceBuffer::reset() noexcept {
-  if (data_ == nullptr)
-    return;
-  int previous = -1;
-  static_cast<void>(cudaGetDevice(&previous));
-  static_cast<void>(cudaSetDevice(device_));
-  static_cast<void>(cudaFree(data_));
-  if (previous >= 0 && previous != device_) {
-    static_cast<void>(cudaSetDevice(previous));
+Status DeviceBuffer::share_from(const DeviceBuffer &source) {
+  if (data_ != nullptr || !source.valid() || !source.allocation_) {
+    return {ErrorCode::kInvalidArgument,
+            "device buffer sharing requires an empty target and valid source"};
   }
+  allocation_ = source.allocation_;
+  data_ = source.data_;
+  bytes_ = source.bytes_;
+  device_ = source.device_;
+  return Status::Ok();
+}
+
+void DeviceBuffer::reset() noexcept {
+  allocation_.reset();
   data_ = nullptr;
   bytes_ = 0;
   device_ = -1;

@@ -4,15 +4,18 @@ project(
   evo_cpp
   VERSION 0.1.0
   DESCRIPTION "evo.cpp: native Evo 2 inference engine"
-  LANGUAGES CXX)
+  LANGUAGES C CXX)
 
 include(CTest)
 include(CheckLanguage)
+include(CMakePackageConfigHelpers)
+include(GNUInstallDirs)
 
 option(EVO_CUDA "Build the CUDA backend" ON)
 option(EVO_NPY "Build the NPY output module" ${EVO_CUDA})
 option(EVO_SANITIZE "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 option(EVO_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+set(EVO_ABI_VERSION_MAJOR 1)
 
 if(EVO_CUDA AND NOT EVO_NPY)
   message(FATAL_ERROR "EVO_CUDA requires EVO_NPY=ON")
@@ -21,6 +24,9 @@ endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 function(evo_configure_target target)
@@ -59,10 +65,50 @@ add_library(
   src/status.cpp
   src/tokenizer.cpp
   src/version.cpp)
+add_library(evo::core ALIAS evo_core)
 target_include_directories(
   evo_core
-  PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+set_target_properties(
+  evo_core
+  PROPERTIES
+    CXX_VISIBILITY_PRESET hidden
+    POSITION_INDEPENDENT_CODE ON
+    VISIBILITY_INLINES_HIDDEN ON)
 evo_configure_target(evo_core)
+
+add_library(evo_c SHARED src/c_api.cpp)
+add_library(evo::evo ALIAS evo_c)
+target_include_directories(
+  evo_c
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+target_link_libraries(evo_c PRIVATE evo_core)
+target_compile_definitions(
+  evo_c
+  PRIVATE EVO_BUILDING_LIBRARY=1
+  PUBLIC EVO_SHARED=1)
+set_target_properties(
+  evo_c
+  PROPERTIES
+    CXX_VISIBILITY_PRESET hidden
+    EXPORT_NAME evo
+    OUTPUT_NAME evo
+    VERSION ${PROJECT_VERSION}
+    SOVERSION ${EVO_ABI_VERSION_MAJOR}
+    VISIBILITY_INLINES_HIDDEN ON)
+if(UNIX AND NOT APPLE)
+  target_link_options(
+    evo_c PRIVATE
+    "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cmake/evo.map")
+  set_property(
+    TARGET evo_c APPEND PROPERTY
+    LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/evo.map")
+endif()
+evo_configure_target(evo_c)
 
 if(EVO_NPY)
   set(EVO_LIBNPY_SOURCE_DIR "" CACHE PATH
@@ -96,6 +142,12 @@ if(EVO_NPY)
     evo_npy
     PUBLIC evo_core
     PRIVATE libnpy::libnpy)
+  set_target_properties(
+    evo_npy
+    PROPERTIES
+      CXX_VISIBILITY_PRESET hidden
+      POSITION_INDEPENDENT_CODE ON
+      VISIBILITY_INLINES_HIDDEN ON)
   evo_configure_target(evo_npy)
 endif()
 
@@ -194,7 +246,11 @@ if(EVO_CUDA)
   target_link_libraries(evo_cuda PRIVATE evo::npy)
   set_target_properties(
     evo_cuda
-    PROPERTIES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+    PROPERTIES
+      CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}"
+      CXX_VISIBILITY_PRESET hidden
+      POSITION_INDEPENDENT_CODE ON
+      VISIBILITY_INLINES_HIDDEN ON)
   target_compile_options(
     evo_cuda
     PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr;--extended-lambda;-Xcompiler=-Wall,-Wextra,-Wconversion,-Wshadow>)
@@ -205,6 +261,8 @@ if(EVO_CUDA)
   target_sources(evo PRIVATE src/cuda/inference_cli.cpp)
   target_link_libraries(evo PRIVATE evo_cuda evo::npy)
   target_compile_definitions(evo PRIVATE EVO_HAS_CUDA=1)
+  target_link_libraries(evo_c PRIVATE evo_cuda)
+  target_compile_definitions(evo_c PRIVATE EVO_HAS_CUDA=1)
 
   add_executable(evo-cuda-smoke src/cuda/smoke.cu)
   target_link_libraries(
@@ -312,6 +370,35 @@ if(EVO_CUDA)
   endif()
 endif()
 
+set(EVO_INSTALL_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/evo")
+configure_package_config_file(
+  cmake/evoConfig.cmake.in
+  "${CMAKE_CURRENT_BINARY_DIR}/evoConfig.cmake"
+  INSTALL_DESTINATION "${EVO_INSTALL_CMAKEDIR}")
+write_basic_package_version_file(
+  "${CMAKE_CURRENT_BINARY_DIR}/evoConfigVersion.cmake"
+  VERSION "${PROJECT_VERSION}"
+  COMPATIBILITY SameMajorVersion)
+install(
+  TARGETS evo_c
+  EXPORT evoTargets
+  LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+  ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+  RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+install(TARGETS evo evo-inspect RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+install(DIRECTORY include/evo DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+install(
+  EXPORT evoTargets
+  FILE evoTargets.cmake
+  NAMESPACE evo::
+  DESTINATION "${EVO_INSTALL_CMAKEDIR}")
+install(
+  FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/evoConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/evoConfigVersion.cmake"
+  DESTINATION "${EVO_INSTALL_CMAKEDIR}")
+
 if(BUILD_TESTING)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
@@ -326,6 +413,24 @@ if(BUILD_TESTING)
   target_link_libraries(evo-core-tests PRIVATE evo_core)
   evo_configure_target(evo-core-tests)
   add_test(NAME core COMMAND evo-core-tests)
+
+  add_executable(evo-c-api-tests tests/test_c_api.c)
+  target_link_libraries(evo-c-api-tests PRIVATE evo::evo)
+  if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(
+      evo-c-api-tests PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
+    if(EVO_WARNINGS_AS_ERRORS)
+      target_compile_options(evo-c-api-tests PRIVATE -Werror)
+    endif()
+  elseif(MSVC)
+    target_compile_options(evo-c-api-tests PRIVATE /W4)
+  endif()
+  add_test(NAME c_api COMMAND evo-c-api-tests)
+  add_test(
+    NAME c_api_symbols
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_c_api_symbols.py
+      --library $<TARGET_FILE:evo_c>)
 
   add_executable(evo-registry-dump tests/dump_model_registry.cpp)
   target_link_libraries(evo-registry-dump PRIVATE evo_core)
@@ -383,6 +488,23 @@ if(BUILD_TESTING)
       -DEVO_INSPECT_BINARY=$<TARGET_FILE:evo-inspect>
       -DEVO_FIXTURE_PATH=${CMAKE_CURRENT_BINARY_DIR}/Testing/tiny.safetensors
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/model_inspect_contract.cmake)
+  add_test(
+    NAME c_api_model_contract
+    COMMAND ${CMAKE_COMMAND}
+      -DEVO_FIXTURE_WRITER=$<TARGET_FILE:evo-model-format-tests>
+      -DEVO_C_API_BINARY=$<TARGET_FILE:evo-c-api-tests>
+      -DEVO_FIXTURE_PATH=${CMAKE_CURRENT_BINARY_DIR}/Testing/c-api.safetensors
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/c_api_model_contract.cmake)
+
+  add_test(
+    NAME install_contract
+    COMMAND ${CMAKE_COMMAND}
+      -DEVO_BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}
+      -DEVO_INSTALL_PREFIX=${CMAKE_CURRENT_BINARY_DIR}/Testing/install-prefix
+      -DEVO_CONSUMER_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/install_consumer
+      -DEVO_CONSUMER_BUILD=${CMAKE_CURRENT_BINARY_DIR}/Testing/install-consumer
+      -DEVO_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/install_contract.cmake)
 
   add_test(
     NAME cli_contract
@@ -523,6 +645,24 @@ if(BUILD_TESTING)
         --binary $<TARGET_FILE:evo-cuda-cli-test-bin>
         --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_tiny_model.py
         --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/cuda_cli)
+    add_executable(evo-cuda-c-api-tests tests/test_cuda_c_api.c)
+    target_link_libraries(evo-cuda-c-api-tests PRIVATE evo::evo)
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+      target_compile_options(
+        evo-cuda-c-api-tests PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
+      if(EVO_WARNINGS_AS_ERRORS)
+        target_compile_options(evo-cuda-c-api-tests PRIVATE -Werror)
+      endif()
+    elseif(MSVC)
+      target_compile_options(evo-cuda-c-api-tests PRIVATE /W4)
+    endif()
+    add_test(
+      NAME cuda_c_api
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cuda_c_api.py
+        --binary $<TARGET_FILE:evo-cuda-c-api-tests>
+        --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_tiny_model.py
+        --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/cuda_c_api)
     set_tests_properties(cuda_smoke PROPERTIES LABELS "gpu;cuda")
     set_tests_properties(cuda_ops PROPERTIES LABELS "gpu;cuda")
     set_tests_properties(fp8_sass PROPERTIES LABELS "gpu;cuda")
@@ -544,6 +684,11 @@ if(BUILD_TESTING)
       PROPERTIES
         LABELS "gpu;cuda;multi_gpu"
         SKIP_RETURN_CODE 77
+        ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools")
+    set_tests_properties(
+      cuda_c_api
+      PROPERTIES
+        LABELS "gpu;cuda"
         ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools")
   endif()
 endif()

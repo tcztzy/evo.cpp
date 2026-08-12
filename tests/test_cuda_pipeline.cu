@@ -116,7 +116,7 @@ int main(const int argc, char **argv) {
     }
     int device_count = 0;
     require(evo::cuda::cuda_status(cudaGetDeviceCount(&device_count),
-                                     "cudaGetDeviceCount"),
+                                   "cudaGetDeviceCount"),
             "count CUDA devices");
     if (device_count < 1) {
       std::cout << "SKIP: one CUDA device is required\n";
@@ -140,6 +140,23 @@ int main(const int argc, char **argv) {
       check(all_close(one_gpu_logits, expected_logits, 0.08F, 0.06F) &&
                 cosine(one_gpu_logits, expected_logits) >= 0.999F,
             "one-GPU pipeline logits match independent oracle");
+      evo::cuda::PipelineModel shared_model;
+      require(shared_model.initialize_shared(one_gpu_model, 12),
+              "initialize shared-weight pipeline context");
+      check(shared_model.shares_weights_with(one_gpu_model),
+            "shared context aliases every immutable device weight");
+      check(shared_model.stages()[0].weight_bytes ==
+                    one_gpu_model.stages()[0].weight_bytes &&
+                shared_model.stages()[0].cache_bytes ==
+                    one_gpu_model.stages()[0].cache_bytes &&
+                shared_model.stages()[0].arena_bytes ==
+                    one_gpu_model.stages()[0].arena_bytes,
+            "shared context retains independent cache/arena accounting");
+      std::vector<float> shared_logits;
+      require(shared_model.prefill({2, 5, 7, 3}, &shared_logits),
+              "shared-weight pipeline prefill");
+      check(shared_logits == one_gpu_logits,
+            "shared-weight context preserves byte-exact logits");
     }
     if (device_count < 2) {
       std::cout << "SKIP: two-GPU checks require two CUDA devices\n";
@@ -272,10 +289,9 @@ int main(const int argc, char **argv) {
     check(model.position() == prompt.size() + 1,
           "pipeline decode advances position");
 
-    const std::vector<evo::TokenId> long_prompt{2,  5,  7,  3, 9,
-                                                  11, 13, 17, 19};
+    const std::vector<evo::TokenId> long_prompt{2, 5, 7, 3, 9, 11, 13, 17, 19};
     const std::vector<evo::TokenId> initial_chunk(long_prompt.begin(),
-                                                    long_prompt.begin() + 8);
+                                                  long_prompt.begin() + 8);
     std::vector<float> first_chunk;
     std::vector<float> final_chunk;
     require(model.prefill(initial_chunk, &first_chunk),

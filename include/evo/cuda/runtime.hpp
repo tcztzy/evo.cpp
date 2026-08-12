@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstddef>
+#include <memory>
 
 #include <cublasLt.h>
 #include <cublas_v2.h>
@@ -50,6 +51,7 @@ public:
   DeviceBuffer &operator=(DeviceBuffer &&other) noexcept;
 
   [[nodiscard]] Status allocate(int device, std::size_t bytes);
+  [[nodiscard]] Status share_from(const DeviceBuffer &source);
   void reset() noexcept;
   [[nodiscard]] Status copy_from_host(const void *source, std::size_t bytes,
                                       const Stream &stream);
@@ -66,6 +68,7 @@ public:
   [[nodiscard]] bool valid() const noexcept { return data_ != nullptr; }
 
 private:
+  std::shared_ptr<void> allocation_;
   void *data_{nullptr};
   std::size_t bytes_{0};
   int device_{-1};
