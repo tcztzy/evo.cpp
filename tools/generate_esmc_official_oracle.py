@@ -28,6 +28,11 @@ class OracleError(RuntimeError):
     """Raised when the reference environment or source is not pinned."""
 
 
+def swiglu_hidden_dim(d_model: int) -> int:
+    """Match pinned modeling_esmc._swiglu_hidden_dim with expansion 8/3."""
+    return int((((8 / 3) * d_model) + 255) // 256 * 256)
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -149,7 +154,7 @@ def main() -> int:
         int(config.d_model),
         int(config.n_layers),
         int(config.n_heads),
-        int(config.expansion_ratio * config.d_model),
+        swiglu_hidden_dim(int(config.d_model)),
         int(config.vocab_size),
     )
     if expected_topology is None or actual_topology != expected_topology:

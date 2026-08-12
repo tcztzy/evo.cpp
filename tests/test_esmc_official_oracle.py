@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import shutil
 import struct
@@ -90,6 +91,15 @@ def main() -> int:
     help_result = run(sys.executable, args.generator, "--help")
     assert help_result.returncode == 0, help_result.stderr
     assert "--reference-commit" in help_result.stdout
+    specification = importlib.util.spec_from_file_location("esmc_oracle", args.generator)
+    assert specification is not None and specification.loader is not None
+    oracle_module = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(oracle_module)
+    assert [oracle_module.swiglu_hidden_dim(width) for width in (960, 1152, 2560)] == [
+        2560,
+        3072,
+        6912,
+    ]
     print("official ESMC oracle tooling contract passed")
     return 0
 

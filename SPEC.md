@@ -147,3 +147,4 @@ B26|2026-08-12|ESMC softmax kernel 使用未由当前 include graph 暴露的 CU
 B27|2026-08-12|全量回归发现 legacy converter/documentation contracts 假设 registry.models 全是 Evo 2：新增 ESMC profile 后索引不存在的 `config` 并漏报三模型 exact 支持|V24,V31
 B28|2026-08-12|ESMC 验收脚本假设 gpu02 同步目录含 `.git`，但标准 build 明确排除 VCS metadata→真实远端在运行前失败|V16,V30
 B29|2026-08-12|ESMC oracle 从 receipt 首文件父目录推断 HF snapshot，但 cached symlink 返回 resolved `blobs/` 路径→官方 loader 找不到同目录制品|V28,V30
+B30|2026-08-12|ESMC oracle 假设 config 暴露 `expansion_ratio`，但 pinned 实现固定 `8/3` 并向上取整至 256→真实 config 拓扑自检异常|R8,V26,V30
