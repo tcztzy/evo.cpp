@@ -94,6 +94,18 @@ JSONL report per input record with model/profile/backend identity, an input
 fingerprint, warmup/repetition policy, individual timings, median, and
 throughput.
 
+After `evo-fetch runtime OWNER/REPO@REV` has populated and receipted the local
+Hugging Face cache, every command can use `-hf OWNER/REPO[@REV]` instead of
+`-m`. The C++ inference process performs no network request and starts no
+Python downloader; it resolves the cached commit and rechecks the receipt,
+manifest, every file size, and every SHA256 before model loading.
+
+```sh
+evo-fetch runtime OWNER/REPO@COMMIT
+build/Release/evo score -hf OWNER/REPO@COMMIT \
+  --input sequences.fa --ctx 8192 --gpu 0
+```
+
 Portable CPU inference and explicit CUDA-prefix/CPU-suffix placement use the
 same artifact:
 

@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.client
 import json
+import os
 import selectors
 import shutil
 import subprocess
@@ -122,6 +124,93 @@ def main() -> int:
     )
     if score_alias.stdout != score.stdout:
         raise AssertionError("score subcommand changed legacy scoring JSONL")
+
+    revision = "b" * 40
+    cache_home = args.work_dir / "hf-cache-home"
+    hub = cache_home / "huggingface" / "hub"
+    repo_root = hub / "models--owner--runtime"
+    snapshot = repo_root / "snapshots" / revision
+    snapshot.mkdir(parents=True, exist_ok=True)
+    cached_model = snapshot / "tiny-cpu.safetensors"
+    shutil.copyfile(model, cached_model)
+    model_payload = cached_model.read_bytes()
+    manifest = {
+        "schema_version": 1,
+        "artifact_profile": "evo2-runtime-v1",
+        "model_id": "tiny_runtime",
+        "load_path": cached_model.name,
+        "files": [
+            {
+                "path": cached_model.name,
+                "size": len(model_payload),
+                "sha256": hashlib.sha256(model_payload).hexdigest(),
+            }
+        ],
+    }
+    manifest_payload = json.dumps(manifest, sort_keys=True).encode()
+    (snapshot / "evo-artifact.json").write_bytes(manifest_payload)
+    (repo_root / "refs").mkdir(parents=True, exist_ok=True)
+    (repo_root / "refs" / "main").write_text(revision + "\n", encoding="ascii")
+    receipt_dir = hub / "evo-receipts" / "owner--runtime" / revision
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    (receipt_dir / "runtime-artifact.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "runtime-artifact",
+                "repo": "owner/runtime",
+                "resolved_revision": revision,
+                "artifact_profile": "evo2-runtime-v1",
+                "model_id": "tiny_runtime",
+                "manifest_sha256": hashlib.sha256(manifest_payload).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    cache_environment = os.environ.copy()
+    cache_environment["EVO_CACHE_HOME"] = str(cache_home)
+    cached_score = subprocess.run(
+        [
+            str(args.cli_binary),
+            "score",
+            "-hf",
+            "owner/runtime@main",
+            "--input",
+            str(sequence),
+            "--ctx",
+            "12",
+            "--backend",
+            "cpu",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=cache_environment,
+    )
+    if cached_score.stdout != score.stdout:
+        raise AssertionError("-hf changed score output after verified cache resolution")
+    with cached_model.open("ab") as output_file:
+        output_file.write(b"corruption")
+    corrupt_score = subprocess.run(
+        [
+            str(args.cli_binary),
+            "score",
+            "--hf-repo",
+            f"owner/runtime@{revision}",
+            "--input",
+            str(sequence),
+            "--ctx",
+            "12",
+            "--backend",
+            "cpu",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=cache_environment,
+    )
+    if corrupt_score.returncode == 0 or "size mismatch" not in corrupt_score.stderr:
+        raise AssertionError("-hf accepted a corrupt cached runtime artifact")
 
     generated = subprocess.run(
         [

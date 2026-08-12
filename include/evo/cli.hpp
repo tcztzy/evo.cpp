@@ -30,6 +30,7 @@ struct DumpLayerSpec final {
 struct CliOptions final {
   RunMode mode{RunMode::kGenerate};
   std::string model_path;
+  std::string hf_repo;
   std::string prompt;
   std::string score_path;
   std::string benchmark_path;

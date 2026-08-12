@@ -61,6 +61,7 @@ add_library(
   src/cpu/hyenadna.cpp
   src/cpu/model.cpp
   src/cpu/inference_cli.cpp
+  src/artifact_cache.cpp
   src/backend.cpp
   src/benchmark.cpp
   src/fp8.cpp

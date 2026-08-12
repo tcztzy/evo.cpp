@@ -85,6 +85,17 @@ candidate` 写严格具名 FASTA，并在产生非 IUPAC bytes 时于任何 part
 写出前失败。`bench` 为每个输入 record 输出一行 JSONL，包含 model/profile/backend
 身份、输入 fingerprint、warmup/repetition、每次 timing、median 与吞吐。
 
+先用 `evo-fetch runtime OWNER/REPO@REV` 填充本地 Hugging Face cache 并生成
+校验 receipt 后，所有命令都可用 `-hf OWNER/REPO[@REV]` 代替 `-m`。C++ 推理
+进程不会联网或启动 Python downloader；它会解析 cached commit，并在模型加载前
+重新校验 receipt、manifest、每个文件的 size 与 SHA256。
+
+```sh
+evo-fetch runtime OWNER/REPO@COMMIT
+build/Release/evo score -hf OWNER/REPO@COMMIT \
+  --input sequences.fa --ctx 8192 --gpu 0
+```
+
 同一 artifact 也可用于可移植 CPU 推理和显式 CUDA 前缀/CPU 后缀放置：
 
 ```sh

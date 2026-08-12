@@ -519,6 +519,18 @@ void test_cli() {
   check(status.ok() && options.mode == evo::RunMode::kScore &&
             options.score_path == "input.fa",
         "score subcommand maps --input to the streaming score path");
+  status = parse({"evo", "score", "-hf", "owner/runtime@main", "--input",
+                  "input.fa", "--backend", "cpu"},
+                 &options);
+  check(status.ok() && options.model_path.empty() &&
+            options.hf_repo == "owner/runtime@main",
+        "Hugging Face model source is retained for offline cache resolution");
+  status = parse({"evo", "score", "-m", "model.safetensors", "-hf",
+                  "owner/runtime", "--input", "input.fa", "--backend",
+                  "cpu"},
+                 &options);
+  check(!status.ok() && status.message().find("exactly one") != std::string::npos,
+        "CLI rejects ambiguous local and Hugging Face model sources");
   status = parse({"evo", "bench", "-m", "model.safetensors", "--input",
                   "input.fa", "--warmup", "2", "--repetitions", "7",
                   "--backend", "cpu"},

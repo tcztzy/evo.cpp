@@ -101,6 +101,7 @@ std::string_view cli_usage() noexcept {
          "  evo --help\n"
          "  evo --version\n"
          "  evo run -m MODEL -p DNA -n TOKENS [--output-format raw|fasta]\n"
+         "  evo run -hf OWNER/REPO[@REV] -p DNA -n TOKENS\n"
          "  evo score -m MODEL --input FASTA_FASTQ_OR_TEXT\n"
          "  evo bench -m MODEL --input FASTA_FASTQ_OR_TEXT "
          "[--warmup N --repetitions N]\n"
@@ -124,6 +125,9 @@ std::string_view cli_usage() noexcept {
          "Benchmark:\n"
          "  --warmup N                  Unmeasured prefill runs (default: 1)\n"
          "  --repetitions N             Measured prefill runs (default: 5)\n\n"
+         "Model source:\n"
+         "  -m, --model PATH            Local Safetensors artifact\n"
+         "  -hf, --hf-repo REPO[@REV]  Hash-verified local HF cache artifact\n\n"
          "Server:\n"
          "  --host ADDRESS              IPv4 bind address (default: "
          "127.0.0.1)\n"
@@ -188,6 +192,7 @@ Status parse_cli(const int argc, char *const argv[],
     options->mode = RunMode::kServe;
   }
   bool seen_model = false;
+  bool seen_hf_repo = false;
   bool seen_prompt = false;
   bool seen_score = false;
   bool seen_tokens = false;
@@ -246,6 +251,14 @@ Status parse_cli(const int argc, char *const argv[],
       if (!status.ok())
         return status;
       options->model_path = value;
+    } else if (option == "-hf" || option == "--hf-repo") {
+      if (seen_hf_repo)
+        return duplicate(option);
+      seen_hf_repo = true;
+      status = value_after(argc, argv, &index, option, &value);
+      if (!status.ok())
+        return status;
+      options->hf_repo = value;
     } else if (option == "-p" || option == "--prompt") {
       if (seen_prompt)
         return duplicate(option);
@@ -727,9 +740,12 @@ Status parse_cli(const int argc, char *const argv[],
     }
   }
 
-  if (!seen_model || options->model_path.empty()) {
+  if (seen_model == seen_hf_repo ||
+      (seen_model && options->model_path.empty()) ||
+      (seen_hf_repo && options->hf_repo.empty())) {
     return {ErrorCode::kInvalidArgument,
-            "a nonempty model path is required with -m MODEL"};
+            "specify exactly one nonempty model source: -m MODEL or "
+            "-hf OWNER/REPO[@REV]"};
   }
   if (options->backend == ExecutionBackend::kCpu) {
     if (seen_gpu || seen_gpu_layers)

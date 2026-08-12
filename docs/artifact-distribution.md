@@ -68,6 +68,20 @@ MODEL="$(evo-fetch --print-path runtime OWNER/REPO@COMMIT)"
 evo -m "$MODEL" --score sequences.fa --ctx 8192 --gpu 0
 ```
 
+The inference binary can also resolve that already-fetched artifact directly:
+
+```sh
+evo score -hf OWNER/REPO@COMMIT --input sequences.fa --ctx 8192 --gpu 0
+```
+
+`-hf/--hf-repo` is deliberately offline. It never invokes this Python fetcher
+or accesses the network. It resolves a cached branch/tag through the local
+`refs` entry (or accepts a 40-hex commit), requires the matching
+`runtime-artifact` receipt, verifies the manifest SHA256, and then verifies the
+size and SHA256 of every listed artifact file before returning `load_path`.
+Missing, stale, path-traversing, symlink-escaping, or corrupt entries fail with
+a typed nonzero status and direct the operator back to `evo-fetch runtime`.
+
 A branch or tag is resolved once to an immutable commit and recorded in the
 receipt. Online resolution force-refreshes the small manifest from that commit;
 offline resolution requires its SHA256 to match the last verified receipt. For

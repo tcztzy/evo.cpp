@@ -43,7 +43,7 @@ execute_process(
 if(invalid_result EQUAL 0)
   message(FATAL_ERROR "evo without arguments silently succeeded")
 endif()
-if(NOT invalid_error MATCHES "invalid_argument: a nonempty model path is required")
+if(NOT invalid_error MATCHES "invalid_argument: specify exactly one nonempty model source")
   message(FATAL_ERROR "evo failure was not actionable: ${invalid_error}${invalid_output}")
 endif()
 

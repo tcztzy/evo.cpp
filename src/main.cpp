@@ -11,6 +11,8 @@
 #include "evo/tokenizer.hpp"
 #include "evo/version.hpp"
 
+#include "artifact_cache.hpp"
+
 #if defined(EVO_HAS_CUDA)
 #include "evo/cuda/hybrid_cli.hpp"
 #include "evo/cuda/inference_cli.hpp"
@@ -69,6 +71,13 @@ int main(const int argc, char **argv) {
     auto status = evo::parse_cli(argc, argv, &options);
     if (!status.ok()) {
       return fail(status);
+    }
+    if (!options.hf_repo.empty()) {
+      status = evo::resolve_cached_hf_artifact(options.hf_repo,
+                                               &options.model_path);
+      if (!status.ok()) {
+        return fail(status);
+      }
     }
 
     if (options.mode == evo::RunMode::kGenerate) {
