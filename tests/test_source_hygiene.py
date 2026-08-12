@@ -54,6 +54,12 @@ def main() -> int:
                     f"{relative}:{line_number}: single-quote awk programs so "
                     "the shell cannot expand their field variables"
                 )
+    sequence_header = args.source_dir / "include" / "evo" / "sequence_io.hpp"
+    if "read_sequence_file" in sequence_header.read_text(encoding="utf-8"):
+        failures.append(
+            "include/evo/sequence_io.hpp: public sequence input must expose "
+            "only the bounded callback streaming API"
+        )
     if failures:
         raise AssertionError("\n".join(failures))
     return 0

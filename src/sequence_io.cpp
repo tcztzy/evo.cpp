@@ -304,19 +304,6 @@ Status stream_sequence_file(const std::string &path,
   });
 }
 
-Status read_sequence_file(const std::string &path,
-                          std::vector<SequenceRecord> *const records) {
-  if (records == nullptr) {
-    return {ErrorCode::kInvalidArgument, "sequence output pointer is null"};
-  }
-  records->clear();
-  return stream_sequence_file(path, std::numeric_limits<std::size_t>::max(),
-                              [records](const SequenceRecord &record) {
-                                records->push_back(record);
-                                return Status::Ok();
-                              });
-}
-
 const char *sequence_format_name(const SequenceFormat format) noexcept {
   switch (format) {
   case SequenceFormat::kRaw:

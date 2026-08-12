@@ -174,6 +174,17 @@ evo::Status parse(std::vector<std::string> arguments,
   return evo::parse_cli(static_cast<int>(argv.size()), argv.data(), options);
 }
 
+evo::Status collect_test_records(
+    const std::string &path, std::vector<evo::SequenceRecord> *const records) {
+  records->clear();
+  constexpr std::size_t kTestRecordLimit = 1U << 20U;
+  return evo::stream_sequence_file(
+      path, kTestRecordLimit, [&](const evo::SequenceRecord &record) {
+        records->push_back(record);
+        return evo::Status::Ok();
+      });
+}
+
 void test_tokenizer() {
   const std::string bytes{"A\xC3\xA9\0\xFF", 5};
   const auto tokens = evo::encode_bytes(bytes);
@@ -194,7 +205,7 @@ void test_tokenizer() {
 void test_sequence_reader() {
   TemporaryFile fasta{">one\nAC\nGT\n\n>two description\r\nN\r\n"};
   std::vector<evo::SequenceRecord> records;
-  auto status = evo::read_sequence_file(fasta.path(), &records);
+  auto status = collect_test_records(fasta.path(), &records);
   check(status.ok(), std::string{"valid FASTA parses: "} + status.message());
   check(records.size() == 2, "multi-record FASTA preserves record boundaries");
   if (records.size() == 2) {
@@ -206,18 +217,18 @@ void test_sequence_reader() {
 
   const std::string raw{"A\xC3\xA9\n\0", 5};
   TemporaryFile text{raw};
-  status = evo::read_sequence_file(text.path(), &records);
+  status = collect_test_records(text.path(), &records);
   check(status.ok() && records.size() == 1 && records[0].bytes == raw,
         "raw text input is byte-exact including newline and NUL");
 
   TemporaryFile empty_record{">one\n>two\nAC\n"};
-  status = evo::read_sequence_file(empty_record.path(), &records);
+  status = collect_test_records(empty_record.path(), &records);
   check(!status.ok() &&
             status.message().find("has no sequence") != std::string::npos,
         "empty FASTA record is rejected");
 
   TemporaryFile whitespace{">one\nAC GT\n"};
-  status = evo::read_sequence_file(whitespace.path(), &records);
+  status = collect_test_records(whitespace.path(), &records);
   check(!status.ok() &&
             status.message().find("whitespace") != std::string::npos,
         "ambiguous FASTA whitespace is rejected");
@@ -274,7 +285,7 @@ void test_sequence_reader() {
   TemporaryFile fastq{"@read-one\nACGT\n+\nIIII\n"
                       "@read-two description\r\nN\r\n"
                       "+read-two description\r\n!\r\n"};
-  status = evo::read_sequence_file(fastq.path(), &records);
+  status = collect_test_records(fastq.path(), &records);
   check(status.ok() && records.size() == 2 &&
             records[0].name == "read-one" && records[0].bytes == "ACGT" &&
             records[0].format == evo::SequenceFormat::kFastq &&
@@ -296,7 +307,7 @@ void test_sequence_reader() {
         "FASTQ late validation errors preserve completed callbacks");
 
   TemporaryGzipFile gzip_fasta{">gzip-one\nACGT\n>gzip-two\nNN\n"};
-  status = evo::read_sequence_file(gzip_fasta.path(), &records);
+  status = collect_test_records(gzip_fasta.path(), &records);
   check(status.ok() && records.size() == 2 &&
             records[0].name == "gzip-one" && records[0].bytes == "ACGT" &&
             records[0].format == evo::SequenceFormat::kFasta,
