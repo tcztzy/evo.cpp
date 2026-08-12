@@ -578,6 +578,10 @@ def main() -> int:
     assert esmc_validation.count("--profile exact") == 2
     assert "--pooling none" in esmc_validation
     assert 'models="${EVO_ESMC_MODELS:-esmc_300m esmc_600m esmc_6b}"' in esmc_validation
+    assert 'source_fingerprint="$(dirname "$binary")/.evo-source-fingerprint"' in esmc_validation
+    assert "git -C" not in esmc_validation, (
+        "gpu02 builds intentionally exclude .git and publish a source fingerprint"
+    )
     esmc_syntax = run_bash(
         "-n", str(args.source_dir / "scripts" / "gpu02_validate_esmc.sh")
     )

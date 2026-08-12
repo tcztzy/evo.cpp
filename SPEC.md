@@ -145,3 +145,4 @@ B24|2026-08-12|CUDA variant token-dump lambda 同样复用外层 `sequence` 名�
 B25|2026-08-12|初版 ESMC 规范沿用旧 ESM SDK hidden-state convention，未逐行核对 pinned Transformers `layers_to_collect`→中间层索引整体错位|V33
 B26|2026-08-12|ESMC softmax kernel 使用未由当前 include graph 暴露的 CUDA 私有 infinity macro→gpu02 CUDA 12.8 编译失败|V30
 B27|2026-08-12|全量回归发现 legacy converter/documentation contracts 假设 registry.models 全是 Evo 2：新增 ESMC profile 后索引不存在的 `config` 并漏报三模型 exact 支持|V24,V31
+B28|2026-08-12|ESMC 验收脚本假设 gpu02 同步目录含 `.git`，但标准 build 明确排除 VCS metadata→真实远端在运行前失败|V16,V30

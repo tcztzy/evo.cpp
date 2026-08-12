@@ -10,7 +10,9 @@ reference_image="${EVO_ESMC_REFERENCE_IMAGE:-$HOME/bionemo-pytorch-26.06-py3.sif
 reference_pythonpath="${EVO_ESMC_REFERENCE_PYTHONPATH:-$HOME/esmc-oracle/pydeps}"
 gpu_id="${EVO_ESMC_GPU_ID:-0}"
 models="${EVO_ESMC_MODELS:-esmc_300m esmc_600m esmc_6b}"
-revision_tag="$(git -C "$source_dir" rev-parse --short=12 HEAD)"
+source_fingerprint="$(dirname "$binary")/.evo-source-fingerprint"
+test -s "$source_fingerprint"
+revision_tag="${EVO_ESMC_REVISION_TAG:-$(cut -c1-12 "$source_fingerprint")}"
 artifact_dir="${EVO_ESMC_ACCEPTANCE_DIR:-$HOME/evo.cpp-artifacts/t22-esmc-$revision_tag}"
 
 test -x "$binary"
@@ -39,8 +41,9 @@ fi
 nvidia-smi --query-gpu=index,name,driver_version,memory.total,memory.used \
   --format=csv,noheader >"$artifact_dir/gpu-before.csv"
 sha256sum "$binary" >"$artifact_dir/runtime-sha256.txt"
-git -C "$source_dir" rev-parse HEAD >"$artifact_dir/source-commit.txt"
-git -C "$source_dir" status --short >"$artifact_dir/source-status.txt"
+cp -- "$source_fingerprint" "$artifact_dir/source-fingerprint.txt"
+printf '%s\n' "${EVO_ESMC_SOURCE_COMMIT:-unavailable-rsync-checkout}" \
+  >"$artifact_dir/source-commit.txt"
 
 container_python() {
   /usr/bin/apptainer exec \
