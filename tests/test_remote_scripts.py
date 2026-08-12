@@ -565,6 +565,24 @@ def main() -> int:
     assert 'test "$mode" = "Exclusive_Process"' in bionemo_validation
     assert 'test "$(cat "$status_file")" != "0"' in bionemo_validation
 
+    esmc_validation = (
+        args.source_dir / "scripts" / "gpu02_validate_esmc.sh"
+    ).read_text(encoding="utf-8")
+    for model_id in ("esmc_300m", "esmc_600m", "esmc_6b"):
+        assert model_id in esmc_validation
+    assert "tools/evo_fetch.py" in esmc_validation
+    assert "--local-files-only" in esmc_validation
+    assert "convert_esmc_checkpoint.py" in esmc_validation
+    assert "generate_esmc_official_oracle.py" in esmc_validation
+    assert "compare_esmc_oracle.py" in esmc_validation
+    assert esmc_validation.count("--profile exact") == 2
+    assert "--pooling none" in esmc_validation
+    assert 'models="${EVO_ESMC_MODELS:-esmc_300m esmc_600m esmc_6b}"' in esmc_validation
+    esmc_syntax = run_bash(
+        "-n", str(args.source_dir / "scripts" / "gpu02_validate_esmc.sh")
+    )
+    assert esmc_syntax.returncode == 0, esmc_syntax.stderr
+
     benchmark_7b = (
         args.source_dir / "scripts" / "gpu02_benchmark_7b.sh"
     ).read_text(encoding="utf-8")
