@@ -16,7 +16,15 @@
 
 namespace evo {
 
-enum class RunMode { kGenerate, kScore, kEmbed, kVariantScore, kServe, kBench };
+enum class RunMode {
+  kGenerate,
+  kScore,
+  kLogits,
+  kEmbed,
+  kVariantScore,
+  kServe,
+  kBench
+};
 
 enum class EmbeddingPooling { kNone, kMean, kLast };
 

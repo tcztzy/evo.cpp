@@ -49,7 +49,8 @@ as the header.
 ## CLI and data compatibility
 
 Existing legacy generation and scoring invocations remain valid. New command
-families (`embed`, `variant-score`, and `serve`) and new flags are additive.
+families (`logits`, `embed`, `variant-score`, and `serve`) and new flags are
+additive.
 Defaults may not silently choose a fast/quantized profile, a different backend,
 or a different GPU placement policy. Unsupported combinations return a typed
 nonzero error.
@@ -67,7 +68,8 @@ new labeled series; existing label meanings are not repurposed.
 
 ## Artifact and model compatibility
 
-`evo2-runtime-v1` and `hyenadna-runtime-v1` are immutable contracts. Metadata
+`evo2-runtime-v1`, `hyenadna-runtime-v1`, and `esmc-runtime-v1` are immutable
+contracts. Metadata
 selects the architecture; filenames and tensor-name heuristics do not. A loader
 must reject an unknown architecture/profile/ABI, conflicting metadata,
 unsupported dtype or shape, and hash mismatch. Converters may evolve, but a
@@ -80,6 +82,13 @@ The runtime exact allowlist is also `model.id`-specific: one variant cannot
 inherit another variant's evidence merely because width, layer count, or most
 operators match. Exact-unsupported IDs remain convertible registry entries and
 fail with `unsupported` before CUDA weights are uploaded.
+
+ESMC has an architecture-specific capability boundary: masked-LM logits and
+official hidden states are supported on portable CPU F32 and one exact CUDA
+device. Causal score, generation/decode, variant score, server, hybrid or
+multi-GPU placement, and approximate KV profiles are typed unsupported. Its
+2048-token maximum includes CLS and EOS. Full details are in
+[native ESMC inference](esmc.md).
 
 ## Supported build and release matrix
 

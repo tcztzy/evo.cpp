@@ -20,6 +20,9 @@ boundary:
 | `evo2_7b_262k` | unsupported | no ID-specific real-checkpoint raw-bit gate |
 | `evo2_40b_base` | unsupported | no ID-specific real-checkpoint raw-bit gate |
 | `evo2_40b_bionemo_bf16` | unsupported | BioNeMo tolerance/behavioral validation is not a raw-bit Vortex gate |
+| `esmc_300m` | pending | pinned official logits/final-hidden oracle gate is scheduled in T22 |
+| `esmc_600m` | pending | pinned official logits/final-hidden oracle gate is scheduled in T22 |
+| `esmc_6b` | pending | pinned official logits/final-hidden oracle gate is scheduled in T22 |
 
 The unsupported IDs remain registry entries for acquisition, conversion, and
 explicit approximate execution. The exact loader rejects them before weight

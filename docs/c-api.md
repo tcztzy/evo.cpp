@@ -77,6 +77,13 @@ output of a zero-based intermediate layer. Query
 downstream tensor storage. Pooling is deliberately caller-controlled in the C
 ABI; the CLI supplies exact `none`, `mean`, and `last` policies.
 
+For ESMC, prefill returns one `[encoded_tokens, 64]` masked-LM logit matrix in
+a single callback and embedding returns one full bidirectional hidden matrix.
+`evo_model_layer_count()` is `num_layers + 1`: index 0 is the token embedding,
+indices `1..n-1` are preceding block outputs, and index `n` is the final
+layer-normalized representation. Incremental `evo_context_decode()` is typed
+unsupported. Context capacity includes ESMC's automatically added CLS/EOS.
+
 Current CPU and CUDA backends accept one sequence per batch. Larger batch
 objects are ABI-valid but return `EVO_STATUS_UNSUPPORTED` at execution time,
 rather than silently changing semantics. CPU inference is available in

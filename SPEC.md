@@ -111,7 +111,7 @@ T17|x|核实官方 ESMC IDs/架构/tokenizer/权重/license/reference；审计�
 T18|x|注册三尺寸；实现 pinned HF source fetch/receipt、`esmc-runtime-v1` converter/loader 与 corruption tests|C8,C9,C11,V10,V24,V28,I4,I9,I11
 T19|x|实现 bit-exact protein tokenizer 与 CPU F32 forward/logits/embedding；tiny oracle tests|C10,C12,V11,V25,V26,V27,V29,V30,I10,I12
 T20|x|实现单卡 CUDA F32 ESMC forward/logits/embedding 与 typed unsupported 边界|C10,C12,C13,V26,V27,V29,V30,V32,I10,I12
-T21| |接入 C API/CLI/HF offline artifact validation；补 logits/embedding metadata、能力 gate 与用户文档|C9,C12,C14,V24,V25,V27,V29,I2,I6,I10,I11,I12
+T21|x|接入 C API/CLI/HF offline artifact validation；补 logits/embedding metadata、能力 gate 与用户文档|C9,C12,C14,V24,V25,V27,V29,I2,I6,I10,I11,I12
 T22| |生成 pinned 官方 oracle；gpu02 验证三尺寸；跑 full regression、记录证据并清理非制品文件|C8,C10,C14,V16,V26,V28,V30,V31
 
 ## §B BUGS
@@ -144,3 +144,4 @@ B23|2026-08-12|AppleClang 未报告 lambda 参数遮蔽外层 helper 参数，GC
 B24|2026-08-12|CUDA variant token-dump lambda 同样复用外层 `sequence` 名，CPU-only 本机门未编译该 TU→gpu02 才触发 GCC shadow gate|V16,V19
 B25|2026-08-12|初版 ESMC 规范沿用旧 ESM SDK hidden-state convention，未逐行核对 pinned Transformers `layers_to_collect`→中间层索引整体错位|V33
 B26|2026-08-12|ESMC softmax kernel 使用未由当前 include graph 暴露的 CUDA 私有 infinity macro→gpu02 CUDA 12.8 编译失败|V30
+B27|2026-08-12|全量回归发现 legacy converter/documentation contracts 假设 registry.models 全是 Evo 2：新增 ESMC profile 后索引不存在的 `config` 并漏报三模型 exact 支持|V24,V31

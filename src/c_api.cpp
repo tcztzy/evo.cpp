@@ -25,6 +25,7 @@
 #include "evo/version.hpp"
 
 #if defined(EVO_HAS_CUDA)
+#include "evo/cuda/esmc.hpp"
 #include "evo/cuda/model.hpp"
 #endif
 
@@ -128,11 +129,13 @@ struct ModelState final {
   std::size_t max_context{0};
   std::size_t embedding_width{0};
   std::size_t layer_count{0};
+  bool esmc{false};
   bool allow_synthetic{false};
   std::mutex cpu_mutex;
   std::unique_ptr<evo::cpu::Model> cpu_weights;
 #if defined(EVO_HAS_CUDA)
   std::unique_ptr<evo::cuda::PipelineModel> cuda_weights;
+  std::unique_ptr<evo::cuda::EsmcModel> cuda_esmc_weights;
 #endif
 };
 
@@ -150,6 +153,7 @@ struct evo_context final {
   std::unique_ptr<evo::cpu::Context> cpu;
 #if defined(EVO_HAS_CUDA)
   std::unique_ptr<evo::cuda::PipelineModel> cuda;
+  std::unique_ptr<evo::cuda::EsmcContext> cuda_esmc;
 #endif
 };
 
@@ -270,6 +274,8 @@ evo_status evo_model_load(const char *const path,
                      "registered");
     }
     state->tokenizer = architecture->tokenizer;
+    state->esmc =
+        architecture->tokenizer == evo::ArchitectureTokenizer::kEsmcProtein;
     if (state->backend == EVO_BACKEND_AUTO) {
 #if defined(EVO_HAS_CUDA)
       state->backend =
@@ -298,6 +304,8 @@ evo_status evo_model_load(const char *const path,
     state->max_context = metadata_size(state->file, "config.max_seqlen");
     state->embedding_width = metadata_size(state->file, "config.hidden_size");
     state->layer_count = metadata_size(state->file, "config.num_layers");
+    if (state->esmc && state->layer_count != 0)
+      ++state->layer_count;
     if (state->max_context == 0 &&
         metadata_bool(state->file, "fixture.synthetic")) {
       state->max_context = std::numeric_limits<std::size_t>::max();
@@ -306,9 +314,15 @@ evo_status evo_model_load(const char *const path,
         (options.flags & EVO_MODEL_FLAG_TEST_ONLY_ALLOW_SYNTHETIC) != 0;
 #if defined(EVO_HAS_CUDA)
     if (state->backend == EVO_BACKEND_CUDA) {
-      state->cuda_weights = std::make_unique<evo::cuda::PipelineModel>();
-      status = state->cuda_weights->load(state->file, state->devices, 1,
-                                         state->allow_synthetic);
+      if (state->esmc) {
+        state->cuda_esmc_weights = std::make_unique<evo::cuda::EsmcModel>();
+        status = state->cuda_esmc_weights->load(state->file, state->devices,
+                                                state->allow_synthetic);
+      } else {
+        state->cuda_weights = std::make_unique<evo::cuda::PipelineModel>();
+        status = state->cuda_weights->load(state->file, state->devices, 1,
+                                           state->allow_synthetic);
+      }
       if (!status.ok())
         return publish(status);
     }
@@ -362,8 +376,7 @@ size_t evo_model_layer_count(const evo_model *const model) {
 evo_status evo_model_encode(const evo_model *const model,
                             const uint8_t *const sequence,
                             const size_t sequence_length,
-                            uint32_t *const tokens,
-                            const size_t token_capacity,
+                            uint32_t *const tokens, const size_t token_capacity,
                             size_t *const token_count) {
   if (token_count != nullptr)
     *token_count = 0;
@@ -434,6 +447,11 @@ evo_status evo_context_create(const evo_model *const model,
         (options.flags & EVO_CONTEXT_FLAG_FAST_Q8_KV) != 0
             ? evo::InferenceProfile::kFastQ8Kv
             : evo::InferenceProfile::kExact;
+    if (model->state->esmc && options.flags != 0) {
+      return publish(EVO_STATUS_INVALID_ARGUMENT,
+                     "invalid_argument: ESMC supports only the exact CUDA "
+                     "profile");
+    }
     if (model->state->max_context != 0 &&
         options.context_size > model->state->max_context) {
       return publish(EVO_STATUS_INVALID_ARGUMENT,
@@ -474,20 +492,33 @@ evo_status evo_context_create(const evo_model *const model,
       return publish(EVO_STATUS_UNSUPPORTED,
                      "unsupported: selected inference backend is unavailable");
     }
-    if (!model->state->cuda_weights) {
-      return publish(EVO_STATUS_INTERNAL,
-                     "internal: CUDA model weights are unavailable");
-    }
-    auto cuda = std::make_unique<evo::cuda::PipelineModel>();
-    const auto status = cuda->initialize_shared(*model->state->cuda_weights,
-                                                options.context_size, profile);
-    if (!status.ok())
-      return publish(status);
     auto handle = std::make_unique<evo_context>();
     handle->state = model->state;
     handle->capacity = options.context_size;
     handle->profile = profile;
-    handle->cuda = std::move(cuda);
+    if (model->state->esmc) {
+      if (!model->state->cuda_esmc_weights) {
+        return publish(EVO_STATUS_INTERNAL,
+                       "internal: ESMC CUDA model weights are unavailable");
+      }
+      auto cuda = std::make_unique<evo::cuda::EsmcContext>();
+      const auto status = cuda->initialize_shared(
+          *model->state->cuda_esmc_weights, options.context_size);
+      if (!status.ok())
+        return publish(status);
+      handle->cuda_esmc = std::move(cuda);
+    } else {
+      if (!model->state->cuda_weights) {
+        return publish(EVO_STATUS_INTERNAL,
+                       "internal: CUDA model weights are unavailable");
+      }
+      auto cuda = std::make_unique<evo::cuda::PipelineModel>();
+      const auto status = cuda->initialize_shared(
+          *model->state->cuda_weights, options.context_size, profile);
+      if (!status.ok())
+        return publish(status);
+      handle->cuda = std::move(cuda);
+    }
     *context_out = handle.release();
     return publish(evo::Status::Ok());
 #else
@@ -503,6 +534,8 @@ size_t evo_context_position(const evo_context *const context) {
   if (context != nullptr && context->cpu)
     return context->cpu->position();
 #if defined(EVO_HAS_CUDA)
+  if (context != nullptr && context->cuda_esmc)
+    return context->cuda_esmc->position();
   return context == nullptr || !context->cuda ? 0 : context->cuda->position();
 #else
   (void)context;
@@ -539,7 +572,8 @@ evo_status evo_context_prefill(evo_context *const context,
                      "size one");
     }
     const auto &sequence = batch->sequences.front();
-    if (sequence.empty() || sequence.size() > context->capacity ||
+    if (sequence.empty() ||
+        (sequence.size() > context->capacity && !context->state->esmc) ||
         evo_context_position(context) != 0) {
       return publish(EVO_STATUS_INVALID_ARGUMENT,
                      "invalid_argument: prefill requires a fresh context and "
@@ -548,10 +582,15 @@ evo_status evo_context_prefill(evo_context *const context,
     std::vector<evo::TokenId> tokens;
     const std::string_view sequence_view{
         reinterpret_cast<const char *>(sequence.data()), sequence.size()};
-    const auto encode_status = evo::encode_sequence(
-        context->state->tokenizer, sequence_view, &tokens);
+    const auto encode_status =
+        evo::encode_sequence(context->state->tokenizer, sequence_view, &tokens);
     if (!encode_status.ok())
       return publish(encode_status);
+    if (tokens.size() > context->capacity) {
+      return publish(EVO_STATUS_INVALID_ARGUMENT,
+                     "invalid_argument: encoded sequence exceeds context "
+                     "capacity");
+    }
     // From here onward, any status/exception can follow a partial state
     // advance. Keep the context poisoned unless every chunk and callback
     // completes.
@@ -589,6 +628,27 @@ evo_status evo_context_prefill(evo_context *const context,
       return publish(evo::Status::Ok());
     }
 #if defined(EVO_HAS_CUDA)
+    if (context->cuda_esmc) {
+      std::vector<float> logits;
+      const auto status = context->cuda_esmc->prefill(tokens, &logits);
+      const std::size_t columns = context->cuda_esmc->config().vocab_size;
+      if (!status.ok())
+        return publish(status);
+      if (logits.size() != tokens.size() * columns) {
+        return publish(EVO_STATUS_INTERNAL,
+                       "internal: ESMC CUDA backend returned incomplete "
+                       "prefill logits");
+      }
+      const evo_status callback_status =
+          callback(logits.data(), tokens.size(), columns, 0, user_data);
+      if (callback_status != EVO_STATUS_OK) {
+        return publish(valid_status(callback_status) ? callback_status
+                                                     : EVO_STATUS_INTERNAL,
+                       "callback: logits consumer aborted ESMC prefill");
+      }
+      context->failed = false;
+      return publish(evo::Status::Ok());
+    }
     const std::size_t chunk_capacity = context->cuda->activation_capacity();
     const std::size_t columns = context->cuda->config().vocab_size;
     std::size_t offset = 0;
@@ -639,6 +699,11 @@ evo_status evo_context_decode(evo_context *const context, const uint32_t token,
       return publish(EVO_STATUS_INVALID_ARGUMENT,
                      "invalid_argument: context is invalid after a prior "
                      "failure");
+    }
+    if (context->state && context->state->esmc) {
+      return publish(EVO_STATUS_UNSUPPORTED,
+                     "unsupported: ESMC is bidirectional and does not support "
+                     "incremental decode");
     }
     const std::size_t offset = evo_context_position(context);
     if (offset == 0 || offset >= context->capacity || !context->state ||
@@ -722,7 +787,8 @@ evo_status evo_context_embed(evo_context *const context,
                      "size one");
     }
     const auto &sequence = batch->sequences.front();
-    if (sequence.empty() || sequence.size() > context->capacity ||
+    if (sequence.empty() ||
+        (sequence.size() > context->capacity && !context->state->esmc) ||
         evo_context_position(context) != 0) {
       return publish(EVO_STATUS_INVALID_ARGUMENT,
                      "invalid_argument: embedding requires a fresh context and "
@@ -731,10 +797,15 @@ evo_status evo_context_embed(evo_context *const context,
     std::vector<evo::TokenId> tokens;
     const std::string_view sequence_view{
         reinterpret_cast<const char *>(sequence.data()), sequence.size()};
-    const auto encode_status = evo::encode_sequence(
-        context->state->tokenizer, sequence_view, &tokens);
+    const auto encode_status =
+        evo::encode_sequence(context->state->tokenizer, sequence_view, &tokens);
     if (!encode_status.ok())
       return publish(encode_status);
+    if (tokens.size() > context->capacity) {
+      return publish(EVO_STATUS_INVALID_ARGUMENT,
+                     "invalid_argument: encoded sequence exceeds context "
+                     "capacity");
+    }
     context->failed = true;
     if (context->cpu) {
       const std::size_t chunk_capacity = context->cpu->activation_capacity();
@@ -772,6 +843,28 @@ evo_status evo_context_embed(evo_context *const context,
       return publish(evo::Status::Ok());
     }
 #if defined(EVO_HAS_CUDA)
+    if (context->cuda_esmc) {
+      std::vector<float> embedding;
+      const auto status =
+          context->cuda_esmc->prefill_embedding(tokens, layer, &embedding);
+      const std::size_t columns = context->cuda_esmc->config().width;
+      if (!status.ok())
+        return publish(status);
+      if (embedding.size() != tokens.size() * columns) {
+        return publish(EVO_STATUS_INTERNAL,
+                       "internal: ESMC CUDA backend returned incomplete "
+                       "embeddings");
+      }
+      const evo_status callback_status =
+          callback(embedding.data(), tokens.size(), columns, 0, user_data);
+      if (callback_status != EVO_STATUS_OK) {
+        return publish(valid_status(callback_status) ? callback_status
+                                                     : EVO_STATUS_INTERNAL,
+                       "callback: embedding consumer aborted ESMC inference");
+      }
+      context->failed = false;
+      return publish(evo::Status::Ok());
+    }
     const std::size_t chunk_capacity = context->cuda->activation_capacity();
     const std::size_t columns = context->cuda->config().width;
     std::size_t offset = 0;

@@ -26,6 +26,10 @@ supplies the repository, immutable 40-hex commit, filename, byte size, and
 SHA256. A successful invocation verifies the complete file and writes an
 atomic JSON receipt. `evo2_40b` and `evo2_40b_base` print two ordered part
 paths; they still require the documented verified merge before conversion.
+ESMC IDs (`esmc_300m`, `esmc_600m`, `esmc_6b`) fetch config, tokenizer files,
+and all registered Safetensors files as one verified source receipt; pass that
+receipt to `tools/convert_esmc_checkpoint.py` as documented in
+[native ESMC inference](esmc.md).
 
 Cache selection is, in order:
 
@@ -86,6 +90,11 @@ A branch or tag is resolved once to an immutable commit and recorded in the
 receipt. Online resolution force-refreshes the small manifest from that commit;
 offline resolution requires its SHA256 to match the last verified receipt. For
 reproducible automation, pass the commit explicitly.
+
+Runtime manifests may name `esmc-runtime-v1` in addition to the existing Evo 2
+and HyenaDNA profiles. The receipt and native resolver apply the same exact
+path, size, SHA256, commit, and manifest checks before an ESMC artifact is
+loaded.
 
 ## Binary releases
 

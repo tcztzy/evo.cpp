@@ -84,8 +84,8 @@ public:
       std::abort();
     ::close(descriptor);
     path_ = writable.data();
-    std::vector<unsigned char> compressed{
-        0x1fU, 0x8bU, 0x08U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0xffU};
+    std::vector<unsigned char> compressed{0x1fU, 0x8bU, 0x08U, 0x00U, 0x00U,
+                                          0x00U, 0x00U, 0x00U, 0x00U, 0xffU};
     std::size_t offset = 0;
     do {
       const std::size_t size =
@@ -174,15 +174,16 @@ evo::Status parse(std::vector<std::string> arguments,
   return evo::parse_cli(static_cast<int>(argv.size()), argv.data(), options);
 }
 
-evo::Status collect_test_records(
-    const std::string &path, std::vector<evo::SequenceRecord> *const records) {
+evo::Status
+collect_test_records(const std::string &path,
+                     std::vector<evo::SequenceRecord> *const records) {
   records->clear();
   constexpr std::size_t kTestRecordLimit = 1U << 20U;
-  return evo::stream_sequence_file(
-      path, kTestRecordLimit, [&](const evo::SequenceRecord &record) {
-        records->push_back(record);
-        return evo::Status::Ok();
-      });
+  return evo::stream_sequence_file(path, kTestRecordLimit,
+                                   [&](const evo::SequenceRecord &record) {
+                                     records->push_back(record);
+                                     return evo::Status::Ok();
+                                   });
 }
 
 void test_tokenizer() {
@@ -286,8 +287,8 @@ void test_sequence_reader() {
                       "@read-two description\r\nN\r\n"
                       "+read-two description\r\n!\r\n"};
   status = collect_test_records(fastq.path(), &records);
-  check(status.ok() && records.size() == 2 &&
-            records[0].name == "read-one" && records[0].bytes == "ACGT" &&
+  check(status.ok() && records.size() == 2 && records[0].name == "read-one" &&
+            records[0].bytes == "ACGT" &&
             records[0].format == evo::SequenceFormat::kFastq &&
             records[1].name == "read-two description" &&
             records[1].bytes == "N",
@@ -308,25 +309,25 @@ void test_sequence_reader() {
 
   TemporaryGzipFile gzip_fasta{">gzip-one\nACGT\n>gzip-two\nNN\n"};
   status = collect_test_records(gzip_fasta.path(), &records);
-  check(status.ok() && records.size() == 2 &&
-            records[0].name == "gzip-one" && records[0].bytes == "ACGT" &&
+  check(status.ok() && records.size() == 2 && records[0].name == "gzip-one" &&
+            records[0].bytes == "ACGT" &&
             records[0].format == evo::SequenceFormat::kFasta,
         "gzip FASTA is transparently decompressed without extension guessing");
 
   std::vector<std::string> stdin_names;
   {
     ScopedStdin redirected{gzip_fasta.path()};
-    status = evo::stream_sequence_file(
-        "-", 8, [&](const evo::SequenceRecord &record) {
-          stdin_names.push_back(record.name);
-          return evo::Status::Ok();
-        });
+    status = evo::stream_sequence_file("-", 8,
+                                       [&](const evo::SequenceRecord &record) {
+                                         stdin_names.push_back(record.name);
+                                         return evo::Status::Ok();
+                                       });
   }
   check(status.ok() &&
             stdin_names == std::vector<std::string>({"gzip-one", "gzip-two"}),
         "stdin accepts the same transparently compressed sequence stream");
-  check(std::string_view{evo::sequence_format_name(evo::SequenceFormat::kFastq)} ==
-            "fastq",
+  check(std::string_view{evo::sequence_format_name(
+            evo::SequenceFormat::kFastq)} == "fastq",
         "sequence format names are stable output metadata");
 }
 
@@ -417,43 +418,40 @@ void test_variant() {
   TemporaryGzipFile reference{">chr1 primary contig\nAACC\nGGTT\n"
                               ">chr2\nTTTT\n"};
   evo::ReferenceSlice slice;
-  status = evo::fetch_reference_slice(reference.path(), "chr1", 3, "C", "T",
-                                      6, &slice);
+  status = evo::fetch_reference_slice(reference.path(), "chr1", 3, "C", "T", 6,
+                                      &slice);
   check(status.ok() && slice.contig == "chr1" && slice.sequence == "AACCGG" &&
             slice.start == 0 && slice.end == 6 && slice.contig_length == 8,
         "reference FASTA lookup returns a global 0-based half-open slice");
-  status = evo::fetch_reference_slice(reference.path(), "chr1", 3, "G", "T",
-                                      6, &slice);
-  check(!status.ok() && status.message().find("does not match") !=
-                            std::string::npos,
+  status = evo::fetch_reference_slice(reference.path(), "chr1", 3, "G", "T", 6,
+                                      &slice);
+  check(!status.ok() &&
+            status.message().find("does not match") != std::string::npos,
         "VCF REF mismatch against reference FASTA fails explicitly");
 
-  TemporaryGzipFile vcf{
-      "##fileformat=VCFv4.3\n"
-      "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
-      "chr1\t3\trs1\tC\tT,G\t.\tPASS\t.\n"};
+  TemporaryGzipFile vcf{"##fileformat=VCFv4.3\n"
+                        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+                        "chr1\t3\trs1\tC\tT,G\t.\tPASS\t.\n"};
   std::vector<evo::VcfRecord> variants;
   status = evo::stream_vcf_file(vcf.path(), [&](const evo::VcfRecord &record) {
     variants.push_back(record);
     return evo::Status::Ok();
   });
-  check(status.ok() && variants.size() == 2 &&
-            variants[0].record_index == 0 && variants[0].allele_index == 0 &&
-            variants[0].contig == "chr1" && variants[0].position_1based == 3 &&
-            variants[1].allele_index == 1 && variants[1].alternate == "G",
+  check(status.ok() && variants.size() == 2 && variants[0].record_index == 0 &&
+            variants[0].allele_index == 0 && variants[0].contig == "chr1" &&
+            variants[0].position_1based == 3 && variants[1].allele_index == 1 &&
+            variants[1].alternate == "G",
         "gzip VCF streams one ordered event per alternate allele");
 
-  TemporaryFile late_vcf{
-      "##fileformat=VCFv4.3\n"
-      "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
-      "chr1\t3\trs1\tC\tT\t.\tPASS\t.\n"
-      "chr1\tbad\trs2\tC\tA\t.\tPASS\t.\n"};
+  TemporaryFile late_vcf{"##fileformat=VCFv4.3\n"
+                         "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+                         "chr1\t3\trs1\tC\tT\t.\tPASS\t.\n"
+                         "chr1\tbad\trs2\tC\tA\t.\tPASS\t.\n"};
   std::size_t delivered = 0;
-  status = evo::stream_vcf_file(
-      late_vcf.path(), [&](const evo::VcfRecord &) {
-        ++delivered;
-        return evo::Status::Ok();
-      });
+  status = evo::stream_vcf_file(late_vcf.path(), [&](const evo::VcfRecord &) {
+    ++delivered;
+    return evo::Status::Ok();
+  });
   check(!status.ok() && delivered == 1 &&
             status.message().find("VCF POS") != std::string::npos,
         "later VCF errors preserve complete prior variant callbacks");
@@ -504,9 +502,9 @@ void test_cli() {
         "teacher-forced prompt threshold CLI parses");
   check(options.inference_profile == evo::InferenceProfile::kFastQ8Kv,
         "explicit approximate execution profile parses");
-  status = parse({"evo", "run", "-m", "model.safetensors", "-p", "ACGT",
-                  "-n", "2", "--output-format", "fasta", "--name",
-                  "candidate", "--backend", "cpu"},
+  status = parse({"evo", "run", "-m", "model.safetensors", "-p", "ACGT", "-n",
+                  "2", "--output-format", "fasta", "--name", "candidate",
+                  "--backend", "cpu"},
                  &options);
   check(status.ok() && options.mode == evo::RunMode::kGenerate &&
             options.generation_output_format ==
@@ -526,29 +524,30 @@ void test_cli() {
             options.hf_repo == "owner/runtime@main",
         "Hugging Face model source is retained for offline cache resolution");
   status = parse({"evo", "score", "-m", "model.safetensors", "-hf",
-                  "owner/runtime", "--input", "input.fa", "--backend",
-                  "cpu"},
+                  "owner/runtime", "--input", "input.fa", "--backend", "cpu"},
                  &options);
-  check(!status.ok() && status.message().find("exactly one") != std::string::npos,
+  check(!status.ok() &&
+            status.message().find("exactly one") != std::string::npos,
         "CLI rejects ambiguous local and Hugging Face model sources");
-  status = parse({"evo", "bench", "-m", "model.safetensors", "--input",
-                  "input.fa", "--warmup", "2", "--repetitions", "7",
-                  "--backend", "cpu"},
-                 &options);
+  status =
+      parse({"evo", "bench", "-m", "model.safetensors", "--input", "input.fa",
+             "--warmup", "2", "--repetitions", "7", "--backend", "cpu"},
+            &options);
   check(status.ok() && options.mode == evo::RunMode::kBench &&
             options.benchmark_path == "input.fa" &&
-            options.benchmark_warmup == 2 &&
-            options.benchmark_repetitions == 7,
+            options.benchmark_warmup == 2 && options.benchmark_repetitions == 7,
         "bench subcommand retains input and sample policy");
   status = parse({"evo", "bench", "-m", "model.safetensors", "--input",
                   "input.fa", "--repetitions", "0", "--backend", "cpu"},
                  &options);
-  check(!status.ok() && status.message().find("repetitions") != std::string::npos,
+  check(!status.ok() &&
+            status.message().find("repetitions") != std::string::npos,
         "bench rejects an empty measured sample set");
-  status = parse({"evo", "run", "-m", "model.safetensors", "-p", "ACGT",
-                  "-n", "2", "--output-format", "json", "--backend", "cpu"},
+  status = parse({"evo", "run", "-m", "model.safetensors", "-p", "ACGT", "-n",
+                  "2", "--output-format", "json", "--backend", "cpu"},
                  &options);
-  check(!status.ok() && status.message().find("output-format") != std::string::npos,
+  check(!status.ok() &&
+            status.message().find("output-format") != std::string::npos,
         "generation rejects an unknown output encoding");
   status = parse({"evo", "-m", "model.safetensors", "--score", "input.fa",
                   "--backend", "cpu"},
@@ -587,6 +586,22 @@ void test_cli() {
       &options);
   check(status.ok() && options.mode == evo::RunMode::kScore,
         "score CLI accepts one GPU and no sampling options");
+
+  status =
+      parse({"evo", "logits", "-m", "model.safetensors", "--input", "input.fa",
+             "--output", "logits", "--ctx", "2048", "--gpu", "0"},
+            &options);
+  check(status.ok() && options.mode == evo::RunMode::kLogits &&
+            options.embed_path == "input.fa" &&
+            options.embed_output_dir == "logits",
+        "logits subcommand retains its streaming input and output directory");
+  status =
+      parse({"evo", "logits", "-m", "model.safetensors", "--input", "input.fa",
+             "--output", "logits", "--layer", "1", "--gpu", "0"},
+            &options);
+  check(!status.ok() &&
+            status.message().find("logits accepts") != std::string::npos,
+        "logits rejects embedding-only layer selection");
 
   status = parse({"evo", "embed", "-m", "model.safetensors", "--input",
                   "input.fa", "--output", "embeddings", "--layer", "17",
@@ -653,27 +668,27 @@ void test_cli() {
             options.variant_strand == evo::VariantStrand::kBoth &&
             options.variant_normalization == evo::VariantNormalization::kSum,
         "variant-score defaults to context window, both strands, and sum");
-  status = parse({"evo", "variant-score", "-m", "model.safetensors",
-                  "--vcf", "variants.vcf.gz", "--reference",
-                  "reference.fa.gz", "--window", "8", "--backend", "cpu"},
+  status = parse({"evo", "variant-score", "-m", "model.safetensors", "--vcf",
+                  "variants.vcf.gz", "--reference", "reference.fa.gz",
+                  "--window", "8", "--backend", "cpu"},
                  &options);
   check(status.ok() && options.variant_vcf_path == "variants.vcf.gz" &&
             options.variant_reference_path == "reference.fa.gz" &&
             options.variant_sequence.empty(),
         "variant-score retains gzip VCF and reference FASTA paths");
-  status = parse({"evo", "variant-score", "-m", "model.safetensors",
-                  "--vcf", "variants.vcf", "--reference", "reference.fa",
-                  "--sequence", "AACCGGTT", "--position", "3", "--ref",
-                  "C", "--alt", "T", "--backend", "cpu"},
+  status = parse({"evo", "variant-score", "-m", "model.safetensors", "--vcf",
+                  "variants.vcf", "--reference", "reference.fa", "--sequence",
+                  "AACCGGTT", "--position", "3", "--ref", "C", "--alt", "T",
+                  "--backend", "cpu"},
                  &options);
   check(!status.ok() &&
             status.message().find("cannot be combined") != std::string::npos,
         "VCF batch mode rejects contradictory inline coordinates");
-  status = parse({"evo", "variant-score", "-m", "model.safetensors",
-                  "--vcf", "variants.vcf", "--backend", "cpu"},
+  status = parse({"evo", "variant-score", "-m", "model.safetensors", "--vcf",
+                  "variants.vcf", "--backend", "cpu"},
                  &options);
-  check(!status.ok() && status.message().find("--reference") !=
-                            std::string::npos,
+  check(!status.ok() &&
+            status.message().find("--reference") != std::string::npos,
         "VCF batch mode requires a reference FASTA path");
   status = parse({"evo", "variant-score", "-m", "model.safetensors",
                   "--sequence", "AACCGGTT", "--position", "3", "--ref", "C",

@@ -209,7 +209,7 @@ def main() -> int:
     shard_payload = b"strict runtime shard"
     runtime_manifest = {
         "schema_version": 1,
-        "artifact_profile": "evo2-runtime-v1",
+        "artifact_profile": "esmc-runtime-v1",
         "model_id": "tiny_runtime",
         "load_path": "model.safetensors.index.json",
         "files": [
@@ -248,7 +248,7 @@ def main() -> int:
         (
             runtime_receipt["kind"] != "runtime-artifact",
             runtime_receipt["resolved_revision"] != runtime_revision,
-            runtime_receipt["artifact_profile"] != "evo2-runtime-v1",
+            runtime_receipt["artifact_profile"] != "esmc-runtime-v1",
             Path(runtime_receipt["load_path"]).read_bytes() != index_payload,
             len(runtime_receipt["files"]) != 2,
         )

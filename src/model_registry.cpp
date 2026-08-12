@@ -174,11 +174,11 @@ const std::vector<ArchitectureSpec> &architecture_specs() {
       {"ESMC", "esmc-runtime-v1", "esmc-safetensors-v1",
        ArchitectureTokenizer::kEsmcProtein,
        kArchitectureBackendCpu | kArchitectureBackendCuda,
-       kArchitectureEmbed | kArchitectureLogits | kArchitectureServe, false},
+       kArchitectureEmbed | kArchitectureLogits, false},
       {"ESMCTest", "esmc-runtime-v1", "esmc-safetensors-v1",
        ArchitectureTokenizer::kEsmcProtein,
        kArchitectureBackendCpu | kArchitectureBackendCuda,
-       kArchitectureEmbed | kArchitectureLogits | kArchitectureServe, true},
+       kArchitectureEmbed | kArchitectureLogits, true},
   };
   return specs;
 }

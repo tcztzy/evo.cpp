@@ -61,8 +61,13 @@ class BrokenTensorSource:
 class ConverterTests(unittest.TestCase):
     def test_every_registered_model_has_an_exact_manifest(self) -> None:
         registry = load_model_registry()
-        self.assertEqual(len(registry["models"]), 8)
-        for model_id, entry in registry["models"].items():
+        models = {
+            model_id: entry
+            for model_id, entry in registry["models"].items()
+            if "config" in entry
+        }
+        self.assertEqual(len(models), 8)
+        for model_id, entry in models.items():
             with self.subTest(model_id=model_id):
                 config = load_config(CONFIG_DIR / entry["config"])
                 self.assertEqual(config.model_id, model_id)
@@ -121,6 +126,8 @@ class ConverterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=WORK_DIR) as directory:
             temporary = Path(directory)
             for model_id, entry in registry["models"].items():
+                if "config" not in entry:
+                    continue
                 with self.subTest(model_id=model_id):
                     source = CONFIG_DIR / entry["config"]
                     config = load_config(source)

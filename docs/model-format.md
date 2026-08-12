@@ -2,7 +2,8 @@
 
 `evo.cpp` 使用标准 Safetensors 作为生产模型容器。Evo 2 保持严格、确定性的
 `evo2-runtime-v1` profile；第二个 model family 使用独立的
-`hyenadna-runtime-v1` profile。单文件使用 `.safetensors` 后缀；大模型使用
+`hyenadna-runtime-v1` profile；ESMC 使用 `esmc-runtime-v1`。单文件使用
+`.safetensors` 后缀；大模型使用
 标准 Safetensors 分片名与 `model.safetensors.index.json`。
 
 ## 为什么直接建立在 Safetensors 上
@@ -120,6 +121,19 @@ HyenaDNA 使用不冒充 Evo 2 的独立键值：
 runtime.profile = s:hyenadna-runtime-v1
 runtime.abi     = s:hyenadna-safetensors-v1
 ```
+
+ESMC 同样使用独立键值：
+
+```text
+runtime.profile = s:esmc-runtime-v1
+runtime.abi     = s:esmc-safetensors-v1
+```
+
+ESMC runtime tensors 保持官方 F32 names/shapes，按 embedding、每层 attention/
+FFN、final norm、LM head 的确定顺序写出；唯一不写入 runtime 的 source entries
+是 converter 精确枚举的 zero-byte U8 `_extra_state`。
+`runtime.embedding_layer_count` 记录 `num_layers + 1`，对应官方 hidden-state
+indexing。
 
 每个 shard 必须恰好包含一种已注册 profile key，且所有 shard metadata 完全
 相同。profile、ABI、`model.architecture` 和 backend support 由 architecture

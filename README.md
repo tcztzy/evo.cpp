@@ -13,6 +13,9 @@ from strictly validated Safetensors—without PyTorch, Vortex, Transformer
 Engine, Python, or Hopper-only FP8 instructions at inference time.
 An architecture registry also runs the official F32 HyenaDNA causal-LM family
 on CPU through the same CLI, C ABI, embedding, variant, and server surfaces.
+It additionally runs Biohub's public ESMC 300M, 600M, and 6B F32 protein
+transformers natively on CPU or one CUDA GPU, exposing masked-LM logits and
+official hidden-state indices without a Python/PyTorch inference dependency.
 
 ## Why evo.cpp?
 
@@ -139,6 +142,23 @@ build/Release/evo -m hyenadna.safetensors --backend cpu \
   --ctx 1026 --score sequences.fa
 ```
 
+For Biohub ESMC, the torch-free converter consumes a hash-verified fetch
+receipt. ESMC is bidirectional, so its supported CLI operations are `logits`
+and `embed`, not causal score or generation:
+
+```sh
+python3 tools/evo_fetch.py source esmc_300m > fetch.json
+RECEIPT="$(python3 -c 'import json; print(json.load(open("fetch.json"))["receipt"])')"
+PYTHONPATH=tools python3 tools/convert_esmc_checkpoint.py \
+  --receipt "$RECEIPT" --output /models/esmc-300m.safetensors
+
+build/Release/evo logits -m /models/esmc-300m.safetensors \
+  --input proteins.fa --output logits --ctx 2048 --gpu 0
+build/Release/evo embed -m /models/esmc-300m.safetensors \
+  --input proteins.fa --output embeddings --layer 30 \
+  --pooling none --ctx 2048 --gpu 0
+```
+
 All commands default to `--profile exact`, including at long context lengths.
 `--profile fast-q8-kv` is an explicit experimental, approximate paged-cache
 mode; it is never selected from context length alone.
@@ -164,6 +184,7 @@ then see the [7B first-divergence audit](docs/vortex-7b-bit-exactness.md),
 [numerical contracts](docs/math-semantics.md),
 [execution profiles and acceptance gates](docs/execution-profiles.md),
 [architecture registry and HyenaDNA boundary](docs/architectures.md),
+[native Biohub ESMC inference](docs/esmc.md),
 [sequence, gzip, stdin, VCF, and reference input](docs/sequence-inputs.md),
 [checkpoint conversion](docs/checkpoint-conversion.md), and
 [artifact acquisition and releases](docs/artifact-distribution.md),

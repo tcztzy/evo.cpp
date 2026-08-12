@@ -6,6 +6,8 @@
 
 #include "evo/cli.hpp"
 #include "evo/cpu/inference_cli.hpp"
+#include "evo/model_format.hpp"
+#include "evo/model_registry.hpp"
 #include "evo/server.hpp"
 #include "evo/status.hpp"
 #include "evo/tokenizer.hpp"
@@ -40,6 +42,62 @@ int fail(const evo::Status &status) {
   return evo::exit_code(status.code());
 }
 
+evo::Status validate_model_operation(const evo::CliOptions &options) {
+  evo::ModelFile artifact;
+  auto status = artifact.open(options.model_path);
+  if (!status.ok())
+    return status;
+  const auto *const entry = artifact.find_metadata("model.architecture");
+  if (entry == nullptr || entry->type != evo::MetadataType::kString) {
+    return {evo::ErrorCode::kModelFormat,
+            "model.architecture metadata is missing"};
+  }
+  const std::string architecture{entry->value.begin(), entry->value.end()};
+  const auto *const spec = evo::find_architecture(architecture);
+  if (spec == nullptr) {
+    return {evo::ErrorCode::kUnsupported,
+            "artifact architecture is not registered: " + architecture};
+  }
+  unsigned required = 0;
+  switch (options.mode) {
+  case evo::RunMode::kGenerate:
+    required = evo::kArchitectureGenerate;
+    break;
+  case evo::RunMode::kScore:
+  case evo::RunMode::kBench:
+    required = evo::kArchitectureScore;
+    break;
+  case evo::RunMode::kLogits:
+    required = evo::kArchitectureLogits;
+    break;
+  case evo::RunMode::kEmbed:
+    required = evo::kArchitectureEmbed;
+    break;
+  case evo::RunMode::kVariantScore:
+    required = evo::kArchitectureVariant;
+    break;
+  case evo::RunMode::kServe:
+    required = evo::kArchitectureServe;
+    break;
+  }
+  if ((spec->capabilities & required) == 0) {
+    return {evo::ErrorCode::kUnsupported,
+            "operation is not supported by architecture " + architecture};
+  }
+  if (spec->tokenizer == evo::ArchitectureTokenizer::kEsmcProtein &&
+      options.backend != evo::ExecutionBackend::kCpu &&
+      options.inference_profile != evo::InferenceProfile::kExact) {
+    return {evo::ErrorCode::kUnsupported,
+            "ESMC CUDA inference supports only --profile exact"};
+  }
+  if (spec->tokenizer == evo::ArchitectureTokenizer::kEsmcProtein &&
+      options.gpu_ids.size() > 1) {
+    return {evo::ErrorCode::kUnsupported,
+            "ESMC CUDA inference currently supports exactly one GPU"};
+  }
+  return evo::Status::Ok();
+}
+
 } // namespace
 
 int main(const int argc, char **argv) {
@@ -58,9 +116,9 @@ int main(const int argc, char **argv) {
     if (argc == 3) {
       const std::string_view command{argv[1]};
       const std::string_view argument{argv[2]};
-      if ((command == "run" || command == "score" || command == "embed" ||
-           command == "variant-score" || command == "serve" ||
-           command == "bench") &&
+      if ((command == "run" || command == "score" || command == "logits" ||
+           command == "embed" || command == "variant-score" ||
+           command == "serve" || command == "bench") &&
           (argument == "--help" || argument == "-h")) {
         print_help();
         return 0;
@@ -73,13 +131,12 @@ int main(const int argc, char **argv) {
       return fail(status);
     }
     if (!options.hf_repo.empty()) {
-      status = evo::resolve_cached_hf_artifact(options.hf_repo,
-                                               &options.model_path);
+      status =
+          evo::resolve_cached_hf_artifact(options.hf_repo, &options.model_path);
       if (!status.ok()) {
         return fail(status);
       }
     }
-
     if (options.mode == evo::RunMode::kGenerate) {
       if (options.prompt.size() > options.context_size ||
           options.generated_tokens >
@@ -90,6 +147,10 @@ int main(const int argc, char **argv) {
       if (options.dump_tokens) {
         dump_tokens("prompt", options.prompt);
       }
+    }
+    status = validate_model_operation(options);
+    if (!status.ok()) {
+      return fail(status);
     }
 
 #if defined(EVO_ALLOW_TEST_FIXTURE)

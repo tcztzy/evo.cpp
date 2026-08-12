@@ -120,7 +120,7 @@ def main() -> int:
         "esmc-safetensors-v1",
         "esmc-protein",
         "3",
-        "52",
+        "36",
         "0",
     ]
     return 0

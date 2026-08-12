@@ -9,10 +9,17 @@ unknown or contradictory tuple fails before a context is created.
 |---|---|---|---|---|
 | `StripedHyena2` | `evo2-runtime-v1` / `evo2-safetensors-v1` | byte identity, 512 logits | CPU, CUDA | generate, score, embed, variant, serve |
 | `HyenaDNA` | `hyenadna-runtime-v1` / `hyenadna-safetensors-v1` | single-nucleotide IDs, 16 padded logits | CPU | generate, score, embed, variant, serve |
+| `ESMC` | `esmc-runtime-v1` / `esmc-safetensors-v1` | Biohub protein vocabulary, 64 logits | CPU, one CUDA GPU | logits, embed |
 
-`StripedHyena2Test` and `HyenaDNATest` mirror these entries for generated
+`StripedHyena2Test`, `HyenaDNATest`, and `ESMCTest` mirror these entries for generated
 fixtures and require the explicit test-only model flag. They are never
 accepted by production callers accidentally.
+
+The ESMC adapter covers Biohub's registered 300M, 600M, and 6B F32
+bidirectional masked language models. It does not inherit causal generation,
+score, variant, KV-cache, server, or multi-GPU semantics from Evo 2. Its exact
+source identities, tokenizer, conversion, hidden-state indexing, and numerical
+gates are documented in [native ESMC inference](esmc.md).
 
 ## HyenaDNA support boundary
 

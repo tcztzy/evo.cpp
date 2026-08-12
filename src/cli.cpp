@@ -103,6 +103,8 @@ std::string_view cli_usage() noexcept {
          "  evo run -m MODEL -p DNA -n TOKENS [--output-format raw|fasta]\n"
          "  evo run -hf OWNER/REPO[@REV] -p DNA -n TOKENS\n"
          "  evo score -m MODEL --input FASTA_FASTQ_OR_TEXT\n"
+         "  evo logits -m MODEL --input FASTA_FASTQ_OR_TEXT --output DIR "
+         "--gpu 0\n"
          "  evo bench -m MODEL --input FASTA_FASTQ_OR_TEXT "
          "[--warmup N --repetitions N]\n"
          "  evo -m MODEL.safetensors[.index.json] -p DNA -n TOKENS --ctx N "
@@ -121,13 +123,15 @@ std::string_view cli_usage() noexcept {
          "  evo serve -m MODEL --ctx N --gpu 0,1,2,3 [server options]\n\n"
          "Generation output:\n"
          "  --output-format raw|fasta   Stdout encoding (default: raw)\n"
-         "  --name NAME                 FASTA record name (default: generated)\n\n"
+         "  --name NAME                 FASTA record name (default: "
+         "generated)\n\n"
          "Benchmark:\n"
          "  --warmup N                  Unmeasured prefill runs (default: 1)\n"
          "  --repetitions N             Measured prefill runs (default: 5)\n\n"
          "Model source:\n"
          "  -m, --model PATH            Local Safetensors artifact\n"
-         "  -hf, --hf-repo REPO[@REV]  Hash-verified local HF cache artifact\n\n"
+         "  -hf, --hf-repo REPO[@REV]  Hash-verified local HF cache "
+         "artifact\n\n"
          "Server:\n"
          "  --host ADDRESS              IPv4 bind address (default: "
          "127.0.0.1)\n"
@@ -174,6 +178,7 @@ Status parse_cli(const int argc, char *const argv[],
   const bool run_command = argc > 1 && std::string_view{argv[1]} == "run";
   const bool score_command = argc > 1 && std::string_view{argv[1]} == "score";
   const bool bench_command = argc > 1 && std::string_view{argv[1]} == "bench";
+  const bool logits_command = argc > 1 && std::string_view{argv[1]} == "logits";
   const bool embed_command = argc > 1 && std::string_view{argv[1]} == "embed";
   const bool variant_command =
       argc > 1 && std::string_view{argv[1]} == "variant-score";
@@ -184,6 +189,8 @@ Status parse_cli(const int argc, char *const argv[],
     options->mode = RunMode::kScore;
   } else if (bench_command) {
     options->mode = RunMode::kBench;
+  } else if (logits_command) {
+    options->mode = RunMode::kLogits;
   } else if (embed_command) {
     options->mode = RunMode::kEmbed;
   } else if (variant_command) {
@@ -234,11 +241,11 @@ Status parse_cli(const int argc, char *const argv[],
   bool seen_benchmark_warmup = false;
   bool seen_benchmark_repetitions = false;
 
-  const int option_start =
-      run_command || score_command || bench_command || embed_command ||
-              variant_command || server_command
-          ? 2
-          : 1;
+  const int option_start = run_command || score_command || bench_command ||
+                                   logits_command || embed_command ||
+                                   variant_command || server_command
+                               ? 2
+                               : 1;
   for (int index = option_start; index < argc; ++index) {
     const std::string_view option{argv[index]};
     std::string_view value;
@@ -326,7 +333,8 @@ Status parse_cli(const int argc, char *const argv[],
       if (!status.ok())
         return status;
       options->generation_name = value;
-      if (value.empty() || value.find_first_of("\r\n") != std::string_view::npos)
+      if (value.empty() ||
+          value.find_first_of("\r\n") != std::string_view::npos)
         return {ErrorCode::kInvalidArgument,
                 "--name must be nonempty and single-line"};
     } else if (option == "--warmup") {
@@ -782,14 +790,12 @@ Status parse_cli(const int argc, char *const argv[],
         options->dump_logits_path.has_value() ||
         options->dump_layer.has_value() || seen_embed_input ||
         seen_embed_output || seen_embed_layer || seen_embedding_pooling ||
-        seen_variant_sequence || seen_variant_position ||
-        seen_variant_vcf || seen_variant_reference_path ||
-        seen_variant_reference || seen_variant_alternate ||
-        seen_variant_window || seen_variant_strand ||
-        seen_variant_normalization || seen_gpu_layers ||
-        seen_benchmark_input || seen_benchmark_warmup ||
-        seen_benchmark_repetitions || seen_output_format ||
-        seen_generation_name) {
+        seen_variant_sequence || seen_variant_position || seen_variant_vcf ||
+        seen_variant_reference_path || seen_variant_reference ||
+        seen_variant_alternate || seen_variant_window || seen_variant_strand ||
+        seen_variant_normalization || seen_gpu_layers || seen_benchmark_input ||
+        seen_benchmark_warmup || seen_benchmark_repetitions ||
+        seen_output_format || seen_generation_name) {
       return {ErrorCode::kInvalidArgument,
               "serve accepts server options, --ctx, and --gpu only"};
     }
@@ -809,6 +815,34 @@ Status parse_cli(const int argc, char *const argv[],
   }
   if (seen_server_option) {
     return {ErrorCode::kInvalidArgument, "server options require 'evo serve'"};
+  }
+  if (logits_command) {
+    if (seen_prompt || seen_score || seen_tokens ||
+        seen_force_prompt_threshold || seen_temperature || seen_top_k ||
+        seen_top_p || seen_seed || options->dump_logits_path.has_value() ||
+        options->dump_layer.has_value() || seen_embed_layer ||
+        seen_embedding_pooling || seen_variant_sequence || seen_variant_vcf ||
+        seen_variant_reference_path || seen_variant_position ||
+        seen_variant_reference || seen_variant_alternate ||
+        seen_variant_window || seen_variant_strand ||
+        seen_variant_normalization || seen_benchmark_input ||
+        seen_benchmark_warmup || seen_benchmark_repetitions ||
+        seen_output_format || seen_generation_name) {
+      return {ErrorCode::kInvalidArgument,
+              "logits accepts --input/--output, --ctx, --gpu, and "
+              "--dump-tokens only"};
+    }
+    if (!seen_embed_input || options->embed_path.empty()) {
+      return {ErrorCode::kInvalidArgument,
+              "logits requires a nonempty --input path"};
+    }
+    if (!seen_embed_output || options->embed_output_dir.empty()) {
+      return {ErrorCode::kInvalidArgument,
+              "logits requires a nonempty --output directory"};
+    }
+    if (!seen_gpu && requires_gpu)
+      return {ErrorCode::kInvalidArgument, "--gpu is required"};
+    return Status::Ok();
   }
   if (embed_command) {
     if (seen_prompt || seen_score || seen_tokens ||
@@ -897,10 +931,10 @@ Status parse_cli(const int argc, char *const argv[],
     }
     return Status::Ok();
   }
-  if (seen_variant_sequence || seen_variant_position ||
-      seen_variant_vcf || seen_variant_reference_path ||
-      seen_variant_reference || seen_variant_alternate || seen_variant_window ||
-      seen_variant_strand || seen_variant_normalization) {
+  if (seen_variant_sequence || seen_variant_position || seen_variant_vcf ||
+      seen_variant_reference_path || seen_variant_reference ||
+      seen_variant_alternate || seen_variant_window || seen_variant_strand ||
+      seen_variant_normalization) {
     return {ErrorCode::kInvalidArgument,
             "variant arguments require 'evo variant-score'"};
   }
@@ -908,9 +942,10 @@ Status parse_cli(const int argc, char *const argv[],
     if (seen_prompt || seen_score || seen_tokens ||
         seen_force_prompt_threshold || seen_temperature || seen_top_k ||
         seen_top_p || seen_seed || seen_dump_tokens ||
-        options->dump_logits_path.has_value() || options->dump_layer.has_value() ||
-        seen_embed_input || seen_embed_output || seen_embed_layer ||
-        seen_embedding_pooling || seen_output_format || seen_generation_name) {
+        options->dump_logits_path.has_value() ||
+        options->dump_layer.has_value() || seen_embed_input ||
+        seen_embed_output || seen_embed_layer || seen_embedding_pooling ||
+        seen_output_format || seen_generation_name) {
       return {ErrorCode::kInvalidArgument,
               "bench accepts --input, --warmup, --repetitions, --ctx, "
               "--backend/profile, and GPU placement only"};
@@ -927,15 +962,14 @@ Status parse_cli(const int argc, char *const argv[],
     return {ErrorCode::kInvalidArgument,
             "--warmup and --repetitions require 'evo bench'"};
   }
-  if (embed_command || seen_embed_input || seen_embed_output ||
-      seen_embed_layer || seen_embedding_pooling) {
+  if (embed_command || logits_command || seen_embed_input ||
+      seen_embed_output || seen_embed_layer || seen_embedding_pooling) {
     return {ErrorCode::kInvalidArgument,
             "--input, --output, --layer, and --pooling require the matching "
-            "score, bench, or embed command"};
+            "score, bench, logits, or embed command"};
   }
   if (run_command && seen_score) {
-    return {ErrorCode::kInvalidArgument,
-            "run does not accept a scoring input"};
+    return {ErrorCode::kInvalidArgument, "run does not accept a scoring input"};
   }
   if (score_command && seen_prompt) {
     return {ErrorCode::kInvalidArgument,

@@ -14,6 +14,13 @@ evo embed -m evo2.safetensors.index.json \
   --gpu 0
 ```
 
+For ESMC, `layer` follows Biohub Transformers hidden-state indexing instead of
+the recurrent-model block-output convention: `0` is the token embedding,
+`1..n-1` are outputs of blocks `0..n-2`, and `n` is the final layer-normalized
+representation. Its manifest therefore records `point=official_hidden_state`.
+ESMC token rows include the automatically added CLS and EOS. `mean` includes
+both; `last` selects EOS. See [native ESMC inference](esmc.md).
+
 The output directory must be new or empty. It receives one deterministic file
 per input record (`000000.npy`, `000001.npy`, ...) and an
 `embeddings.jsonl` manifest. The same complete metadata lines are written to
@@ -23,7 +30,7 @@ Each manifest row records:
 
 - input `record_index`, `name`, `input_format`, and `source_tokens`;
 - NPY `file`, two-dimensional `shape`, and `dtype=float32`;
-- zero-based `layer` and `point=block_output`;
+- zero-based `layer` and architecture-specific `point`;
 - explicit `pooling`, `backend`, model `profile`, and `model_id` when present.
 
 Pooling has exact, simple semantics:
@@ -37,6 +44,10 @@ file as activation chunks finish; it does not retain the full record matrix in
 host memory. `mean` uses an F64 accumulator of `O(hidden_width)` and writes an
 F32 result, while `last` retains one F32 row. Long records continue through the
 same exact recurrent/KV state as scoring and generation.
+
+That chunking behavior applies to causal Evo 2/HyenaDNA paths. ESMC is
+bidirectional and requires the entire encoded sequence in one forward pass; it
+rejects a record that cannot fit one context rather than chunking it.
 
 If a later FASTA record or inference operation fails, the command exits
 nonzero. Previously completed NPY files and manifest lines remain valid;

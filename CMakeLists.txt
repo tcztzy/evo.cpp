@@ -542,11 +542,24 @@ if(BUILD_TESTING)
   add_executable(evo-esmc-cpu-tests tests/test_esmc_cpu.cpp)
   target_link_libraries(evo-esmc-cpu-tests PRIVATE evo_core)
   evo_configure_target(evo-esmc-cpu-tests)
+  add_executable(evo-esmc-c-api-tests tests/test_esmc_c_api.c)
+  target_link_libraries(evo-esmc-c-api-tests PRIVATE evo::evo)
+  if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(
+      evo-esmc-c-api-tests PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
+    if(EVO_WARNINGS_AS_ERRORS)
+      target_compile_options(evo-esmc-c-api-tests PRIVATE -Werror)
+    endif()
+  elseif(MSVC)
+    target_compile_options(evo-esmc-c-api-tests PRIVATE /W4)
+  endif()
   add_test(
     NAME esmc_backend
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_esmc_backend.py
       --binary $<TARGET_FILE:evo-esmc-cpu-tests>
+      --c-api-binary $<TARGET_FILE:evo-esmc-c-api-tests>
+      --cli-binary $<TARGET_FILE:evo-cpu-cli-test-bin>
       --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_tiny_esmc.py
       --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/esmc-backend)
   set_tests_properties(
@@ -821,6 +834,8 @@ if(BUILD_TESTING)
       COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_esmc_backend.py
         --binary $<TARGET_FILE:evo-cuda-esmc-tests>
+        --cuda-c-api-binary $<TARGET_FILE:evo-esmc-c-api-tests>
+        --cuda-cli-binary $<TARGET_FILE:evo-cuda-cli-test-bin>
         --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_tiny_esmc.py
         --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/cuda_esmc)
     add_test(

@@ -19,7 +19,7 @@ execute_process(
 if(NOT help_result EQUAL 0 OR NOT help_output MATCHES "Usage:")
   message(FATAL_ERROR "evo --help contract failed: ${help_error}${help_output}")
 endif()
-foreach(command IN ITEMS run score embed variant-score serve bench)
+foreach(command IN ITEMS run score logits embed variant-score serve bench)
   if(NOT help_output MATCHES "evo ${command}")
     message(FATAL_ERROR "evo --help omitted ${command} command")
   endif()

@@ -123,3 +123,21 @@ build/evo -m hyenadna.safetensors --backend cpu --ctx 1026 \
 12-token source vocabulary padded 到 16，以及 `max_seq_len ≤ 4096`。其他
 topology、dtype、缺失/额外 tensor 或 source hash 不一致均 typed fail。完整
 runtime/tokenizer 边界见 [architecture registry](architectures.md)。
+
+## Biohub ESMC Hugging Face Safetensors
+
+ESMC 300M、600M 与 6B 使用独立 `esmc-runtime-v1` profile。转换器不依赖
+PyTorch 或 Python `safetensors` package；输入必须是 `evo-fetch source` 生成的
+hash-verified receipt：
+
+```sh
+python3 tools/evo_fetch.py source esmc_300m > fetch.json
+RECEIPT="$(python3 -c 'import json; print(json.load(open("fetch.json"))["receipt"])')"
+PYTHONPATH=tools python3 tools/convert_esmc_checkpoint.py \
+  --receipt "$RECEIPT" --output esmc-300m.safetensors
+```
+
+converter 在写出前校验 pinned repo/revision、全部文件 hash、config、tokenizer、
+完整 F32 tensor manifest 及预期的 zero-byte U8 `_extra_state`。6B 自动产生标准
+Safetensors shards/index。架构、模型 ID、权重名与运行命令见
+[ESMC native inference](esmc.md)。

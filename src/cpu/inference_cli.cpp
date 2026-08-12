@@ -16,8 +16,8 @@
 #include <string_view>
 #include <vector>
 
-#include "evo/cpu/model.hpp"
 #include "evo/benchmark.hpp"
+#include "evo/cpu/model.hpp"
 #include "evo/generation_io.hpp"
 #include "evo/model_format.hpp"
 #include "evo/sampler.hpp"
@@ -30,6 +30,14 @@ namespace evo::cpu {
 namespace {
 
 using Clock = std::chrono::steady_clock;
+
+std::size_t esmc_input_byte_limit(const std::size_t context_size) noexcept {
+  constexpr std::size_t kLongestTokenBytes = 6;
+  return context_size >
+                 std::numeric_limits<std::size_t>::max() / kLongestTokenBytes
+             ? std::numeric_limits<std::size_t>::max()
+             : context_size * kLongestTokenBytes;
+}
 
 void write_json_string(std::ostream &output, const std::string_view value) {
   constexpr char hex[] = "0123456789abcdef";
@@ -163,8 +171,7 @@ void print_score(const SequenceRecord &record,
   const double mean = total / static_cast<double>(scores.size());
   std::cout << "{\"name\":";
   write_json_string(std::cout, record.name);
-  std::cout << ",\"input_format\":\""
-            << sequence_format_name(record.format)
+  std::cout << ",\"input_format\":\"" << sequence_format_name(record.format)
             << "\",\"backend\":\"cpu\",\"profile\":\"cpu-f32\",\"model_id\":";
   write_json_string(std::cout, config.model_id);
   std::cout << ",\"tokens\":" << record.bytes.size()
@@ -313,9 +320,8 @@ Status run_bench(const CliOptions &options, const Model &model) {
         for (std::size_t index = 0; index < options.benchmark_warmup; ++index) {
           status = measure(nullptr);
           if (!status.ok())
-            return {status.code(), "benchmark warmup " +
-                                       std::to_string(index) + ": " +
-                                       status.message()};
+            return {status.code(), "benchmark warmup " + std::to_string(index) +
+                                       ": " + status.message()};
         }
         BenchmarkReport report;
         report.model_path = options.model_path;
@@ -382,9 +388,9 @@ Status run_variant_one(const CliOptions &options, const Model &model,
                        const std::size_t coordinate_offset,
                        const VcfRecord *const vcf) {
   VariantWindow window;
-  auto status = make_variant_window(sequence, position_1based, reference,
-                                    alternate, options.variant_window_tokens,
-                                    &window);
+  auto status =
+      make_variant_window(sequence, position_1based, reference, alternate,
+                          options.variant_window_tokens, &window);
   if (!status.ok())
     return status;
   std::vector<StrandScore> scores;
@@ -421,8 +427,8 @@ Status run_variant_one(const CliOptions &options, const Model &model,
     if (status.ok())
       status = reverse_complement(window.alternate, &reverse_alternate);
     if (status.ok())
-      status = add(reverse_reference, reverse_alternate,
-                   VariantStrand::kReverse);
+      status =
+          add(reverse_reference, reverse_alternate, VariantStrand::kReverse);
     if (!status.ok())
       return status;
   }
@@ -431,8 +437,7 @@ Status run_variant_one(const CliOptions &options, const Model &model,
     aggregate += score.delta;
   aggregate /= static_cast<double>(scores.size());
   std::ostringstream output;
-  output << "{\"source\":\"" << (vcf == nullptr ? "inline" : "vcf")
-         << "\"";
+  output << "{\"source\":\"" << (vcf == nullptr ? "inline" : "vcf") << "\"";
   if (vcf != nullptr) {
     output << ",\"record_index\":" << vcf->record_index
            << ",\"allele_index\":" << vcf->allele_index
@@ -444,14 +449,13 @@ Status run_variant_one(const CliOptions &options, const Model &model,
   output << ",\"position\":"
          << (vcf == nullptr ? position_1based : vcf->position_1based)
          << ",\"position_coordinate_system\":\""
-         << (vcf == nullptr ? "1-based" : "VCF-1-based")
-         << "\",\"reference\":";
+         << (vcf == nullptr ? "1-based" : "VCF-1-based") << "\",\"reference\":";
   write_json_string(output, reference);
   output << ",\"alternate\":";
   write_json_string(output, alternate);
   output << ",\"window\":{\"start\":"
-         << coordinate_offset + window.reference_start << ",\"end\":"
-         << coordinate_offset + window.reference_end
+         << coordinate_offset + window.reference_start
+         << ",\"end\":" << coordinate_offset + window.reference_end
          << ",\"coordinate_system\":\"0-based-half-open\"";
   if (vcf != nullptr) {
     output << ",\"contig\":";
@@ -475,8 +479,7 @@ Status run_variant_one(const CliOptions &options, const Model &model,
            << "\",\"reference_log_likelihood\":" << std::setprecision(17)
            << scores[index].reference
            << ",\"alternate_log_likelihood\":" << scores[index].alternate
-           << ",\"reference_scored_tokens\":"
-           << window.reference.size() - 1
+           << ",\"reference_scored_tokens\":" << window.reference.size() - 1
            << ",\"alternate_scored_tokens\":" << window.alternate.size() - 1
            << ",\"delta\":" << scores[index].delta << '}';
   }
@@ -484,18 +487,19 @@ Status run_variant_one(const CliOptions &options, const Model &model,
          << (scores.size() == 1 ? "single_strand" : "mean_across_strands")
          << "\",\"score\":" << aggregate << "}\n";
   const auto document = output.str();
-  std::cout.write(document.data(), static_cast<std::streamsize>(document.size()));
-  return std::cout ? Status::Ok()
-                   : Status{ErrorCode::kIo,
-                            "failed writing variant score JSONL"};
+  std::cout.write(document.data(),
+                  static_cast<std::streamsize>(document.size()));
+  return std::cout
+             ? Status::Ok()
+             : Status{ErrorCode::kIo, "failed writing variant score JSONL"};
 }
 
 Status run_variant(const CliOptions &options, const Model &model) {
   if (options.variant_vcf_path.empty()) {
-    return run_variant_one(
-        options, model, options.variant_sequence,
-        options.variant_position_1based, options.variant_reference,
-        options.variant_alternate, 0, nullptr);
+    return run_variant_one(options, model, options.variant_sequence,
+                           options.variant_position_1based,
+                           options.variant_reference, options.variant_alternate,
+                           0, nullptr);
   }
   const auto status = stream_vcf_file(
       options.variant_vcf_path, [&](const VcfRecord &record) -> Status {
@@ -508,8 +512,7 @@ Status run_variant(const CliOptions &options, const Model &model) {
           return {inner.code(), "VCF line " +
                                     std::to_string(record.line_number) + ": " +
                                     inner.message()};
-        const std::size_t local_position =
-            record.position_1based - slice.start;
+        const std::size_t local_position = record.position_1based - slice.start;
         return run_variant_one(options, model, slice.sequence, local_position,
                                record.reference, record.alternate, slice.start,
                                &record);
@@ -517,9 +520,93 @@ Status run_variant(const CliOptions &options, const Model &model) {
   if (!status.ok())
     return status;
   std::cout.flush();
-  return std::cout ? Status::Ok()
-                   : Status{ErrorCode::kIo,
-                            "failed writing variant score JSONL"};
+  return std::cout
+             ? Status::Ok()
+             : Status{ErrorCode::kIo, "failed writing variant score JSONL"};
+}
+
+Status prepare_matrix_output(const std::string &path,
+                             const std::string_view manifest_name,
+                             std::ofstream *const manifest) {
+  if (manifest == nullptr)
+    return {ErrorCode::kInvalidArgument, "matrix manifest output is null"};
+  const std::filesystem::path directory{path};
+  std::error_code error;
+  if (std::filesystem::exists(directory, error)) {
+    if (error || !std::filesystem::is_directory(directory, error) ||
+        std::filesystem::directory_iterator{directory, error} !=
+            std::filesystem::directory_iterator{}) {
+      return {ErrorCode::kInvalidArgument,
+              "matrix output directory must be empty"};
+    }
+  } else if (!std::filesystem::create_directories(directory, error) || error) {
+    return {ErrorCode::kIo, "cannot create matrix output directory"};
+  }
+  manifest->open(directory / manifest_name, std::ios::binary | std::ios::trunc);
+  if (!*manifest)
+    return {ErrorCode::kIo, "cannot create matrix manifest"};
+  return Status::Ok();
+}
+
+Status run_logits(const CliOptions &options, const Model &model) {
+  std::ofstream manifest;
+  auto status = prepare_matrix_output(options.embed_output_dir, "logits.jsonl",
+                                      &manifest);
+  if (!status.ok())
+    return status;
+  const std::filesystem::path directory{options.embed_output_dir};
+  std::size_t record_index = 0;
+  return stream_sequence_file(
+      options.embed_path, esmc_input_byte_limit(options.context_size),
+      [&](const SequenceRecord &record) -> Status {
+        std::vector<TokenId> tokens;
+        auto inner = model.encode(record.bytes, &tokens);
+        if (!inner.ok())
+          return inner;
+        if (tokens.size() > options.context_size) {
+          return {ErrorCode::kInvalidArgument,
+                  "encoded logits record exceeds --ctx"};
+        }
+        if (options.dump_tokens) {
+          std::cerr << "tokens " << record.name << "=[";
+          for (std::size_t index = 0; index < tokens.size(); ++index) {
+            if (index != 0)
+              std::cerr.put(',');
+            std::cerr << tokens[index];
+          }
+          std::cerr << "]\n";
+        }
+        Context context;
+        inner = context.initialize_shared(model, options.context_size);
+        if (!inner.ok())
+          return inner;
+        std::vector<float> logits;
+        inner = context.prefill(tokens, &logits);
+        if (!inner.ok())
+          return inner;
+        std::ostringstream filename;
+        filename << std::setw(6) << std::setfill('0') << record_index << ".npy";
+        inner = write_npy_f32(directory / filename.str(), logits, tokens.size(),
+                              model.config().vocab_size);
+        if (!inner.ok())
+          return inner;
+        manifest << "{\"record_index\":" << record_index << ",\"name\":";
+        write_json_string(manifest, record.name);
+        manifest << ",\"input_format\":\""
+                 << sequence_format_name(record.format) << "\",\"file\":";
+        write_json_string(manifest, filename.str());
+        manifest << ",\"source_bytes\":" << record.bytes.size()
+                 << ",\"tokens\":" << tokens.size() << ",\"shape\":["
+                 << tokens.size() << ',' << model.config().vocab_size
+                 << "],\"dtype\":\"float32\",\"backend\":\"cpu\","
+                    "\"profile\":\"cpu-f32\",\"model_id\":";
+        write_json_string(manifest, model.config().model_id);
+        manifest << "}\n";
+        ++record_index;
+        return manifest
+                   ? Status::Ok()
+                   : Status{ErrorCode::kIo, "failed writing logits manifest"};
+      });
 }
 
 const char *pooling_name(const EmbeddingPooling pooling) noexcept {
@@ -535,7 +622,11 @@ const char *pooling_name(const EmbeddingPooling pooling) noexcept {
 }
 
 Status run_embed(const CliOptions &options, const Model &model) {
-  if (options.embed_layer >= model.config().layers)
+  const bool esmc =
+      model.config().tokenizer == ArchitectureTokenizer::kEsmcProtein;
+  const std::size_t layer_count =
+      model.config().layers + static_cast<std::size_t>(esmc);
+  if (options.embed_layer >= layer_count)
     return {ErrorCode::kInvalidArgument, "embedding layer exceeds CPU model"};
   const std::filesystem::path directory{options.embed_output_dir};
   std::error_code error;
@@ -554,7 +645,8 @@ Status run_embed(const CliOptions &options, const Model &model) {
     return {ErrorCode::kIo, "cannot create embedding manifest"};
   std::size_t record_index = 0;
   return stream_sequence_file(
-      options.embed_path, options.context_size,
+      options.embed_path,
+      esmc ? esmc_input_byte_limit(options.context_size) : options.context_size,
       [&](const SequenceRecord &record) -> Status {
         Context context;
         auto status = context.initialize_shared(model, options.context_size);
@@ -564,6 +656,10 @@ Status run_embed(const CliOptions &options, const Model &model) {
         status = model.encode(record.bytes, &tokens);
         if (!status.ok())
           return status;
+        if (tokens.size() > options.context_size) {
+          return {ErrorCode::kInvalidArgument,
+                  "encoded embedding record exceeds --ctx"};
+        }
         std::vector<float> all;
         std::size_t offset = 0;
         bool first = true;
@@ -611,8 +707,9 @@ Status run_embed(const CliOptions &options, const Model &model) {
         write_json_string(manifest, filename.str());
         manifest << ",\"source_tokens\":" << tokens.size() << ",\"shape\":["
                  << rows << ',' << width
-                 << "],\"layer\":" << options.embed_layer
-                 << ",\"point\":\"block_output\",\"pooling\":\""
+                 << "],\"layer\":" << options.embed_layer << ",\"point\":\""
+                 << (esmc ? "official_hidden_state" : "block_output")
+                 << "\",\"pooling\":\""
                  << pooling_name(options.embedding_pooling)
                  << "\",\"dtype\":\"float32\",\"backend\":\"cpu\","
                     "\"profile\":\"cpu-f32\",\"model_id\":";
@@ -646,10 +743,28 @@ Status run_inference_cli(const CliOptions &options,
     return status;
   const double load_seconds =
       std::chrono::duration<double>(Clock::now() - load_start).count();
+  const auto *const architecture =
+      find_architecture(model.config().architecture);
+  unsigned capability = 0;
+  if (options.mode == RunMode::kGenerate)
+    capability = kArchitectureGenerate;
+  else if (options.mode == RunMode::kScore || options.mode == RunMode::kBench)
+    capability = kArchitectureScore;
+  else if (options.mode == RunMode::kLogits)
+    capability = kArchitectureLogits;
+  else if (options.mode == RunMode::kEmbed)
+    capability = kArchitectureEmbed;
+  else if (options.mode == RunMode::kVariantScore)
+    capability = kArchitectureVariant;
+  if (architecture == nullptr || (architecture->capabilities & capability) == 0)
+    return {ErrorCode::kUnsupported,
+            "operation is not supported by the CPU model architecture"};
   if (options.mode == RunMode::kGenerate)
     status = run_generate(options, model);
   else if (options.mode == RunMode::kScore)
     status = run_score(options, model);
+  else if (options.mode == RunMode::kLogits)
+    status = run_logits(options, model);
   else if (options.mode == RunMode::kEmbed)
     status = run_embed(options, model);
   else if (options.mode == RunMode::kVariantScore)

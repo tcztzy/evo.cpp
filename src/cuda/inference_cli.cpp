@@ -22,9 +22,10 @@
 
 #include <cuda_runtime_api.h>
 
+#include "evo/benchmark.hpp"
+#include "evo/cuda/esmc.hpp"
 #include "evo/cuda/model.hpp"
 #include "evo/cuda/runtime.hpp"
-#include "evo/benchmark.hpp"
 #include "evo/generation_io.hpp"
 #include "evo/model_format.hpp"
 #include "evo/npy.hpp"
@@ -38,6 +39,14 @@ namespace evo::cuda {
 namespace {
 
 using Clock = std::chrono::steady_clock;
+
+std::size_t esmc_input_byte_limit(const std::size_t context_size) noexcept {
+  constexpr std::size_t kLongestTokenBytes = 6;
+  return context_size >
+                 std::numeric_limits<std::size_t>::max() / kLongestTokenBytes
+             ? std::numeric_limits<std::size_t>::max()
+             : context_size * kLongestTokenBytes;
+}
 
 double seconds_since(const Clock::time_point start) {
   return std::chrono::duration<double>(Clock::now() - start).count();
@@ -226,8 +235,7 @@ void print_score_record(const SequenceRecord &record,
 
   std::cout << "{\"name\":";
   write_json_string(std::cout, record.name);
-  std::cout << ",\"input_format\":\""
-            << sequence_format_name(record.format)
+  std::cout << ",\"input_format\":\"" << sequence_format_name(record.format)
             << "\",\"backend\":\"cuda\",\"profile\":";
   write_json_string(std::cout,
                     inference_profile_name(config.inference_profile));
@@ -275,8 +283,8 @@ void write_embedding_metadata(
     const EmbeddingPooling pooling, const RuntimeModelConfig &config) {
   output << "{\"record_index\":" << record_index << ",\"name\":";
   write_json_string(output, record.name);
-  output << ",\"input_format\":\""
-         << sequence_format_name(record.format) << "\",\"file\":";
+  output << ",\"input_format\":\"" << sequence_format_name(record.format)
+         << "\",\"file\":";
   write_json_string(output, filename);
   output << ",\"source_tokens\":" << source_tokens << ",\"shape\":[" << rows
          << ',' << columns << "],\"layer\":" << layer
@@ -294,8 +302,9 @@ void write_embedding_metadata(
   output << "}\n";
 }
 
-Status prepare_embedding_output(const std::string &path,
-                                std::ofstream *const manifest) {
+Status prepare_matrix_output(const std::string &path,
+                             const std::string_view manifest_name,
+                             std::ofstream *const manifest) {
   if (manifest == nullptr)
     return {ErrorCode::kInvalidArgument, "embedding manifest output is null"};
   const std::filesystem::path directory{path};
@@ -320,7 +329,7 @@ Status prepare_embedding_output(const std::string &path,
               "cannot create embedding output directory '" + path + "'"};
     }
   }
-  const auto manifest_path = directory / "embeddings.jsonl";
+  const auto manifest_path = directory / manifest_name;
   manifest->open(manifest_path, std::ios::binary | std::ios::trunc);
   if (!*manifest) {
     return {ErrorCode::kIo,
@@ -636,12 +645,11 @@ Status run_bench(const CliOptions &options, PipelineModel *const model,
         const auto measure = [&](double *const elapsed) -> Status {
           std::vector<float> logits;
           Metrics iteration;
-          const bool stateless =
-              tokens.size() <= model->activation_capacity();
+          const bool stateless = tokens.size() <= model->activation_capacity();
           const auto start = Clock::now();
-          auto inner = prefill_in_chunks(
-              tokens, tokens.size(), std::nullopt, false, false, stateless,
-              model, &logits, &iteration);
+          auto inner =
+              prefill_in_chunks(tokens, tokens.size(), std::nullopt, false,
+                                false, stateless, model, &logits, &iteration);
           const double duration = seconds_since(start);
           if (!inner.ok())
             return inner;
@@ -653,9 +661,8 @@ Status run_bench(const CliOptions &options, PipelineModel *const model,
         for (std::size_t index = 0; index < options.benchmark_warmup; ++index) {
           status = measure(nullptr);
           if (!status.ok())
-            return {status.code(), "benchmark warmup " +
-                                       std::to_string(index) + ": " +
-                                       status.message()};
+            return {status.code(), "benchmark warmup " + std::to_string(index) +
+                                       ": " + status.message()};
         }
         BenchmarkReport report;
         report.model_path = options.model_path;
@@ -800,9 +807,9 @@ Status run_variant_one(const CliOptions &options,
                        const VcfRecord *const vcf, PipelineModel *const model,
                        MemoryTracker *const memory, Metrics *const metrics) {
   VariantWindow window;
-  auto status = make_variant_window(sequence, position_1based, reference,
-                                    alternate, options.variant_window_tokens,
-                                    &window);
+  auto status =
+      make_variant_window(sequence, position_1based, reference, alternate,
+                          options.variant_window_tokens, &window);
   if (!status.ok())
     return status;
 
@@ -837,8 +844,7 @@ Status run_variant_one(const CliOptions &options,
   if (options.variant_strand == VariantStrand::kReverse ||
       options.variant_strand == VariantStrand::kBoth) {
     std::string reverse_reference_sequence;
-    status =
-        reverse_complement(window.reference, &reverse_reference_sequence);
+    status = reverse_complement(window.reference, &reverse_reference_sequence);
     if (!status.ok())
       return status;
     std::string reverse_alternate_sequence;
@@ -848,8 +854,8 @@ Status run_variant_one(const CliOptions &options,
     VariantStrandScore result;
     status = score_variant_strand(
         reverse_reference_sequence, reverse_alternate_sequence,
-        VariantStrand::kReverse,
-        options.variant_normalization, model, metrics, &result);
+        VariantStrand::kReverse, options.variant_normalization, model, metrics,
+        &result);
     if (!status.ok())
       return status;
     scores.push_back(result);
@@ -863,8 +869,7 @@ Status run_variant_one(const CliOptions &options,
     aggregate += score.delta;
   aggregate /= static_cast<double>(scores.size());
   std::ostringstream output;
-  output << "{\"source\":\"" << (vcf == nullptr ? "inline" : "vcf")
-         << "\"";
+  output << "{\"source\":\"" << (vcf == nullptr ? "inline" : "vcf") << "\"";
   if (vcf != nullptr) {
     output << ",\"record_index\":" << vcf->record_index
            << ",\"allele_index\":" << vcf->allele_index
@@ -876,14 +881,13 @@ Status run_variant_one(const CliOptions &options,
   output << ",\"position\":"
          << (vcf == nullptr ? position_1based : vcf->position_1based)
          << ",\"position_coordinate_system\":\""
-         << (vcf == nullptr ? "1-based" : "VCF-1-based")
-         << "\",\"reference\":";
+         << (vcf == nullptr ? "1-based" : "VCF-1-based") << "\",\"reference\":";
   write_json_string(output, reference);
   output << ",\"alternate\":";
   write_json_string(output, alternate);
   output << ",\"window\":{\"start\":"
-         << coordinate_offset + window.reference_start << ",\"end\":"
-         << coordinate_offset + window.reference_end
+         << coordinate_offset + window.reference_start
+         << ",\"end\":" << coordinate_offset + window.reference_end
          << ",\"coordinate_system\":\"0-based-half-open\"";
   if (vcf != nullptr) {
     output << ",\"contig\":";
@@ -915,19 +919,17 @@ Status run_variant_one(const CliOptions &options,
     output << "{\"strand\":\"" << score.strand
            << "\",\"reference_log_likelihood\":" << std::setprecision(17)
            << score.reference_log_likelihood
-           << ",\"alternate_log_likelihood\":"
-           << score.alternate_log_likelihood
-           << ",\"reference_scored_tokens\":"
-           << score.reference_scored_tokens
-           << ",\"alternate_scored_tokens\":"
-           << score.alternate_scored_tokens << ",\"delta\":" << score.delta
-           << '}';
+           << ",\"alternate_log_likelihood\":" << score.alternate_log_likelihood
+           << ",\"reference_scored_tokens\":" << score.reference_scored_tokens
+           << ",\"alternate_scored_tokens\":" << score.alternate_scored_tokens
+           << ",\"delta\":" << score.delta << '}';
   }
   output << "],\"aggregation\":\""
          << (scores.size() == 1 ? "single_strand" : "mean_across_strands")
          << "\",\"score\":" << aggregate << "}\n";
   const auto document = output.str();
-  std::cout.write(document.data(), static_cast<std::streamsize>(document.size()));
+  std::cout.write(document.data(),
+                  static_cast<std::streamsize>(document.size()));
   if (!std::cout) {
     return {ErrorCode::kIo, "failed to write variant score JSON to stdout"};
   }
@@ -937,10 +939,10 @@ Status run_variant_one(const CliOptions &options,
 Status run_variant_score(const CliOptions &options, PipelineModel *const model,
                          MemoryTracker *const memory, Metrics *const metrics) {
   if (options.variant_vcf_path.empty()) {
-    return run_variant_one(
-        options, options.variant_sequence, options.variant_position_1based,
-        options.variant_reference, options.variant_alternate, 0, nullptr,
-        model, memory, metrics);
+    return run_variant_one(options, options.variant_sequence,
+                           options.variant_position_1based,
+                           options.variant_reference, options.variant_alternate,
+                           0, nullptr, model, memory, metrics);
   }
   const auto status = stream_vcf_file(
       options.variant_vcf_path, [&](const VcfRecord &record) -> Status {
@@ -954,8 +956,7 @@ Status run_variant_score(const CliOptions &options, PipelineModel *const model,
                                     std::to_string(record.line_number) + ": " +
                                     inner.message()};
         }
-        const std::size_t local_position =
-            record.position_1based - slice.start;
+        const std::size_t local_position = record.position_1based - slice.start;
         return run_variant_one(options, slice.sequence, local_position,
                                record.reference, record.alternate, slice.start,
                                &record, model, memory, metrics);
@@ -963,9 +964,9 @@ Status run_variant_score(const CliOptions &options, PipelineModel *const model,
   if (!status.ok())
     return status;
   std::cout.flush();
-  return std::cout ? Status::Ok()
-                   : Status{ErrorCode::kIo,
-                            "failed writing variant score JSONL"};
+  return std::cout
+             ? Status::Ok()
+             : Status{ErrorCode::kIo, "failed writing variant score JSONL"};
 }
 
 Status run_embed(const CliOptions &options, PipelineModel *const model,
@@ -977,7 +978,8 @@ Status run_embed(const CliOptions &options, PipelineModel *const model,
                 ")"};
   }
   std::ofstream manifest;
-  auto status = prepare_embedding_output(options.embed_output_dir, &manifest);
+  auto status = prepare_matrix_output(options.embed_output_dir,
+                                      "embeddings.jsonl", &manifest);
   if (!status.ok())
     return status;
   const std::filesystem::path output_directory{options.embed_output_dir};
@@ -1115,6 +1117,171 @@ Status run_embed(const CliOptions &options, PipelineModel *const model,
   return status;
 }
 
+Status encode_esmc_record(const CliOptions &options,
+                          const SequenceRecord &record,
+                          std::vector<TokenId> *const tokens) {
+  auto status = encode_sequence(ArchitectureTokenizer::kEsmcProtein,
+                                record.bytes, tokens);
+  if (!status.ok())
+    return status;
+  if (tokens->size() > options.context_size) {
+    return {ErrorCode::kInvalidArgument,
+            "encoded ESMC record exceeds --ctx after special tokens"};
+  }
+  if (options.dump_tokens) {
+    std::cerr << "tokens " << record.name << "=[";
+    for (std::size_t index = 0; index < tokens->size(); ++index) {
+      if (index != 0)
+        std::cerr.put(',');
+      std::cerr << (*tokens)[index];
+    }
+    std::cerr << "]\n";
+  }
+  return Status::Ok();
+}
+
+Status run_esmc_logits(const CliOptions &options, EsmcModel *const model,
+                       MemoryTracker *const memory, Metrics *const metrics) {
+  std::ofstream manifest;
+  auto status = prepare_matrix_output(options.embed_output_dir, "logits.jsonl",
+                                      &manifest);
+  if (!status.ok())
+    return status;
+  const std::filesystem::path directory{options.embed_output_dir};
+  std::size_t record_index = 0;
+  return stream_sequence_file(
+      options.embed_path, esmc_input_byte_limit(options.context_size),
+      [&](const SequenceRecord &record) -> Status {
+        std::vector<TokenId> tokens;
+        auto inner = encode_esmc_record(options, record, &tokens);
+        if (!inner.ok())
+          return inner;
+        EsmcContext context;
+        inner = context.initialize_shared(*model, options.context_size);
+        if (!inner.ok())
+          return inner;
+        std::vector<float> logits;
+        const auto start = Clock::now();
+        inner = context.prefill(tokens, &logits);
+        metrics->prefill_seconds += seconds_since(start);
+        metrics->prefill_tokens += tokens.size();
+        metrics->retained_logits_peak_bytes = std::max(
+            metrics->retained_logits_peak_bytes, logits.size() * sizeof(float));
+        if (!inner.ok())
+          return inner;
+        std::ostringstream filename;
+        filename << std::setw(6) << std::setfill('0') << record_index << ".npy";
+        inner = npy::write_f32((directory / filename.str()).string(), logits,
+                               tokens.size(), model->config().vocab_size);
+        if (!inner.ok())
+          return inner;
+        inner = memory->observe();
+        if (!inner.ok())
+          return inner;
+        manifest << "{\"record_index\":" << record_index << ",\"name\":";
+        write_json_string(manifest, record.name);
+        manifest << ",\"input_format\":\""
+                 << sequence_format_name(record.format) << "\",\"file\":";
+        write_json_string(manifest, filename.str());
+        manifest << ",\"source_bytes\":" << record.bytes.size()
+                 << ",\"tokens\":" << tokens.size() << ",\"shape\":["
+                 << tokens.size() << ',' << model->config().vocab_size
+                 << "],\"dtype\":\"float32\",\"backend\":\"cuda\","
+                    "\"profile\":\"exact\",\"model_id\":";
+        write_json_string(manifest, model->config().model_id);
+        manifest << "}\n";
+        ++record_index;
+        return manifest ? Status::Ok()
+                        : Status{ErrorCode::kIo,
+                                 "failed writing ESMC logits manifest"};
+      });
+}
+
+Status run_esmc_embed(const CliOptions &options, EsmcModel *const model,
+                      MemoryTracker *const memory, Metrics *const metrics) {
+  if (options.embed_layer > model->config().layers) {
+    return {ErrorCode::kInvalidArgument,
+            "ESMC hidden-state index is outside [0, num_layers]"};
+  }
+  std::ofstream manifest;
+  auto status = prepare_matrix_output(options.embed_output_dir,
+                                      "embeddings.jsonl", &manifest);
+  if (!status.ok())
+    return status;
+  const std::filesystem::path directory{options.embed_output_dir};
+  std::size_t record_index = 0;
+  return stream_sequence_file(
+      options.embed_path, esmc_input_byte_limit(options.context_size),
+      [&](const SequenceRecord &record) -> Status {
+        std::vector<TokenId> tokens;
+        auto inner = encode_esmc_record(options, record, &tokens);
+        if (!inner.ok())
+          return inner;
+        EsmcContext context;
+        inner = context.initialize_shared(*model, options.context_size);
+        if (!inner.ok())
+          return inner;
+        std::vector<float> values;
+        const auto start = Clock::now();
+        inner = context.prefill_embedding(tokens, options.embed_layer, &values);
+        metrics->prefill_seconds += seconds_since(start);
+        metrics->prefill_tokens += tokens.size();
+        if (!inner.ok())
+          return inner;
+        const std::size_t width = model->config().width;
+        std::size_t rows = tokens.size();
+        if (options.embedding_pooling == EmbeddingPooling::kMean) {
+          std::vector<float> pooled(width, 0.0F);
+          for (std::size_t row = 0; row < rows; ++row)
+            for (std::size_t column = 0; column < width; ++column)
+              pooled[column] +=
+                  values[row * width + column] / static_cast<float>(rows);
+          values = std::move(pooled);
+          rows = 1;
+        } else if (options.embedding_pooling == EmbeddingPooling::kLast) {
+          values = std::vector<float>(
+              values.end() - static_cast<std::ptrdiff_t>(width), values.end());
+          rows = 1;
+        }
+        std::ostringstream filename;
+        filename << std::setw(6) << std::setfill('0') << record_index << ".npy";
+        inner = npy::write_f32((directory / filename.str()).string(), values,
+                               rows, width);
+        if (!inner.ok())
+          return inner;
+        inner = memory->observe();
+        if (!inner.ok())
+          return inner;
+        manifest << "{\"record_index\":" << record_index << ",\"name\":";
+        write_json_string(manifest, record.name);
+        manifest << ",\"input_format\":\""
+                 << sequence_format_name(record.format) << "\",\"file\":";
+        write_json_string(manifest, filename.str());
+        manifest << ",\"source_tokens\":" << tokens.size() << ",\"shape\":["
+                 << rows << ',' << width
+                 << "],\"layer\":" << options.embed_layer
+                 << ",\"point\":\"official_hidden_state\",\"pooling\":\""
+                 << pooling_name(options.embedding_pooling)
+                 << "\",\"dtype\":\"float32\",\"backend\":\"cuda\","
+                    "\"profile\":\"exact\",\"model_id\":";
+        write_json_string(manifest, model->config().model_id);
+        manifest << "}\n";
+        ++record_index;
+        return manifest ? Status::Ok()
+                        : Status{ErrorCode::kIo,
+                                 "failed writing ESMC embedding manifest"};
+      });
+}
+
+bool is_esmc_artifact(const ModelFile &model) {
+  const auto *const entry = model.find_metadata("model.architecture");
+  if (entry == nullptr || entry->type != MetadataType::kString)
+    return false;
+  const std::string_view architecture{
+      reinterpret_cast<const char *>(entry->value.data()), entry->value.size()};
+  return architecture == "ESMC" || architecture == "ESMCTest";
+}
+
 void print_metrics(const Metrics &metrics, const MemoryTracker &memory,
                    const std::vector<StageAssignment> &stages,
                    const bool q8_kv_cache,
@@ -1189,6 +1356,48 @@ Status run_inference_cli(const CliOptions &options,
   status = model_file.open(options.model_path);
   if (!status.ok()) {
     return status;
+  }
+  if (is_esmc_artifact(model_file)) {
+    if (options.gpu_ids.size() != 1) {
+      return {ErrorCode::kUnsupported,
+              "ESMC CUDA inference requires exactly one GPU"};
+    }
+    if (options.inference_profile != InferenceProfile::kExact) {
+      return {ErrorCode::kUnsupported,
+              "ESMC CUDA inference supports only the exact profile"};
+    }
+    if (options.mode != RunMode::kLogits && options.mode != RunMode::kEmbed) {
+      return {ErrorCode::kUnsupported,
+              "ESMC supports only logits and embedding inference"};
+    }
+    std::cerr << "evo: loading native F32 ESMC on CUDA device "
+              << options.gpu_ids.front() << '\n';
+    EsmcModel model;
+    status = model.load(model_file, options.gpu_ids, allow_test_fixture);
+    metrics.model_load_seconds = seconds_since(load_start);
+    if (!status.ok())
+      return status;
+    status = memory.observe();
+    if (!status.ok())
+      return status;
+    status = options.mode == RunMode::kLogits
+                 ? run_esmc_logits(options, &model, &memory, &metrics)
+                 : run_esmc_embed(options, &model, &memory, &metrics);
+    if (!status.ok())
+      return status;
+    const double rate = metrics.prefill_seconds > 0.0
+                            ? static_cast<double>(metrics.prefill_tokens) /
+                                  metrics.prefill_seconds
+                            : 0.0;
+    std::cerr << "evo_metrics {\"backend\":\"cuda\",\"profile\":\"exact\","
+                 "\"architecture\":\"ESMC\",\"model_load_seconds\":"
+              << std::setprecision(9) << metrics.model_load_seconds
+              << ",\"prefill_tokens\":" << metrics.prefill_tokens
+              << ",\"prefill_seconds\":" << metrics.prefill_seconds
+              << ",\"prefill_tokens_per_second\":" << rate
+              << ",\"retained_logits_peak_bytes\":"
+              << metrics.retained_logits_peak_bytes << "}\n";
+    return Status::Ok();
   }
   std::cerr
       << "evo: loading native BF16/software-E4M3 pipeline on CUDA devices";
