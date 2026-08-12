@@ -20,6 +20,7 @@ evo.cpp !成为本地、可嵌入、可移植的生物序列基础模型推理�
 - C12: ESMC 是最大 2048 tokens（含 `<cls>`/`<eos>`）的双向 masked encoder；v1 只承诺 logits/hidden-state embedding，⊥autoregressive generation、causal score、variant likelihood 或 recurrent chunking。
 - C13: ESMC v1 CUDA !先支持单 device exact path；multi-GPU/CPU+GPU offload 必须 typed unsupported，⊥静默退化。
 - C14: ESMC 接入 !保持 Evo 2/HyenaDNA artifact、tokenization、CLI、C ABI 与数值 gate 行为不变。
+- C15: gpu02 Hugging Face 工作 !统一 `HF_HOME=/build/grp_icg/users/tang/.cache/huggingface`；repo cache !位于 `$HF_HOME/hub`，⊥在低配额 `$HOME` 重建 checkpoint cache。
 
 ## §I INTERFACES
 
@@ -87,6 +88,7 @@ R12|ESMC weights|当前 300M/600M revision 分别为 `a59b831…`/`a7e8201…` �
 - V31: ESMC change 后 full CPU suite 与既有相关 gpu02 Evo 2/HyenaDNA gates !green；⊥修改已有模型生成/token/logit semantics。
 - V32: ESMC CUDA v1 ∀ device selection → exactly one CUDA device；0/2+ devices 或 unsupported compute/runtime → typed fail，且失败前⊥部分输出。
 - V33: ESMC hidden index !bit-exact 对齐 pinned Transformers `layers_to_collect`：`0=token_embedding`、`i∈[1,n-1]=block(i-1)_output`、`n=final_layer_norm`；⊥沿用旧 ESM SDK 的逐 block-output convention。
+- V34: gpu02 ESMC fetch/conversion/oracle gate → !export C15 `HF_HOME` 且默认 `cache_dir=$HF_HOME/hub`；显式 override !可审计。
 
 ## §T TASKS
 
@@ -112,7 +114,7 @@ T18|x|注册三尺寸；实现 pinned HF source fetch/receipt、`esmc-runtime-v1
 T19|x|实现 bit-exact protein tokenizer 与 CPU F32 forward/logits/embedding；tiny oracle tests|C10,C12,V11,V25,V26,V27,V29,V30,I10,I12
 T20|x|实现单卡 CUDA F32 ESMC forward/logits/embedding 与 typed unsupported 边界|C10,C12,C13,V26,V27,V29,V30,V32,I10,I12
 T21|x|接入 C API/CLI/HF offline artifact validation；补 logits/embedding metadata、能力 gate 与用户文档|C9,C12,C14,V24,V25,V27,V29,I2,I6,I10,I11,I12
-T22| |生成 pinned 官方 oracle；gpu02 验证三尺寸；跑 full regression、记录证据并清理非制品文件|C8,C10,C14,V16,V26,V28,V30,V31
+T22| |生成 pinned 官方 oracle；gpu02 验证三尺寸；跑 full regression、记录证据并清理非制品文件|C8,C10,C14,C15,V16,V26,V28,V30,V31,V34
 
 ## §B BUGS
 
@@ -152,3 +154,4 @@ B31|2026-08-12|通用 Transformers 5.1 loader 把 TE 的 Safetensors `_extra_sta
 B32|2026-08-12|BioNeMo 容器的可选 FlashAttention Triton RoPE 找不到无版本 `libcuda.so`→oracle 固定使用 pinned 官方 pure-PyTorch RoPE fallback 与 manual F32 attention，避免环境相关 kernel dispatch|R8,V26,V30
 B33|2026-08-12|ESMC 验收脚本在 gpu02 宿主直接启动容器构建的 CUDA binary→动态链接器找不到 `libcudart.so.12`|V16,V30
 B34|2026-08-12|初次 oracle 隐式采用可选 Transformer Engine fused reduction，与原生/官方 portable fallback 的顺序不同且将 hidden 微差放大为 logits 超阈值→oracle manifest 固定并校验官方 PyTorch F32 fallback|R8,V26,V30
+B35|2026-08-12|ESMC gpu02 gate 默认在低配额 `$HOME` 建 HF cache，违背集群共享高容量缓存约定并触发重复下载→统一 export C15 `HF_HOME`，repo cache 固定其 `hub/` child|C15,V34

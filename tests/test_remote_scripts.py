@@ -572,6 +572,13 @@ def main() -> int:
         assert model_id in esmc_validation
     assert "tools/evo_fetch.py" in esmc_validation
     assert "--local-files-only" in esmc_validation
+    assert (
+        "/build/grp_icg/users/tang/.cache/huggingface" in esmc_validation
+    )
+    assert 'export HF_HOME="$hf_home"' in esmc_validation
+    assert 'cache_dir="${EVO_ESMC_CACHE_DIR:-$HF_HOME/hub}"' in (
+        esmc_validation
+    )
     assert "convert_esmc_checkpoint.py" in esmc_validation
     assert "generate_esmc_official_oracle.py" in esmc_validation
     assert "compare_esmc_oracle.py" in esmc_validation
