@@ -51,6 +51,7 @@ printf '%s\n' "${EVO_ESMC_SOURCE_COMMIT:-unavailable-rsync-checkout}" \
 
 container_python() {
   /usr/bin/apptainer exec \
+    -B "$HF_HOME:$HF_HOME:ro" \
     --env "PYTHONPATH=$reference_pythonpath" \
     "$reference_image" python3 "$@"
 }
@@ -93,6 +94,7 @@ for model_id in $models; do
 
   if ! test -f "$runtime_output" && ! test -f "$runtime_output.index.json"; then
     /usr/bin/apptainer exec \
+      -B "$HF_HOME:$HF_HOME:ro" \
       --env "PYTHONPATH=$source_dir/tools:$reference_pythonpath" \
       "$reference_image" python3 "$source_dir/tools/convert_esmc_checkpoint.py" \
       --receipt "$receipt" --registry "$registry" --output "$runtime_output" \
@@ -105,6 +107,7 @@ for model_id in $models; do
 
   if ! test -f "$oracle_dir/oracle.json"; then
     CUDA_VISIBLE_DEVICES="$gpu_id" /usr/bin/apptainer exec --nv \
+      -B "$HF_HOME:$HF_HOME:ro" \
       --env "PYTHONPATH=$reference_pythonpath" \
       --env "CUDA_VISIBLE_DEVICES=$gpu_id" \
       "$reference_image" python3 \

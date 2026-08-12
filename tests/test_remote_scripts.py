@@ -579,6 +579,7 @@ def main() -> int:
     assert 'cache_dir="${EVO_ESMC_CACHE_DIR:-$HF_HOME/hub}"' in (
         esmc_validation
     )
+    assert esmc_validation.count('-B "$HF_HOME:$HF_HOME:ro"') == 3
     assert "convert_esmc_checkpoint.py" in esmc_validation
     assert "generate_esmc_official_oracle.py" in esmc_validation
     assert "compare_esmc_oracle.py" in esmc_validation

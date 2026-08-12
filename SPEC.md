@@ -158,3 +158,4 @@ B35|2026-08-12|ESMC gpu02 gate 默认在低配额 `$HOME` 建 HF cache，违背�
 B36|2026-08-12|全量本机回归偶发让 test thread 在两次顺序 submit 间停顿超过 40ms，合法形成 2 batches 却被脆弱时序断言判失败→batch contract 使用宽窗口，取消/异常 case 隔离到 zero-window scheduler|V16
 B37|2026-08-12|官方 tokenizer 对用户字面 `<pad>` 仍输出 attention-mask 1；原生 attention 仅凭 token ID 1 当自动 padding→batch-one runtime 取消隐式 ID mask，tiny oracle 纳入显式 `<pad>`|V25,V26,V30
 B38|2026-08-12|共享 `HF_HOME` 已有精确 revision snapshot 且 21/21 注册 SHA256 正确，但 `huggingface_hub` 离线 API 因客户端元数据布局差异拒绝命中→`evo-fetch source --local-files-only` 对 immutable commit snapshot 直接定位 registry 文件并先验 size/SHA256；缺失或不符仍 fail closed|C15,V28,V34
+B39|2026-08-12|gpu02 宿主可读共享 `HF_HOME`，但 BioNeMo Apptainer image 默认不 bind `/build/grp_icg`→ESMC fetch/conversion/oracle 容器统一显式只读 bind C15 `HF_HOME` 到同路径，避免误报 snapshot 缺失或复制权重|C15,V28,V34
