@@ -107,7 +107,7 @@ T14|x|移除公共全量 sequence reader；测试与 consumer 统一 streaming A
 T15|x|实现 `-hf/--hf-repo REPO[@REV]` 已验证本地 cache artifact 解析|V2,V10,V16,I2,I4
 T16|x|审计 production exact model ID；补真实 checkpoint raw-bit 证据或显式降级为 experimental/unsupported|V1,V10,V16,V22,I4
 T17|x|核实官方 ESMC IDs/架构/tokenizer/权重/license/reference；审计扩展点并固化兼容边界|C9,C10,C12,C14,R6,R7,R8,R9,R10,R11,R12,V24,V27
-T18| |注册三尺寸；实现 pinned HF source fetch/receipt、`esmc-runtime-v1` converter/loader 与 corruption tests|C8,C9,C11,V10,V24,V28,I4,I9,I11
+T18|x|注册三尺寸；实现 pinned HF source fetch/receipt、`esmc-runtime-v1` converter/loader 与 corruption tests|C8,C9,C11,V10,V24,V28,I4,I9,I11
 T19| |实现 bit-exact protein tokenizer 与 CPU F32 forward/logits/embedding；tiny oracle tests|C10,C12,V11,V25,V26,V27,V29,V30,I10,I12
 T20| |实现单卡 CUDA F32 ESMC forward/logits/embedding 与 typed unsupported 边界|C10,C12,C13,V26,V27,V29,V30,V32,I10,I12
 T21| |接入 C API/CLI/HF offline artifact validation；补 logits/embedding metadata、能力 gate 与用户文档|C9,C12,C14,V24,V25,V27,V29,I2,I6,I10,I11,I12

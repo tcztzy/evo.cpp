@@ -18,6 +18,7 @@ PROFILE_KEY = "evo2.profile"
 PROFILE_VALUE = "evo2-runtime-v1"
 RUNTIME_PROFILE_KEY = "runtime.profile"
 HYENADNA_PROFILE_VALUE = "hyenadna-runtime-v1"
+ESMC_PROFILE_VALUE = "esmc-runtime-v1"
 HEADER_ALIGNMENT = 8
 MAX_HEADER_SIZE = 16 * 1024 * 1024
 MAX_RANK = 8
@@ -138,8 +139,8 @@ def encode_metadata(
         encoded[key] = _encode_metadata_value(metadata[key])
     if artifact_profile == PROFILE_VALUE:
         encoded[PROFILE_KEY] = f"s:{PROFILE_VALUE}"
-    elif artifact_profile == HYENADNA_PROFILE_VALUE:
-        encoded[RUNTIME_PROFILE_KEY] = f"s:{HYENADNA_PROFILE_VALUE}"
+    elif artifact_profile in {HYENADNA_PROFILE_VALUE, ESMC_PROFILE_VALUE}:
+        encoded[RUNTIME_PROFILE_KEY] = f"s:{artifact_profile}"
     else:
         raise FormatError(f"unsupported artifact profile {artifact_profile!r}")
     return dict(sorted(encoded.items()))

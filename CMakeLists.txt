@@ -699,6 +699,17 @@ if(BUILD_TESTING)
     PROPERTIES ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools")
 
   add_test(
+    NAME esmc_converter_contract
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_esmc_converter.py
+      --converter ${CMAKE_CURRENT_SOURCE_DIR}/tools/convert_esmc_checkpoint.py
+      --inspector $<TARGET_FILE:evo-inspect>
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/esmc-converter)
+  set_tests_properties(
+    esmc_converter_contract
+    PROPERTIES ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools")
+
+  add_test(
     NAME checkpoint_torch_integration
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_torch_checkpoint.py)

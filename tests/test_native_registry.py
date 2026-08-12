@@ -23,6 +23,7 @@ def main() -> int:
         [str(args.binary)], check=True, text=True, capture_output=True
     ).stdout.splitlines()
     native: dict[str, list[str]] = {}
+    native_esmc: dict[str, list[str]] = {}
     architectures: dict[str, list[str]] = {}
     for line in lines:
         fields = line.split("|")
@@ -30,11 +31,20 @@ def main() -> int:
             assert len(fields) == 8, line
             architectures[fields[1]] = fields[2:]
             continue
+        if fields[0] == "$":
+            assert len(fields) == 11, line
+            native_esmc[fields[1]] = fields[2:]
+            continue
         assert len(fields) == 22, line
         native[fields[0]] = fields[1:]
-    assert set(native) == set(registry["models"])
+    evo_models = {
+        model_id: entry
+        for model_id, entry in registry["models"].items()
+        if entry.get("family", "evo2") == "evo2"
+    }
+    assert set(native) == set(evo_models)
 
-    for model_id, entry in registry["models"].items():
+    for model_id, entry in evo_models.items():
         profile = registry["profiles"][entry["profile"]]
         fields = native[model_id]
         assert int(fields[0]) == 512
@@ -59,11 +69,35 @@ def main() -> int:
         assert indices(fields[18]) == profile["attn_layer_idxs"]
         assert fields[19] == entry["exact_support"]
         assert fields[20] == (entry["exact_evidence"] or "")
+    esmc_models = {
+        model_id: entry
+        for model_id, entry in registry["models"].items()
+        if entry.get("family") == "esmc"
+    }
+    assert set(native_esmc) == set(esmc_models)
+    for model_id, entry in esmc_models.items():
+        profile = registry["esmc_profiles"][entry["profile"]]
+        fields = native_esmc[model_id]
+        assert fields[:3] == [
+            entry["source_repo"],
+            entry["source_revision"],
+            entry["hosted_alias"],
+        ]
+        assert [int(value) for value in fields[3:]] == [
+            profile["vocab_size"],
+            profile["hidden_size"],
+            profile["num_layers"],
+            profile["num_attention_heads"],
+            profile["inner_mlp_size"],
+            profile["max_seqlen"],
+        ]
     assert set(architectures) == {
         "StripedHyena2",
         "StripedHyena2Test",
         "HyenaDNA",
         "HyenaDNATest",
+        "ESMC",
+        "ESMCTest",
     }
     assert architectures["StripedHyena2"] == [
         "evo2-runtime-v1",
@@ -79,6 +113,14 @@ def main() -> int:
         "hyenadna-character",
         "1",
         "31",
+        "0",
+    ]
+    assert architectures["ESMC"] == [
+        "esmc-runtime-v1",
+        "esmc-safetensors-v1",
+        "esmc-protein",
+        "3",
+        "52",
         "0",
     ]
     return 0

@@ -53,11 +53,20 @@ int main() {
               << evo::official_exact_support_name(model.exact_support) << '|'
               << model.exact_evidence << '\n';
   }
+  for (const auto &model : evo::official_esmc_model_specs()) {
+    std::cout << "$|" << model.id << '|' << model.huggingface_repo << '|'
+              << model.huggingface_revision << '|' << model.hosted_alias << '|'
+              << model.vocab_size << '|' << model.hidden_size << '|'
+              << model.layers << '|' << model.heads << '|' << model.inner_width
+              << '|' << model.max_seqlen << '\n';
+  }
   for (const auto &architecture : evo::architecture_specs()) {
-    const char *tokenizer =
-        architecture.tokenizer == evo::ArchitectureTokenizer::kByteIdentity
-            ? "byte"
-            : "hyenadna-character";
+    const char *tokenizer = "esmc-protein";
+    if (architecture.tokenizer == evo::ArchitectureTokenizer::kByteIdentity)
+      tokenizer = "byte";
+    else if (architecture.tokenizer ==
+             evo::ArchitectureTokenizer::kHyenaDnaCharacter)
+      tokenizer = "hyenadna-character";
     std::cout << "@|" << architecture.id << '|'
               << architecture.artifact_profile << '|'
               << architecture.runtime_abi << '|' << tokenizer << '|'

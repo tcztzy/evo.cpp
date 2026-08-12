@@ -18,7 +18,11 @@ from typing import Any
 COMMIT_RE = re.compile(r"[0-9a-fA-F]{40}")
 SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
 REPO_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*")
-RUNTIME_PROFILE = "evo2-runtime-v1"
+RUNTIME_PROFILES = {
+    "evo2-runtime-v1",
+    "hyenadna-runtime-v1",
+    "esmc-runtime-v1",
+}
 
 
 class FetchError(RuntimeError):
@@ -56,10 +60,14 @@ def validate_relative_path(value: object, label: str) -> str:
 
 
 def validate_revision(value: object) -> str:
-    if not isinstance(value, str) or not value or any(
-        character.isspace() for character in value
+    if (
+        not isinstance(value, str)
+        or not value
+        or any(character.isspace() for character in value)
     ):
-        raise FetchError("repository revision must be nonempty and contain no whitespace")
+        raise FetchError(
+            "repository revision must be nonempty and contain no whitespace"
+        )
     path = PurePosixPath(value)
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
         raise FetchError("repository revision must not contain path traversal")
@@ -70,7 +78,9 @@ def default_registry() -> Path:
     override = os.environ.get("EVO_MODEL_REGISTRY")
     if override:
         return Path(override)
-    source_candidate = Path(__file__).resolve().parents[1] / "configs" / "model-registry.json"
+    source_candidate = (
+        Path(__file__).resolve().parents[1] / "configs" / "model-registry.json"
+    )
     if source_candidate.is_file():
         return source_candidate
     installed_candidate = (
@@ -195,7 +205,9 @@ def download_verified(
                 f"{name} integrity mismatch: size={size}, sha256={actual_sha256}; "
                 f"expected size={expected_size}, sha256={expected_sha256}"
             )
-        print(f"evo-fetch: cached {name} failed verification; refreshing", file=sys.stderr)
+        print(
+            f"evo-fetch: cached {name} failed verification; refreshing", file=sys.stderr
+        )
         path = acquire(True)
     raise AssertionError("unreachable verification loop")
 
@@ -366,8 +378,12 @@ def runtime_command(args: argparse.Namespace) -> dict[str, object]:
     manifest = load_json(manifest_path, "runtime artifact manifest")
     if manifest.get("schema_version") != 1:
         raise FetchError("runtime artifact manifest schema_version must be 1")
-    if manifest.get("artifact_profile") != RUNTIME_PROFILE:
-        raise FetchError(f"runtime artifact profile must be {RUNTIME_PROFILE}")
+    artifact_profile = manifest.get("artifact_profile")
+    if artifact_profile not in RUNTIME_PROFILES:
+        raise FetchError(
+            "runtime artifact profile must be one of "
+            + ", ".join(sorted(RUNTIME_PROFILES))
+        )
     files_value = manifest.get("files")
     if not isinstance(files_value, list) or not files_value:
         raise FetchError("runtime artifact manifest files must be a nonempty array")
@@ -397,12 +413,15 @@ def runtime_command(args: argparse.Namespace) -> dict[str, object]:
         local_files_only=args.local_files_only,
         extra={
             "model_id": model_id,
-            "artifact_profile": RUNTIME_PROFILE,
+            "artifact_profile": artifact_profile,
             "manifest_path": str(manifest_path),
             "manifest_sha256": manifest_sha256,
         },
     )
-    paths = {PurePosixPath(str(entry["name"])): str(entry["path"]) for entry in receipt["files"]}
+    paths = {
+        PurePosixPath(str(entry["name"])): str(entry["path"])
+        for entry in receipt["files"]
+    }
     receipt["load_path"] = paths[PurePosixPath(load_path)]
     write_receipt(args.cache_dir, receipt)
     return receipt
@@ -417,7 +436,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--local-files-only", action="store_true")
     parser.add_argument("--print-path", action="store_true")
     commands = parser.add_subparsers(dest="command", required=True)
-    source = commands.add_parser("source", help="fetch a registry-pinned source checkpoint")
+    source = commands.add_parser(
+        "source", help="fetch a registry-pinned source checkpoint"
+    )
     source.add_argument("model")
     source.add_argument("--registry", type=Path, default=default_registry())
     runtime = commands.add_parser("runtime", help="fetch a manifested runtime artifact")

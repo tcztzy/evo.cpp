@@ -88,6 +88,11 @@
       "use_fp8_input_projections": true
     }
   },
+  "esmc_profiles": {
+    "300m": {"hidden_size": 960, "num_layers": 30, "num_attention_heads": 15, "inner_mlp_size": 2560, "vocab_size": 64, "max_seqlen": 2048},
+    "600m": {"hidden_size": 1152, "num_layers": 36, "num_attention_heads": 18, "inner_mlp_size": 3072, "vocab_size": 64, "max_seqlen": 2048},
+    "6b": {"hidden_size": 2560, "num_layers": 80, "num_attention_heads": 40, "inner_mlp_size": 6912, "vocab_size": 64, "max_seqlen": 2048}
+  },
   "models": {
     "evo2_1b_base": {
       "profile": "1b_base",
@@ -258,6 +263,54 @@
       "source_manifest": {"tensors": 537, "bf16": 386, "f32": 151, "bytes": 82254368768},
       "runtime_manifest": {"tensors": 537, "bf16": 386, "f32": 151, "bytes": 82254368768},
       "container_manifest": {"tensors": 537, "bf16": 386, "f32": 151, "e4m3": 0, "bytes": 82254368768}
+    },
+    "esmc_300m": {
+      "family": "esmc", "architecture": "ESMC", "profile": "300m",
+      "hosted_alias": "esmc-300m-2024-12",
+      "source_repo": "biohub/ESMC-300M",
+      "source_revision": "a59b831785f907e96e6a246b1d142bfb76df31ee",
+      "checkpoint_files": [
+        {"name": "config.json", "size": 340, "sha256": "0d4c14b1e7192175b5ce8bb6c0eaa6b06c02645d49d6708c84fc3c765fe83a04"},
+        {"name": "tokenizer.json", "size": 2879, "sha256": "8d3447b278176e65fb3ef0224472927bf5fee3be46ea2bd77fad0111423cee1f"},
+        {"name": "tokenizer_config.json", "size": 1392, "sha256": "e8d8e40c9f92b334f0272e80bb65ed4043cb9836523cbae899e9859e8cbb8833"},
+        {"name": "special_tokens_map.json", "size": 171, "sha256": "0b7245ec86c8c3aeaf61523ba70dfa79be137e6283f127bd651adc30b4f15c74"},
+        {"name": "model.safetensors", "size": 1332036392, "sha256": "0772d8fe64bb25e14fe6f23b80e3c9a7d215d0da3c6cba5bd356d7c0e0bb22cc"}
+      ],
+      "source_manifest": {"tensors": 308, "f32": 308, "extra_states": 90, "bytes": 1331988736}
+    },
+    "esmc_600m": {
+      "family": "esmc", "architecture": "ESMC", "profile": "600m",
+      "hosted_alias": "esmc-600m-2024-12",
+      "source_repo": "biohub/ESMC-600M",
+      "source_revision": "a7e82012c83126b9eedb055fea9fa84b6c02f094",
+      "checkpoint_files": [
+        {"name": "config.json", "size": 341, "sha256": "d7472be972ebd9f6d3afa659ca35a8080c8e4462813dd9801827329659ee9c43"},
+        {"name": "tokenizer.json", "size": 2879, "sha256": "8d3447b278176e65fb3ef0224472927bf5fee3be46ea2bd77fad0111423cee1f"},
+        {"name": "tokenizer_config.json", "size": 1392, "sha256": "e8d8e40c9f92b334f0272e80bb65ed4043cb9836523cbae899e9859e8cbb8833"},
+        {"name": "special_tokens_map.json", "size": 171, "sha256": "0b7245ec86c8c3aeaf61523ba70dfa79be137e6283f127bd651adc30b4f15c74"},
+        {"name": "model.safetensors", "size": 2300205696, "sha256": "e4232c30fd35fe2f57051ec88a703996ac94520580b4b836894207a3d45d9ff8"}
+      ],
+      "source_manifest": {"tensors": 368, "f32": 368, "extra_states": 108, "bytes": 2300147968}
+    },
+    "esmc_6b": {
+      "family": "esmc", "architecture": "ESMC", "profile": "6b",
+      "hosted_alias": "esmc-6b-2024-12",
+      "source_repo": "biohub/ESMC-6B",
+      "source_revision": "45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a",
+      "checkpoint_files": [
+        {"name": "config.json", "size": 341, "sha256": "c5566fab6a17fd674141331fe75de917b7904d99fb7a410d2b1593c21e576913"},
+        {"name": "tokenizer.json", "size": 2879, "sha256": "8d3447b278176e65fb3ef0224472927bf5fee3be46ea2bd77fad0111423cee1f"},
+        {"name": "tokenizer_config.json", "size": 1392, "sha256": "e8d8e40c9f92b334f0272e80bb65ed4043cb9836523cbae899e9859e8cbb8833"},
+        {"name": "special_tokens_map.json", "size": 171, "sha256": "0b7245ec86c8c3aeaf61523ba70dfa79be137e6283f127bd651adc30b4f15c74"},
+        {"name": "model.safetensors.index.json", "size": 97349, "sha256": "6846456e20e6ee2c37461f7bfc21d316d69bdaf165b925691afcb39e583244da"},
+        {"name": "model-00001-of-00006.safetensors", "size": 4864457920, "sha256": "bd90149ff223e6ac1a0cac6147a5ae0df20d3a21df4f65356a1f19cd14f4aa8a"},
+        {"name": "model-00002-of-00006.safetensors", "size": 4971211344, "sha256": "f75e2144d8269fe2eb4b3e0823fb089b94f176d8024153e85b8fb573a42294fa"},
+        {"name": "model-00003-of-00006.safetensors", "size": 4863752992, "sha256": "f699f01ecc9691d9c6470492765fe54b8b5d2e9f277c139e89427433ffdfe0b2"},
+        {"name": "model-00004-of-00006.safetensors", "size": 4971211344, "sha256": "46add1b7be098bbfdc3073884851ba3057f1b33ea23a158b650a37007dabd13d"},
+        {"name": "model-00005-of-00006.safetensors", "size": 4863752992, "sha256": "1e1cb62f060a34e18f54a31a76683ef888b8cec59e73315f5b31d25d45a1f88c"},
+        {"name": "model-00006-of-00006.safetensors", "size": 873762296, "sha256": "56c73e13ae96e777ce65eee99364056069ef93b646470f352f83c5f1037b1b18"}
+      ],
+      "source_manifest": {"tensors": 808, "f32": 808, "extra_states": 240, "bytes": 25408020736}
     }
   }
 }

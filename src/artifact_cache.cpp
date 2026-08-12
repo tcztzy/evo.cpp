@@ -2,6 +2,7 @@
 #include "artifact_cache.hpp"
 
 #include "evo/json.hpp"
+#include "evo/model_registry.hpp"
 
 #include <algorithm>
 #include <array>
@@ -27,7 +28,6 @@ namespace fs = std::filesystem;
 constexpr std::size_t kMaximumManifestBytes = 8U << 20U;
 constexpr std::size_t kMaximumReceiptBytes = 16U << 20U;
 constexpr std::size_t kMaximumArtifactFiles = 10000;
-constexpr std::string_view kArtifactProfile = "evo2-runtime-v1";
 
 class Sha256 final {
 public:
@@ -371,7 +371,8 @@ Status canonical_artifact_path(const fs::path &repo_root,
 Status require_receipt(const fs::path &path, const std::string &repo,
                        const std::string &revision,
                        const std::string &manifest_sha256,
-                       const std::string &model_id) {
+                       const std::string &model_id,
+                       const std::string_view artifact_profile) {
   JsonValue receipt;
   std::string bytes;
   auto status = json_document(path, kMaximumReceiptBytes, &receipt, &bytes);
@@ -394,7 +395,7 @@ Status require_receipt(const fs::path &path, const std::string &repo,
       receipt_repo == nullptr || receipt_repo->string != repo ||
       resolved == nullptr || lower_hex(resolved->string) != revision ||
       profile == nullptr ||
-      std::string_view{profile->string} != kArtifactProfile ||
+      std::string_view{profile->string} != artifact_profile ||
       receipt_model == nullptr || receipt_model->string != model_id ||
       digest == nullptr || !is_hex(digest->string, 64U) ||
       lower_hex(digest->string) != manifest_sha256) {
@@ -467,7 +468,7 @@ Status resolve_cached_hf_artifact(const std::string_view repository,
   const auto *const files = member(manifest, "files", JsonType::kArray);
   if (!integer_value(manifest.find("schema_version"), &schema) || schema != 1U ||
       profile == nullptr ||
-      std::string_view{profile->string} != kArtifactProfile ||
+      find_artifact_profile(profile->string) == nullptr ||
       model_id == nullptr || model_id->string.empty() || load_path == nullptr ||
       !normalized_relative(load_path->string) || files == nullptr ||
       files->array.empty() || files->array.size() > kMaximumArtifactFiles) {
@@ -493,7 +494,7 @@ Status resolve_cached_hf_artifact(const std::string_view repository,
   const fs::path receipt = cache / "evo-receipts" / cache_name / revision /
                            "runtime-artifact.json";
   status = require_receipt(receipt, repo, revision, manifest_sha256,
-                           model_id->string);
+                           model_id->string, profile->string);
   if (!status.ok())
     return status;
 

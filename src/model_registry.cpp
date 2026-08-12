@@ -127,6 +127,31 @@ Status require_official_exact_support(const std::string_view model_id) {
   return Status::Ok();
 }
 
+const std::vector<OfficialEsmcModelSpec> &official_esmc_model_specs() {
+  static const std::vector<OfficialEsmcModelSpec> specs{
+      {"esmc_300m", "biohub/ESMC-300M",
+       "a59b831785f907e96e6a246b1d142bfb76df31ee", "esmc-300m-2024-12",
+       64, 960, 30, 15, 2560, 2048},
+      {"esmc_600m", "biohub/ESMC-600M",
+       "a7e82012c83126b9eedb055fea9fa84b6c02f094", "esmc-600m-2024-12",
+       64, 1152, 36, 18, 3072, 2048},
+      {"esmc_6b", "biohub/ESMC-6B",
+       "45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a", "esmc-6b-2024-12",
+       64, 2560, 80, 40, 6912, 2048},
+  };
+  return specs;
+}
+
+const OfficialEsmcModelSpec *
+find_official_esmc_model(const std::string_view model_id) noexcept {
+  const auto &specs = official_esmc_model_specs();
+  const auto found =
+      std::find_if(specs.begin(), specs.end(), [model_id](const auto &item) {
+        return item.id == model_id;
+      });
+  return found == specs.end() ? nullptr : &*found;
+}
+
 const std::vector<ArchitectureSpec> &architecture_specs() {
   constexpr unsigned all_capabilities =
       kArchitectureGenerate | kArchitectureScore | kArchitectureEmbed |
@@ -146,6 +171,14 @@ const std::vector<ArchitectureSpec> &architecture_specs() {
       {"HyenaDNATest", "hyenadna-runtime-v1", "hyenadna-safetensors-v1",
        ArchitectureTokenizer::kHyenaDnaCharacter, kArchitectureBackendCpu,
        all_capabilities, true},
+      {"ESMC", "esmc-runtime-v1", "esmc-safetensors-v1",
+       ArchitectureTokenizer::kEsmcProtein,
+       kArchitectureBackendCpu | kArchitectureBackendCuda,
+       kArchitectureEmbed | kArchitectureLogits | kArchitectureServe, false},
+      {"ESMCTest", "esmc-runtime-v1", "esmc-safetensors-v1",
+       ArchitectureTokenizer::kEsmcProtein,
+       kArchitectureBackendCpu | kArchitectureBackendCuda,
+       kArchitectureEmbed | kArchitectureLogits | kArchitectureServe, true},
   };
   return specs;
 }

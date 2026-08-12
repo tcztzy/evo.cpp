@@ -12,6 +12,7 @@ namespace evo {
 enum class ArchitectureTokenizer {
   kByteIdentity,
   kHyenaDnaCharacter,
+  kEsmcProtein,
 };
 
 enum ArchitectureBackend : unsigned {
@@ -25,6 +26,7 @@ enum ArchitectureCapability : unsigned {
   kArchitectureEmbed = 1U << 2U,
   kArchitectureVariant = 1U << 3U,
   kArchitectureServe = 1U << 4U,
+  kArchitectureLogits = 1U << 5U,
 };
 
 struct ArchitectureSpec final {
@@ -67,6 +69,19 @@ struct OfficialModelSpec final {
   std::vector<std::size_t> attention;
 };
 
+struct OfficialEsmcModelSpec final {
+  std::string_view id;
+  std::string_view huggingface_repo;
+  std::string_view huggingface_revision;
+  std::string_view hosted_alias;
+  std::size_t vocab_size;
+  std::size_t hidden_size;
+  std::size_t layers;
+  std::size_t heads;
+  std::size_t inner_width;
+  std::size_t max_seqlen;
+};
+
 [[nodiscard]] const std::vector<OfficialModelSpec> &official_model_specs();
 [[nodiscard]] const OfficialModelSpec *
 find_official_model(std::string_view model_id) noexcept;
@@ -74,6 +89,10 @@ find_official_model(std::string_view model_id) noexcept;
 official_exact_support_name(OfficialExactSupport support) noexcept;
 [[nodiscard]] Status
 require_official_exact_support(std::string_view model_id);
+[[nodiscard]] const std::vector<OfficialEsmcModelSpec> &
+official_esmc_model_specs();
+[[nodiscard]] const OfficialEsmcModelSpec *
+find_official_esmc_model(std::string_view model_id) noexcept;
 [[nodiscard]] const std::vector<ArchitectureSpec> &architecture_specs();
 [[nodiscard]] const ArchitectureSpec *
 find_architecture(std::string_view architecture) noexcept;
