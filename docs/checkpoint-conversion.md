@@ -6,6 +6,16 @@
 模型、revision、checksum、source/runtime manifest 的机器可读来源是
 [`configs/model-registry.json`](../configs/model-registry.json)。
 
+可先用注册表锁定的 fetch helper 获取并验证源 checkpoint：
+
+```sh
+python3 -m pip install -r requirements-fetch.txt
+CHECKPOINT="$(python3 tools/evo_fetch.py --print-path source evo2_7b)"
+```
+
+cache、离线模式、runtime artifact manifest 与 release provenance 见
+[`artifact-distribution.md`](artifact-distribution.md)。
+
 ## Arc `.pt`
 
 创建独立转换环境：

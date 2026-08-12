@@ -44,9 +44,12 @@ PyTorch 只用于离线 checkpoint 转换：
 python3 -m venv .venv-convert
 . .venv-convert/bin/activate
 python3 -m pip install -r requirements-convert.txt
+python3 -m pip install -r requirements-fetch.txt
+
+CHECKPOINT="$(python3 tools/evo_fetch.py --print-path source evo2_7b)"
 
 scripts/convert_arc_checkpoint.sh \
-  evo2_7b /models/evo2_7b.pt /models/evo2-7b.safetensors
+  evo2_7b "$CHECKPOINT" /models/evo2-7b.safetensors
 ```
 
 先在本机执行一次 `conan profile detect` 创建 Conan 2 默认 profile，然后构建并运行：
@@ -84,6 +87,7 @@ recipe revision。CUDA 使用的 FlashAttention 与 CUTLASS 仍由 CMake
 建议先读[各尺寸 exactness 记录](docs/model-size-validation.md)，再看
 [7B first-divergence 审计](docs/vortex-7b-bit-exactness.md)、
 [数值契约](docs/math-semantics.md)、[checkpoint 转换](docs/checkpoint-conversion.md)和
+[artifact 获取与 release](docs/artifact-distribution.md)、
 [embedding 输出契约](docs/embeddings.md)、
 [变异评分契约](docs/variant-scoring.md)、
 [可复现 GPU 环境](docs/gpu02-environment.md)。

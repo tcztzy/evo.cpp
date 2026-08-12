@@ -47,9 +47,12 @@ PyTorch is used only by the offline checkpoint converter:
 python3 -m venv .venv-convert
 . .venv-convert/bin/activate
 python3 -m pip install -r requirements-convert.txt
+python3 -m pip install -r requirements-fetch.txt
+
+CHECKPOINT="$(python3 tools/evo_fetch.py --print-path source evo2_7b)"
 
 scripts/convert_arc_checkpoint.sh \
-  evo2_7b /models/evo2_7b.pt /models/evo2-7b.safetensors
+  evo2_7b "$CHECKPOINT" /models/evo2-7b.safetensors
 ```
 
 After creating a Conan 2 default profile once with `conan profile detect`,
@@ -90,6 +93,7 @@ Start with the [model-size exactness record](docs/model-size-validation.md),
 then see the [7B first-divergence audit](docs/vortex-7b-bit-exactness.md),
 [numerical contracts](docs/math-semantics.md),
 [checkpoint conversion](docs/checkpoint-conversion.md), and
+[artifact acquisition and releases](docs/artifact-distribution.md),
 [embedding outputs](docs/embeddings.md),
 [variant scoring](docs/variant-scoring.md),
 [reproducible GPU environment](docs/gpu02-environment.md).

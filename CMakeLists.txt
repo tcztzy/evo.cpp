@@ -392,7 +392,17 @@ install(
   RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
   INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 install(TARGETS evo evo-inspect RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+install(
+  PROGRAMS tools/evo_fetch.py
+  DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  RENAME evo-fetch)
 install(DIRECTORY include/evo DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+install(
+  FILES configs/model-registry.json
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/evo/configs")
+install(
+  FILES requirements-fetch.txt
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/evo")
 install(
   EXPORT evoTargets
   FILE evoTargets.cmake
@@ -552,6 +562,18 @@ if(BUILD_TESTING)
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_source_hygiene.py
       --source-dir ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(
+    NAME hf_fetch_contract
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_hf_fetch.py
+      --tool ${CMAKE_CURRENT_SOURCE_DIR}/tools/evo_fetch.py
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/hf-fetch)
+  add_test(
+    NAME release_pipeline_contract
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_release_pipeline.py
+      --source-dir ${CMAKE_CURRENT_SOURCE_DIR}
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/release-pipeline)
 
   add_test(
     NAME converter_roundtrip

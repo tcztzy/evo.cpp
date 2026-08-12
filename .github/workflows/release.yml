@@ -1,0 +1,85 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  build-linux-cuda:
+    runs-on: ubuntu-24.04
+    container: nvidia/cuda:12.8.1-devel-ubuntu22.04@sha256:6617a625f4090c76c545a0e7d63f2e441718ef9af7f4efe7dd1242a29e289fd7
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Install pinned build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential ca-certificates git ninja-build python3 python3-pip
+          python3 -m pip install --break-system-packages cmake==4.4.0 conan==2.30.0
+      - name: Configure Conan
+        run: conan profile detect
+      - name: Resolve pinned dependencies
+        run: conan install . --build=missing -s build_type=Release
+      - name: Configure CUDA exact release
+        run: cmake --preset conan-release -DEVO_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=80
+      - name: Build CUDA exact release
+        run: cmake --build --preset conan-release --parallel 2
+      - name: Package installed tree
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          archive="evo-${version}-linux-x86_64-cuda12.8.tar.gz"
+          cmake --install build/Release --prefix stage
+          source_date_epoch="$(git show -s --format=%ct HEAD)"
+          tar --sort=name --mtime="@${source_date_epoch}" --owner=0 --group=0 --numeric-owner -czf "${archive}" -C stage .
+          python3 tools/make_release_metadata.py \
+            --archive "${archive}" \
+            --source-dir . \
+            --platform linux-x86_64 \
+            --backend cuda-exact \
+            --cuda-version 12.8 \
+            --build-image "nvidia/cuda:12.8.1-devel-ubuntu22.04@sha256:6617a625f4090c76c545a0e7d63f2e441718ef9af7f4efe7dd1242a29e289fd7" \
+            --commit "${GITHUB_SHA}" \
+            --tag "${GITHUB_REF_NAME}" \
+            --output "${archive}.metadata.json"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: linux-cuda-release
+          path: |
+            evo-*.tar.gz
+            evo-*.tar.gz.metadata.json
+          if-no-files-found: error
+
+  publish:
+    needs: build-linux-cuda
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: "*-release"
+          path: dist
+          merge-multiple: true
+      - name: Write checksums
+        working-directory: dist
+        run: sha256sum evo-*.tar.gz evo-*.tar.gz.metadata.json > SHA256SUMS
+      - uses: actions/attest@v4
+        with:
+          subject-checksums: dist/SHA256SUMS
+      - name: Publish immutable-ready release assets
+        uses: softprops/action-gh-release@v3
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/evo-*.tar.gz
+            dist/evo-*.tar.gz.metadata.json
+            dist/SHA256SUMS

@@ -65,7 +65,7 @@ T2|x|stream scoring chunk logits；默认⊥累计完整 logits matrix|V1,V4,V6,
 T3|x|抽离 backend-neutral model/context/batch；发布稳定 C ABI + install package|V1,V2,V8,V10,V14,V15,V16,I3,I8
 T4|x|实现 first-class intermediate embedding API/CLI + metadata|V1,V7,V11,V15,V16,I2,I6
 T5|x|实现 strand/coordinate-aware variant scoring CLI|V1,V6,V7,V12,V16,I2,I5,I6
-T6|.|实现 HF revision/hash/cache 获取、CI 与预编译 release pipeline|V2,V10,V16,I2,I4,I8
+T6|x|实现 HF revision/hash/cache 获取、CI 与预编译 release pipeline|V2,V10,V16,I2,I4,I8
 T7|.|实现共享 model 的 scheduler、dynamic batching 与 bio-native server|V8,V10,V13,V16,I7
 T8|.|设计并实现 fast/quantized profiles + 数值/科学 benchmark gates|V1,V7,V9,V10,V16,I4
 T9|.|实现向量化 CPU backend 与显式 CPU+GPU offload policy|V2,V7,V9,V10,V16,I2,I3
@@ -81,3 +81,4 @@ B2|2026-08-12|CUDA static archive 的默认可见符号绕过 shared-target visi
 B3|2026-08-12|初版 C API context 仅共享 mmap artifact、重复上传 GPU weights→大模型 multi-context 显存不可扩展|V8
 B4|2026-08-12|纯 CLI contract 写死 GPU 0,1；单卡 CUDA_VISIBLE_DEVICES 映射下逻辑 1 不存在→环境相关失败|V15,V16
 B5|2026-08-12|GCC 8 的 std::filesystem 仍在独立 stdc++fs；streaming NPY cleanup 首次引入该依赖→link 失败|V16
+B6|2026-08-12|HF fetch contract fixture 只支持空 work dir；CTest 重跑遇到既有 fake package 目录→非幂等失败|V16

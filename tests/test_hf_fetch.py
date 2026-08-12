@@ -1,0 +1,348 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+"""Contract-test revision pinning, hashes, and runtime manifests offline."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+def digest(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def write_fake_hub(root: Path) -> Path:
+    package = root / "fake-python" / "huggingface_hub"
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "__init__.py").write_text(
+        """from pathlib import Path
+import os
+import shutil
+from types import SimpleNamespace
+
+class HfApi:
+    def __init__(self, **kwargs):
+        pass
+
+    def model_info(self, *, repo_id, revision):
+        log = Path(os.environ[\"FAKE_HF_LOG\"])
+        with log.open(\"a\") as output:
+            output.write(f\"resolve {repo_id} {revision}\\n\")
+        return SimpleNamespace(sha=os.environ[\"FAKE_HF_RESOLVED\"])
+
+def hf_hub_download(*, repo_id, filename, revision, cache_dir,
+                    local_files_only=False, force_download=False, **kwargs):
+    log = Path(os.environ[\"FAKE_HF_LOG\"])
+    with log.open(\"a\") as output:
+        output.write(
+            f\"download {repo_id} {revision} {filename} \"
+            f\"local={local_files_only} force={force_download}\\n\"
+        )
+    destination = (
+        Path(cache_dir) / f\"models--{repo_id.replace('/', '--')}\"
+        / \"snapshots\" / revision / filename
+    )
+    if destination.is_file() and not force_download:
+        return str(destination)
+    if local_files_only:
+        raise FileNotFoundError(filename)
+    source = Path(os.environ[\"FAKE_HF_REMOTE\"]) / repo_id / revision / filename
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, destination)
+    return str(destination)
+""",
+        encoding="utf-8",
+    )
+    return package.parent
+
+
+def run_tool(
+    tool: Path,
+    python_path: Path,
+    remote: Path,
+    log: Path,
+    resolved: str,
+    arguments: list[str],
+) -> subprocess.CompletedProcess[str]:
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "PYTHONPATH": str(python_path),
+            "FAKE_HF_REMOTE": str(remote),
+            "FAKE_HF_LOG": str(log),
+            "FAKE_HF_RESOLVED": resolved,
+        }
+    )
+    return subprocess.run(
+        [sys.executable, str(tool), *arguments],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=environment,
+    )
+
+
+def require_success(result: subprocess.CompletedProcess[str]) -> dict[str, object]:
+    if result.returncode != 0:
+        raise AssertionError(f"fetch failed: stdout={result.stdout!r} stderr={result.stderr!r}")
+    return json.loads(result.stdout)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--tool", required=True, type=Path)
+    parser.add_argument("--work-dir", required=True, type=Path)
+    args = parser.parse_args()
+    args.work_dir.mkdir(parents=True, exist_ok=True)
+    python_path = write_fake_hub(args.work_dir)
+    remote = args.work_dir / "remote"
+    cache = args.work_dir / "cache"
+    log = args.work_dir / "hub.log"
+
+    source_revision = "a" * 40
+    source_payload = b"registered source checkpoint"
+    source_path = remote / "owner" / "source" / source_revision / "source.pt"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_bytes(source_payload)
+    registry = args.work_dir / "registry.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "models": {
+                    "tiny": {
+                        "source_repo": "owner/source",
+                        "source_revision": source_revision,
+                        "checkpoint_files": [
+                            {
+                                "name": "source.pt",
+                                "size": len(source_payload),
+                                "sha256": digest(source_payload),
+                            }
+                        ],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    source_result = run_tool(
+        args.tool,
+        python_path,
+        remote,
+        log,
+        source_revision,
+        [
+            "--cache-dir",
+            str(cache),
+            "source",
+            "tiny",
+            "--registry",
+            str(registry),
+        ],
+    )
+    source_receipt = require_success(source_result)
+    cached_source = Path(source_receipt["files"][0]["path"])
+    if any(
+        (
+            source_receipt["kind"] != "source-checkpoint",
+            source_receipt["resolved_revision"] != source_revision,
+            source_receipt["files"][0]["sha256"] != digest(source_payload),
+            cached_source.read_bytes() != source_payload,
+            not Path(source_receipt["receipt"]).is_file(),
+        )
+    ):
+        raise AssertionError("source receipt omitted immutable provenance")
+
+    cached_source.write_bytes(b"x" * len(source_payload))
+    repaired_result = run_tool(
+        args.tool,
+        python_path,
+        remote,
+        log,
+        source_revision,
+        [
+            "--cache-dir",
+            str(cache),
+            "source",
+            "tiny",
+            "--registry",
+            str(registry),
+        ],
+    )
+    require_success(repaired_result)
+    if (
+        cached_source.read_bytes() != source_payload
+        or "failed verification; refreshing" not in repaired_result.stderr
+        or "force=True" not in log.read_text(encoding="utf-8")
+    ):
+        raise AssertionError("corrupt cached checkpoint was not refreshed")
+
+    local_result = run_tool(
+        args.tool,
+        python_path,
+        remote,
+        log,
+        source_revision,
+        [
+            "--cache-dir",
+            str(cache),
+            "--local-files-only",
+            "source",
+            "tiny",
+            "--registry",
+            str(registry),
+        ],
+    )
+    require_success(local_result)
+
+    runtime_revision = "b" * 40
+    runtime_root = remote / "owner" / "runtime" / runtime_revision
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    index_payload = b'{"metadata":{},"weight_map":{}}\n'
+    shard_payload = b"strict runtime shard"
+    runtime_manifest = {
+        "schema_version": 1,
+        "artifact_profile": "evo2-runtime-v1",
+        "model_id": "tiny_runtime",
+        "load_path": "model.safetensors.index.json",
+        "files": [
+            {
+                "path": "model.safetensors.index.json",
+                "size": len(index_payload),
+                "sha256": digest(index_payload),
+            },
+            {
+                "path": "model-00001-of-00001.safetensors",
+                "size": len(shard_payload),
+                "sha256": digest(shard_payload),
+            },
+        ],
+    }
+    (runtime_root / "evo-artifact.json").write_text(
+        json.dumps(runtime_manifest), encoding="utf-8"
+    )
+    (runtime_root / "model.safetensors.index.json").write_bytes(index_payload)
+    (runtime_root / "model-00001-of-00001.safetensors").write_bytes(shard_payload)
+    runtime_result = run_tool(
+        args.tool,
+        python_path,
+        remote,
+        log,
+        runtime_revision,
+        [
+            "--cache-dir",
+            str(cache),
+            "runtime",
+            "owner/runtime@release-v1",
+        ],
+    )
+    runtime_receipt = require_success(runtime_result)
+    if any(
+        (
+            runtime_receipt["kind"] != "runtime-artifact",
+            runtime_receipt["resolved_revision"] != runtime_revision,
+            runtime_receipt["artifact_profile"] != "evo2-runtime-v1",
+            Path(runtime_receipt["load_path"]).read_bytes() != index_payload,
+            len(runtime_receipt["files"]) != 2,
+        )
+    ):
+        raise AssertionError("runtime artifact was not resolved from its manifest")
+    offline_runtime_result = run_tool(
+        args.tool,
+        python_path,
+        remote,
+        log,
+        runtime_revision,
+        [
+            "--cache-dir",
+            str(cache),
+            "--local-files-only",
+            "runtime",
+            f"owner/runtime@{runtime_revision}",
+        ],
+    )
+    require_success(offline_runtime_result)
+    cached_manifest = Path(runtime_receipt["manifest_path"])
+    cached_manifest.write_bytes(b"{" + b" " * (cached_manifest.stat().st_size - 1))
+    tampered_runtime_result = run_tool(
+        args.tool,
+        python_path,
+        remote,
+        log,
+        runtime_revision,
+        [
+            "--cache-dir",
+            str(cache),
+            "--local-files-only",
+            "runtime",
+            f"owner/runtime@{runtime_revision}",
+        ],
+    )
+    if (
+        tampered_runtime_result.returncode == 0
+        or "manifest SHA256 differs" not in tampered_runtime_result.stderr
+    ):
+        raise AssertionError("offline runtime accepted a tampered cached manifest")
+
+    invalid_revision = "c" * 40
+    invalid_root = remote / "owner" / "invalid" / invalid_revision
+    invalid_root.mkdir(parents=True, exist_ok=True)
+    (invalid_root / "evo-artifact.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "artifact_profile": "evo2-runtime-v1",
+                "model_id": "invalid",
+                "load_path": "../escape.safetensors",
+                "files": [
+                    {"path": "../escape.safetensors", "size": 0, "sha256": "0" * 64}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    invalid_result = run_tool(
+        args.tool,
+        python_path,
+        remote,
+        log,
+        invalid_revision,
+        [
+            "--cache-dir",
+            str(cache),
+            "runtime",
+            f"owner/invalid@{invalid_revision}",
+        ],
+    )
+    if invalid_result.returncode == 0 or "normalized relative path" not in invalid_result.stderr:
+        raise AssertionError("runtime manifest path traversal was not rejected")
+    revision_traversal = run_tool(
+        args.tool,
+        python_path,
+        remote,
+        log,
+        runtime_revision,
+        [
+            "--cache-dir",
+            str(cache),
+            "--local-files-only",
+            "runtime",
+            "owner/runtime@../../escape",
+        ],
+    )
+    if revision_traversal.returncode == 0 or "path traversal" not in revision_traversal.stderr:
+        raise AssertionError("revision path traversal was not rejected locally")
+
+    print("Hugging Face fetch contract passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
