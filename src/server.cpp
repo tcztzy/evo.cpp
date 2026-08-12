@@ -205,13 +205,15 @@ class Runtime final {
 public:
   Runtime(ModelPtr model, const std::size_t context_size,
           const std::size_t maximum_sequence,
-          const std::size_t maximum_embedding_values)
+          const std::size_t maximum_embedding_values,
+          const InferenceProfile inference_profile)
       : model_(std::move(model)), context_size_(context_size),
         maximum_sequence_(maximum_sequence),
         maximum_embedding_values_(maximum_embedding_values),
         model_id_(evo_model_id(model_.get())),
         architecture_(evo_model_architecture(model_.get())),
         profile_(evo_model_profile(model_.get())),
+        inference_profile_(inference_profile),
         vocabulary_(evo_model_vocab_size(model_.get())),
         embedding_width_(evo_model_embedding_width(model_.get())),
         layer_count_(evo_model_layer_count(model_.get())) {}
@@ -223,6 +225,9 @@ public:
     return architecture_;
   }
   [[nodiscard]] const std::string &profile() const noexcept { return profile_; }
+  [[nodiscard]] InferenceProfile inference_profile() const noexcept {
+    return inference_profile_;
+  }
   [[nodiscard]] std::size_t context_size() const noexcept {
     return context_size_;
   }
@@ -406,6 +411,8 @@ private:
   evo_status make_context(ContextPtr *const output) const {
     evo_context_params params = evo_context_default_params();
     params.context_size = context_size_;
+    if (inference_profile_ == InferenceProfile::kFastQ8Kv)
+      params.flags |= EVO_CONTEXT_FLAG_FAST_Q8_KV;
     evo_context *raw = nullptr;
     const evo_status status = evo_context_create(model_.get(), &params, &raw);
     output->reset(raw);
@@ -515,6 +522,8 @@ private:
     }
     std::string body{"{\"model\":"};
     append_json_string(&body, model_id_);
+    body.append(",\"profile\":");
+    append_json_string(&body, inference_profile_name(inference_profile_));
     body.append(",\"generated\":");
     append_json_string(&body, generated);
     body.append(",\"tokens\":[");
@@ -580,6 +589,8 @@ private:
     const double mean = total / static_cast<double>(scores.size());
     std::string body{"{\"model\":"};
     append_json_string(&body, model_id_);
+    body.append(",\"profile\":");
+    append_json_string(&body, inference_profile_name(inference_profile_));
     body.append(",\"sequence_bytes\":");
     body.append(std::to_string(sequence.size()));
     body.append(",\"scored_tokens\":");
@@ -653,6 +664,8 @@ private:
     }
     std::string body{"{\"model\":"};
     append_json_string(&body, model_id_);
+    body.append(",\"profile\":");
+    append_json_string(&body, inference_profile_name(inference_profile_));
     body.append(",\"layer\":");
     body.append(std::to_string(layer));
     body.append(",\"pooling\":");
@@ -803,6 +816,8 @@ private:
 
     std::string body{"{\"model\":"};
     append_json_string(&body, model_id_);
+    body.append(",\"profile\":");
+    append_json_string(&body, inference_profile_name(inference_profile_));
     body.append(",\"coordinate_system\":\"input_position_1_based;"
                 "intervals_0_based_half_open\",\"position_1based\":");
     body.append(std::to_string(position));
@@ -853,6 +868,7 @@ private:
   std::string model_id_;
   std::string architecture_;
   std::string profile_;
+  InferenceProfile inference_profile_{InferenceProfile::kExact};
   std::size_t vocabulary_{0};
   std::size_t embedding_width_{0};
   std::size_t layer_count_{0};
@@ -1099,6 +1115,9 @@ std::string health_body(const Runtime &runtime, const CliOptions &options) {
   append_json_string(&body, runtime.architecture());
   body.append(",\"backend\":\"cuda\",\"profile\":");
   append_json_string(&body, runtime.profile());
+  body.append(",\"execution_profile\":");
+  append_json_string(&body,
+                     inference_profile_name(runtime.inference_profile()));
   body.append(",\"context_size\":");
   body.append(std::to_string(runtime.context_size()));
   body.append(",\"max_sequence_bytes\":");
@@ -1288,9 +1307,9 @@ Status run_server(const CliOptions &options, const bool allow_test_fixture) {
   if (model_context != 0 && options.context_size > model_context)
     return {ErrorCode::kInvalidArgument,
             "server context exceeds the model maximum"};
-  Runtime runtime{std::move(model), options.context_size,
-                  options.server_max_sequence_bytes,
-                  options.server_max_embedding_values};
+  Runtime runtime{
+      std::move(model), options.context_size, options.server_max_sequence_bytes,
+      options.server_max_embedding_values, options.inference_profile};
   DynamicScheduler scheduler{
       options.server_max_queue, options.server_max_batch,
       std::chrono::milliseconds{options.server_batch_window_ms}};

@@ -25,6 +25,7 @@ EXPECTED = {
     "evo_context_embed",
     "evo_context_free",
     "evo_context_position",
+    "evo_context_profile",
     "evo_context_prefill",
     "evo_last_error",
     "evo_model_architecture",

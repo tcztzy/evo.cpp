@@ -73,6 +73,10 @@ build/Release/evo serve -m "$MODEL" --ctx 8192 --gpu 0 \
   --host 127.0.0.1 --port 8080 --max-queue 64 --max-batch 4
 ```
 
+所有命令默认使用 `--profile exact`，长 context 也不例外。
+`--profile fast-q8-kv` 是必须显式选择的实验性近似分页 cache 模式；runtime
+绝不会只因 context 变长而自动启用它。
+
 构建依赖 Conan 2。仓库内的 `conan.lock` 固定了 libnpy 1.0.1 及其 Conan
 recipe revision。CUDA 使用的 FlashAttention 与 CUTLASS 仍由 CMake
 `FetchContent` 固定源码；离线环境可通过对应的 `EVO_*_SOURCE_DIR` cache
@@ -90,6 +94,7 @@ recipe revision。CUDA 使用的 FlashAttention 与 CUTLASS 仍由 CMake
 建议先读[各尺寸 exactness 记录](docs/model-size-validation.md)，再看
 [7B first-divergence 审计](docs/vortex-7b-bit-exactness.md)、
 [数值契约](docs/math-semantics.md)、[checkpoint 转换](docs/checkpoint-conversion.md)和
+[执行 profile 与验收 gate](docs/execution-profiles.md)、
 [artifact 获取与 release](docs/artifact-distribution.md)、
 [embedding 输出契约](docs/embeddings.md)、
 [变异评分契约](docs/variant-scoring.md)、

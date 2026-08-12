@@ -15,6 +15,9 @@ and other languages with a C foreign-function interface.
   appended within ABI major 1.
 - Calls return `evo_status`; `evo_last_error()` provides a thread-local,
   human-readable diagnostic. Exceptions never cross the C boundary.
+- ABI 1.2 adds explicit execution profiles. A zero-initialized context remains
+  exact; new callers can opt into the approximate Q8 cache without changing
+  model loading or artifact identity.
 - A CUDA model handle owns one uploaded copy of the read-only weights plus the
   mapped artifact. Contexts share those immutable device allocations while
   owning independent streams, activation arenas, and recurrent/KV caches. A
@@ -42,6 +45,12 @@ if (evo_context_create(model, &cp, &ctx) != EVO_STATUS_OK) {
 evo_model_free(model);
 evo_context_free(ctx);
 ```
+
+`cp.flags = EVO_CONTEXT_FLAG_FAST_Q8_KV` explicitly selects the experimental
+`fast-q8-kv` execution profile. With zero flags, every context is `exact`
+regardless of `context_size`; insufficient memory is an error rather than an
+implicit profile change. `evo_context_profile()` returns the selected execution
+profile. By contrast, `evo_model_profile()` returns artifact metadata.
 
 `evo_context_prefill()` accepts an opaque batch and emits logits through a
 chunk callback. The callback view is borrowed and valid only during that call;

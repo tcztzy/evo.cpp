@@ -67,7 +67,7 @@ T4|x|实现 first-class intermediate embedding API/CLI + metadata|V1,V7,V11,V15,
 T5|x|实现 strand/coordinate-aware variant scoring CLI|V1,V6,V7,V12,V16,I2,I5,I6
 T6|x|实现 HF revision/hash/cache 获取、CI 与预编译 release pipeline|V2,V10,V16,I2,I4,I8
 T7|x|实现共享 model 的 scheduler、dynamic batching 与 bio-native server|V8,V10,V13,V16,I7
-T8|.|设计并实现 fast/quantized profiles + 数值/科学 benchmark gates|V1,V7,V9,V10,V16,I4
+T8|x|设计并实现 fast/quantized profiles + 数值/科学 benchmark gates|V1,V7,V9,V10,V16,I4
 T9|.|实现向量化 CPU backend 与显式 CPU+GPU offload policy|V2,V7,V9,V10,V16,I2,I3
 T10|.|抽象 architecture registry；接入第二个生物序列模型 family|V7,V8,V10,V11,V16,I2,I3,I4
 T11|.|补 FASTQ/gzip/stdin/VCF/reference IO 与坐标输出格式|V3,V5,V6,V12,V16,I5,I6
@@ -83,3 +83,4 @@ B4|2026-08-12|纯 CLI contract 写死 GPU 0,1；单卡 CUDA_VISIBLE_DEVICES 映�
 B5|2026-08-12|GCC 8 的 std::filesystem 仍在独立 stdc++fs；streaming NPY cleanup 首次引入该依赖→link 失败|V16
 B6|2026-08-12|HF fetch contract fixture 只支持空 work dir；CTest 重跑遇到既有 fake package 目录→非幂等失败|V16
 B7|2026-08-12|CUDA Python test 在 source 下生成 `__pycache__`；source fingerprint 将执行产物当源码→首次 test 后误报 stale build|V16,V19
+B8|2026-08-12|profile flag 在 CPU-only C ABI 中完成校验但仅由 CUDA 分支消费→`-Werror` unused-variable 破坏 CPU build|V16

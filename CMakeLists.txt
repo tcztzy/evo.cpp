@@ -62,6 +62,7 @@ add_library(
   src/mapped_file.cpp
   src/model_format.cpp
   src/model_registry.cpp
+  src/profile.cpp
   src/sampler.cpp
   src/sequence_io.cpp
   src/status.cpp
@@ -416,6 +417,10 @@ install(
   DESTINATION "${CMAKE_INSTALL_BINDIR}"
   RENAME evo-fetch)
 install(
+  PROGRAMS tools/evo_profile_gate.py
+  DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  RENAME evo-profile-gate)
+install(
   DIRECTORY include/evo
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
   PATTERN "json.hpp" EXCLUDE
@@ -586,6 +591,12 @@ if(BUILD_TESTING)
       --tool ${CMAKE_CURRENT_SOURCE_DIR}/tools/evo/prefill_benchmark_gate.py
       --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/prefill-benchmark-gate)
   add_test(
+    NAME profile_acceptance_gate
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_profile_gate.py
+      --tool ${CMAKE_CURRENT_SOURCE_DIR}/tools/evo_profile_gate.py
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/profile-gate)
+  add_test(
     NAME source_hygiene
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_source_hygiene.py
@@ -707,6 +718,14 @@ if(BUILD_TESTING)
         --binary $<TARGET_FILE:evo-cuda-cli-test-bin>
         --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_tiny_model.py
         --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/cuda_server)
+    add_test(
+      NAME cuda_profile
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cuda_profile.py
+        --binary $<TARGET_FILE:evo-cuda-cli-test-bin>
+        --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_tiny_model.py
+        --gate ${CMAKE_CURRENT_SOURCE_DIR}/tools/evo_profile_gate.py
+        --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/cuda_profile)
     add_executable(evo-cuda-c-api-tests tests/test_cuda_c_api.c)
     target_link_libraries(evo-cuda-c-api-tests PRIVATE evo::evo)
     if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
@@ -749,6 +768,12 @@ if(BUILD_TESTING)
         ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools")
     set_tests_properties(
       cuda_server
+      PROPERTIES
+        LABELS "gpu;cuda"
+        SKIP_RETURN_CODE 77
+        ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools")
+    set_tests_properties(
+      cuda_profile
       PROPERTIES
         LABELS "gpu;cuda"
         SKIP_RETURN_CODE 77

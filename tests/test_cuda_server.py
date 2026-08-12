@@ -154,6 +154,8 @@ def main() -> int:
         "12",
         "--max-embedding-values",
         "128",
+        "--profile",
+        "fast-q8-kv",
     ]
     process = subprocess.Popen(
         command, stdout=subprocess.PIPE, stderr=subprocess.PIPE
@@ -168,6 +170,7 @@ def main() -> int:
                 health["status"] != "ok",
                 health["backend"] != "cuda",
                 health["profile"] != "evo2-runtime-v1",
+                health["execution_profile"] != "fast-q8-kv",
                 health["context_size"] != 12,
                 health["batching"] != "isolated_context_microbatch",
             )
@@ -179,6 +182,7 @@ def main() -> int:
         )
         if (
             score_status != 200
+            or score["profile"] != "fast-q8-kv"
             or score["scored_tokens"] != 5
             or len(score["token_log_likelihoods"]) != 5
         ):
@@ -191,6 +195,7 @@ def main() -> int:
         )
         if (
             generation_status != 200
+            or generation["profile"] != "fast-q8-kv"
             or generation["generated_tokens"] != 3
             or len(generation["tokens"]) != 3
         ):
@@ -205,6 +210,7 @@ def main() -> int:
         )
         if (
             embedding_status != 200
+            or embedding["profile"] != "fast-q8-kv"
             or embedding["shape"] != [8]
             or len(embedding["embedding"]) != 8
         ):
@@ -227,6 +233,7 @@ def main() -> int:
         )
         if (
             variant_status != 200
+            or variant["profile"] != "fast-q8-kv"
             or len(variant["strands"]) != 2
             or variant["window_start"] != 0
             or variant["window_end"] != 6

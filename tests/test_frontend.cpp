@@ -282,7 +282,9 @@ void test_cli() {
                        "--dump-logits",
                        "logits.npy",
                        "--dump-layer",
-                       "49:layer.npy"},
+                       "49:layer.npy",
+                       "--profile",
+                       "fast-q8-kv"},
                       &options);
   check(status.ok(),
         std::string{"valid generation CLI parses: "} + status.message());
@@ -296,6 +298,8 @@ void test_cli() {
         "debug layer CLI parses");
   check(options.force_prompt_threshold == 3,
         "teacher-forced prompt threshold CLI parses");
+  check(options.inference_profile == evo::InferenceProfile::kFastQ8Kv,
+        "explicit approximate execution profile parses");
   status = parse({"evo", "-m", "model.safetensors", "-p", "A", "-n", "1",
                   "--gpu", "0", "--dump-layer", "50:layer.npy"},
                  &options);
@@ -462,11 +466,18 @@ void test_cli() {
             options.server_max_sequence_bytes == 2048 &&
             options.server_max_embedding_values == 65536,
         "serve retains explicit network, batching, and resource limits");
-  status = parse(
-      {"evo", "serve", "-m", "model.safetensors", "--ctx", "16", "--gpu", "0"},
-      &options);
-  check(status.ok() && options.server_max_sequence_bytes == 16,
-        "serve defaults sequence limit to context capacity");
+  status = parse({"evo", "serve", "-m", "model.safetensors", "--ctx", "16",
+                  "--gpu", "0", "--profile", "fast-q8-kv"},
+                 &options);
+  check(status.ok() && options.server_max_sequence_bytes == 16 &&
+            options.inference_profile == evo::InferenceProfile::kFastQ8Kv,
+        "serve defaults sequence limit and retains its execution profile");
+  status = parse({"evo", "serve", "-m", "model.safetensors", "--gpu", "0",
+                  "--profile", "approximate"},
+                 &options);
+  check(!status.ok() &&
+            status.message().find("fast-q8-kv") != std::string::npos,
+        "unknown execution profiles fail closed");
   status = parse({"evo", "serve", "-m", "model.safetensors", "--ctx", "8",
                   "--gpu", "0", "--max-sequence-bytes", "9"},
                  &options);

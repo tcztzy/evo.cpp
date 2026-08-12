@@ -81,6 +81,8 @@ int main(int argc, char **argv) {
             EVO_STATUS_INVALID_ARGUMENT,
         "null model cannot create a context");
   check(context == NULL, "invalid context creation clears output handle");
+  check(strcmp(evo_context_profile(NULL), "") == 0,
+        "null context has no execution profile");
 
   check(evo_batch_create(1, &batch) == EVO_STATUS_OK && batch != NULL,
         "batch allocation succeeds");

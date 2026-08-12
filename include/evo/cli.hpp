@@ -8,6 +8,7 @@
 #include <string_view>
 #include <vector>
 
+#include "evo/profile.hpp"
 #include "evo/sampler.hpp"
 #include "evo/status.hpp"
 #include "evo/variant.hpp"
@@ -47,6 +48,7 @@ struct CliOptions final {
   std::size_t server_max_request_bytes{1U << 20U};
   std::size_t server_max_sequence_bytes{0};
   std::size_t server_max_embedding_values{1U << 20U};
+  InferenceProfile inference_profile{InferenceProfile::kExact};
   std::size_t generated_tokens{0};
   std::size_t context_size{8192};
   std::optional<std::size_t> force_prompt_threshold;

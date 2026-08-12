@@ -22,7 +22,7 @@ extern "C" {
 #endif
 
 #define EVO_ABI_VERSION_MAJOR 1u
-#define EVO_ABI_VERSION_MINOR 1u
+#define EVO_ABI_VERSION_MINOR 2u
 #define EVO_ABI_VERSION_PATCH 0u
 #define EVO_ABI_VERSION_ENCODE(major, minor, patch)                            \
   ((((uint32_t)(major) & 0xffu) << 24u) |                                      \
@@ -51,6 +51,12 @@ enum {
   // Synthetic StripedHyena2 fixtures are never accepted unless this explicit
   // test-only flag is set.
   EVO_MODEL_FLAG_TEST_ONLY_ALLOW_SYNTHETIC = 1u << 0u
+};
+
+enum {
+  // Selects the explicitly approximate paged-Q8 KV profile. Zero retains the
+  // BF16 exact profile regardless of context length.
+  EVO_CONTEXT_FLAG_FAST_Q8_KV = 1u << 0u
 };
 
 typedef struct evo_model evo_model;
@@ -124,6 +130,7 @@ EVO_API evo_status evo_context_create(const evo_model *model,
 EVO_API void evo_context_free(evo_context *context);
 EVO_API size_t evo_context_position(const evo_context *context);
 EVO_API size_t evo_context_capacity(const evo_context *context);
+EVO_API const char *evo_context_profile(const evo_context *context);
 EVO_API evo_status evo_context_prefill(evo_context *context,
                                        const evo_batch *batch,
                                        evo_logits_callback callback,

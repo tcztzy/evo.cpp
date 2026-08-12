@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "evo/model_format.hpp"
+#include "evo/profile.hpp"
 #include "evo/status.hpp"
 #include "evo/tokenizer.hpp"
 
@@ -67,6 +68,7 @@ struct RuntimeModelConfig final {
   HyenaProjectionDType hyena_projection_dtype{HyenaProjectionDType::kBF16};
   HcmFilterDType hcm_filter_dtype{HcmFilterDType::kBF16};
   bool test_fixture{false};
+  InferenceProfile inference_profile{InferenceProfile::kExact};
   std::vector<MixerType> mixer_types;
 
   [[nodiscard]] std::size_t head_dim() const noexcept {
@@ -107,9 +109,10 @@ public:
   SingleGpuModel(SingleGpuModel &&) noexcept;
   SingleGpuModel &operator=(SingleGpuModel &&) noexcept;
 
-  [[nodiscard]] Status load(const ModelFile &model, int device,
-                            std::size_t context_capacity,
-                            bool allow_test_fixture = false);
+  [[nodiscard]] Status
+  load(const ModelFile &model, int device, std::size_t context_capacity,
+       bool allow_test_fixture = false,
+       InferenceProfile profile = InferenceProfile::kExact);
 
   [[nodiscard]] Status
   prefill(const std::vector<TokenId> &tokens, std::vector<float> *logits,
@@ -160,14 +163,15 @@ public:
   PipelineModel(PipelineModel &&) noexcept;
   PipelineModel &operator=(PipelineModel &&) noexcept;
 
-  [[nodiscard]] Status load(const ModelFile &model,
-                            const std::vector<int> &devices,
-                            std::size_t context_capacity,
-                            bool allow_test_fixture = false);
+  [[nodiscard]] Status
+  load(const ModelFile &model, const std::vector<int> &devices,
+       std::size_t context_capacity, bool allow_test_fixture = false,
+       InferenceProfile profile = InferenceProfile::kExact);
   // Creates independent mutable cache/arena/stream state while retaining the
   // source model's immutable device-weight allocations.
-  [[nodiscard]] Status initialize_shared(const PipelineModel &source,
-                                         std::size_t context_capacity);
+  [[nodiscard]] Status
+  initialize_shared(const PipelineModel &source, std::size_t context_capacity,
+                    InferenceProfile profile = InferenceProfile::kExact);
 
   [[nodiscard]] Status
   prefill(const std::vector<TokenId> &tokens, std::vector<float> *logits,

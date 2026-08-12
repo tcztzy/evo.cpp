@@ -40,21 +40,21 @@ FFT, and real extraction at `length-1`; a mathematically equivalent recurrence
 does not produce the same F32 bits. A continuation chunk applies direct FIR
 against the retained chronological prefix and then advances that cache.
 
-CUDA attention stores RoPE-transformed keys and raw values in BF16 caches below
-131072 context tokens. Exact 7B cached generation reproduces Vortex
+CUDA exact attention stores RoPE-transformed keys and raw values in contiguous
+BF16 caches at every supported context length. Exact 7B cached generation reproduces Vortex
 `CrossAttention`: BF16 key scaling, BF16 QK batched GEMM, BF16 causal mask,
 PyTorch's dtype-preserving softmax, and BF16 probability/value batched GEMM.
 The softmax uses the persistent warp kernel through 2048 keys and the same
 register/shared/general reduction dispatch as PyTorch above that boundary.
 
-At 131072 and above, the scalable KV mode independently quantizes each K and V
+The explicitly selected `fast-q8-kv` execution profile independently quantizes each K and V
 `(token, head)` vector as
 `scale=max(abs(vector))/127`, `q=clamp(round(vector/scale),-127,127)`. The int8
 payload and F32 scale are stored in fixed 16384-token pages. The attention
 kernel selects a page for each source, dequantizes its elements into F32, and
 retains the same F32 dot-product, online-softmax, and value-accumulator
 semantics as the previous scalable path. Q8 is not bit-equivalent to Vortex;
-the exact cached API rejects it instead of silently using it. The device page
+no context length silently selects it. The device page
 tables cover the full logical context at load time, while physical payload and
 scale pages are allocated on first append.
 
@@ -64,7 +64,9 @@ cached prefill (the default is `min(3000, activation_capacity)`) and then
 teacher-forces the remaining prompt through single-token cached decode. The
 exact CrossAttention path intentionally materializes BF16 score and probability
 workspaces because that is the pinned PyTorch implementation being reproduced;
-the scalable online/Q8 path remains a separate, non-bit-exact mode.
+the scalable online/Q8 path remains a separate, non-bit-exact execution
+profile. See [`execution-profiles.md`](execution-profiles.md) for selection and
+acceptance gates.
 
 The Arc 1B, 20B, and 40B Hyena input projections use fixed Transformer Engine
 2.3 E4M3FN (21, 21, and 42 projections respectively)

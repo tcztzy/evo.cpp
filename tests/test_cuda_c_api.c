@@ -116,14 +116,20 @@ int main(int argc, char **argv) {
           "first context loads from shared model artifact");
     check(evo_context_create(model, &context_params, &second) == EVO_STATUS_OK,
           "second context loads from shared model artifact");
+    context_params.flags = EVO_CONTEXT_FLAG_FAST_Q8_KV;
     check(evo_context_create(model, &context_params, &embedding_context) ==
               EVO_STATUS_OK,
-          "embedding context loads from shared model artifact");
+          "fast-Q8 context loads from shared model artifact");
+    context_params.flags = 0;
   }
   evo_model_free(model);
   model = NULL;
   check(first != NULL && second != NULL && embedding_context != NULL,
         "three mutable contexts coexist after model handle release");
+  check(first != NULL && strcmp(evo_context_profile(first), "exact") == 0 &&
+            embedding_context != NULL &&
+            strcmp(evo_context_profile(embedding_context), "fast-q8-kv") == 0,
+        "C contexts expose exact versus approximate execution profiles");
 
   check(evo_batch_create(1, &batch) == EVO_STATUS_OK,
         "CUDA test batch allocation succeeds");

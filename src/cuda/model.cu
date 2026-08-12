@@ -30,7 +30,6 @@ namespace {
 constexpr int kThreads = 256;
 constexpr std::size_t kMaximumArenaTokens = 8192;
 constexpr std::size_t kTestFixtureArenaTokens = 8;
-constexpr std::size_t kQ8KvContextThreshold = 131072;
 constexpr std::size_t kQ8KvPageTokens = 16384;
 constexpr std::size_t kBackendWarmupTokens = 128;
 enum class ForwardMode {
@@ -1386,7 +1385,8 @@ struct SingleGpuModel::Impl final {
           bf16_kv_append(arena.x1, arena.value, rows, &layer->kv_cache, stream);
       if (!status.ok())
         return status;
-      if (uses_cached_attention(mode)) {
+      if (uses_cached_attention(mode) &&
+          inference_profile_is_exact(config.inference_profile)) {
         if (layer->kv_cache.type != KvCacheType::kBF16) {
           return {ErrorCode::kUnsupported,
                   "exact Vortex cached attention requires a BF16 KV cache"};
@@ -1935,7 +1935,8 @@ SingleGpuModel &SingleGpuModel::operator=(SingleGpuModel &&) noexcept = default;
 
 Status SingleGpuModel::load(const ModelFile &model, const int device,
                             const std::size_t context_capacity,
-                            const bool allow_test_fixture) {
+                            const bool allow_test_fixture,
+                            const InferenceProfile profile) {
   if (impl_->loaded || context_capacity == 0)
     return {ErrorCode::kInvalidArgument,
             "model is already loaded or context is zero"};
@@ -1943,6 +1944,7 @@ Status SingleGpuModel::load(const ModelFile &model, const int device,
       read_runtime_model_config(model, allow_test_fixture, &impl_->config);
   if (!status.ok())
     return status;
+  impl_->config.inference_profile = profile;
   if (!impl_->config.test_fixture &&
       context_capacity > impl_->config.max_seqlen) {
     return {ErrorCode::kInvalidArgument,
@@ -1954,7 +1956,7 @@ Status SingleGpuModel::load(const ModelFile &model, const int device,
   impl_->arena_capacity = std::min(
       context_capacity, impl_->config.test_fixture ? kTestFixtureArenaTokens
                                                    : kMaximumArenaTokens);
-  impl_->q8_kv_cache = context_capacity >= kQ8KvContextThreshold;
+  impl_->q8_kv_cache = profile == InferenceProfile::kFastQ8Kv;
   status = select_device(device);
   if (!status.ok())
     return status;
@@ -2297,7 +2299,8 @@ PipelineModel &PipelineModel::operator=(PipelineModel &&) noexcept = default;
 Status PipelineModel::load(const ModelFile &model,
                            const std::vector<int> &devices,
                            const std::size_t context_capacity,
-                           const bool allow_test_fixture) {
+                           const bool allow_test_fixture,
+                           const InferenceProfile profile) {
   if (impl_->loaded || context_capacity == 0 || devices.empty() ||
       devices.size() > 4) {
     return {ErrorCode::kInvalidArgument,
@@ -2315,6 +2318,7 @@ Status PipelineModel::load(const ModelFile &model,
       read_runtime_model_config(model, allow_test_fixture, &candidate->config);
   if (!status.ok())
     return status;
+  candidate->config.inference_profile = profile;
   if (!candidate->config.test_fixture &&
       context_capacity > candidate->config.max_seqlen) {
     return {ErrorCode::kInvalidArgument,
@@ -2325,7 +2329,7 @@ Status PipelineModel::load(const ModelFile &model,
   candidate->arena_capacity = std::min(
       context_capacity, candidate->config.test_fixture ? kTestFixtureArenaTokens
                                                        : kMaximumArenaTokens);
-  candidate->q8_kv_cache = context_capacity >= kQ8KvContextThreshold;
+  candidate->q8_kv_cache = profile == InferenceProfile::kFastQ8Kv;
   const std::size_t stage_count = devices.size();
   std::vector<std::size_t> layer_ends;
   layer_ends.reserve(stage_count);
@@ -2502,7 +2506,8 @@ Status PipelineModel::load(const ModelFile &model,
 }
 
 Status PipelineModel::initialize_shared(const PipelineModel &source,
-                                        const std::size_t context_capacity) {
+                                        const std::size_t context_capacity,
+                                        const InferenceProfile profile) {
   if (impl_->loaded || !source.impl_->loaded || context_capacity == 0) {
     return {ErrorCode::kInvalidArgument,
             "shared pipeline initialization requires a loaded source, "
@@ -2510,6 +2515,7 @@ Status PipelineModel::initialize_shared(const PipelineModel &source,
   }
   auto candidate = std::make_unique<Impl>();
   candidate->config = source.impl_->config;
+  candidate->config.inference_profile = profile;
   if (!candidate->config.test_fixture &&
       context_capacity > candidate->config.max_seqlen) {
     return {ErrorCode::kInvalidArgument,
@@ -2520,7 +2526,7 @@ Status PipelineModel::initialize_shared(const PipelineModel &source,
   candidate->arena_capacity = std::min(
       context_capacity, candidate->config.test_fixture ? kTestFixtureArenaTokens
                                                        : kMaximumArenaTokens);
-  candidate->q8_kv_cache = context_capacity >= kQ8KvContextThreshold;
+  candidate->q8_kv_cache = profile == InferenceProfile::kFastQ8Kv;
   candidate->assignments = source.impl_->assignments;
   for (auto &assignment : candidate->assignments) {
     assignment.cache_bytes = 0;

@@ -79,6 +79,10 @@ build/Release/evo serve -m "$MODEL" --ctx 8192 --gpu 0 \
   --host 127.0.0.1 --port 8080 --max-queue 64 --max-batch 4
 ```
 
+All commands default to `--profile exact`, including at long context lengths.
+`--profile fast-q8-kv` is an explicit experimental, approximate paged-cache
+mode; it is never selected from context length alone.
+
 This requires Conan 2. The checked-in `conan.lock` fixes libnpy 1.0.1 and its
 Conan recipe revision. CUDA's pinned FlashAttention and CUTLASS source trees
 remain under CMake `FetchContent`; offline builds can supply all three source
@@ -97,6 +101,7 @@ explicit. See the [gpu02 path and GPU contract](docs/gpu02-environment.md) and
 Start with the [model-size exactness record](docs/model-size-validation.md),
 then see the [7B first-divergence audit](docs/vortex-7b-bit-exactness.md),
 [numerical contracts](docs/math-semantics.md),
+[execution profiles and acceptance gates](docs/execution-profiles.md),
 [checkpoint conversion](docs/checkpoint-conversion.md), and
 [artifact acquisition and releases](docs/artifact-distribution.md),
 [embedding outputs](docs/embeddings.md),

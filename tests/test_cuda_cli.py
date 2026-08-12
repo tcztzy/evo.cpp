@@ -184,7 +184,8 @@ def main() -> int:
             embed_metadata["pooling"] != "none",
             embed_metadata["dtype"] != "float32",
             embed_metadata["backend"] != "cuda",
-            embed_metadata["profile"] != "test_fixture",
+            embed_metadata["profile"] != "exact",
+            embed_metadata["test_fixture"] is not True,
         )
     ):
         raise AssertionError("embedding manifest omitted required metadata")
@@ -314,7 +315,7 @@ def main() -> int:
             "default or explicit exact prompt-forcing metrics are incorrect"
         )
 
-    rejected_q8 = subprocess.run(
+    exact_large_context = run_checked(
         [
             str(args.binary),
             "-m",
@@ -330,18 +331,39 @@ def main() -> int:
             "--top-k",
             "1",
         ],
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
     )
-    if (
-        rejected_q8.returncode == 0
-        or b"exact Vortex cached attention requires a BF16 KV cache"
-        not in rejected_q8.stderr
-    ):
+    exact_large_metrics = metrics(exact_large_context)
+    if exact_large_metrics["profile"] != "exact" or exact_large_metrics[
+        "kv_cache"
+    ] != "bf16_contiguous":
         raise AssertionError(
-            "exact generation silently accepted the approximate Q8 KV path"
+            "large context silently changed the default exact execution profile"
         )
+
+    fast_q8 = run_checked(
+        [
+            str(args.binary),
+            "-m",
+            str(model),
+            "-p",
+            "AC",
+            "-n",
+            "1",
+            "--ctx",
+            "8",
+            "--gpu",
+            gpu_list,
+            "--top-k",
+            "1",
+            "--profile",
+            "fast-q8-kv",
+        ]
+    )
+    fast_metrics = metrics(fast_q8)
+    if fast_metrics["profile"] != "fast-q8-kv" or fast_metrics[
+        "kv_cache"
+    ] != "q8_paged":
+        raise AssertionError("explicit fast profile did not select paged Q8 KV")
 
     rejected_threshold = subprocess.run(
         [
@@ -540,7 +562,8 @@ def main() -> int:
             variant["window"]["alternate_sequence"] != "AATCGG",
             variant["normalization"] != "sum_log_likelihood",
             variant["backend"] != "cuda",
-            variant["profile"] != "test_fixture",
+            variant["profile"] != "exact",
+            variant["test_fixture"] is not True,
             set(strand_scores) != {"+", "-"},
             variant["aggregation"] != "mean_across_strands",
             b"tokens variant-reference=[65,65,67,67,71,71]"

@@ -125,6 +125,9 @@ std::string_view cli_usage() noexcept {
          "  --max-sequence-bytes N      Per-sequence limit (default: --ctx)\n"
          "  --max-embedding-values N    Embedding response value limit "
          "(default: 1048576)\n\n"
+         "Execution profile:\n"
+         "  --profile exact|fast-q8-kv  BF16 exact or explicit paged-Q8 KV "
+         "semantics (default: exact)\n\n"
          "Sampling:\n"
          "  --temp F       Temperature > 0 (default: 1)\n"
          "  --top-k K      Keep K logits; 0 disables, 1 is greedy (default: "
@@ -190,6 +193,7 @@ Status parse_cli(const int argc, char *const argv[],
   bool seen_server_max_request = false;
   bool seen_server_max_sequence = false;
   bool seen_server_max_embedding = false;
+  bool seen_profile = false;
 
   const int option_start =
       embed_command || variant_command || server_command ? 2 : 1;
@@ -442,6 +446,16 @@ Status parse_cli(const int argc, char *const argv[],
         return {ErrorCode::kInvalidArgument,
                 "--max-embedding-values must be an integer in [1, 268435456]"};
       }
+    } else if (option == "--profile") {
+      if (seen_profile)
+        return duplicate(option);
+      seen_profile = true;
+      status = value_after(argc, argv, &index, option, &value);
+      if (!status.ok())
+        return status;
+      status = parse_inference_profile(value, &options->inference_profile);
+      if (!status.ok())
+        return status;
     } else if (option == "-n" || option == "--tokens") {
       if (seen_tokens)
         return duplicate(option);

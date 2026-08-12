@@ -9,7 +9,7 @@ runtime dependency graph.
 
 ```sh
 evo serve -m /models/evo2-7b.safetensors.index.json \
-  --ctx 8192 --gpu 0 \
+  --profile exact --ctx 8192 --gpu 0 \
   --host 127.0.0.1 --port 8080 \
   --max-queue 64 --max-batch 4 --batch-window-ms 2 \
   --max-request-bytes 1048576 \
@@ -21,6 +21,13 @@ The default bind address is loopback. Binding `0.0.0.0` is an explicit
 operator choice; the native server does not provide TLS or authentication, so
 put it behind an authenticated reverse proxy before exposing it outside a
 trusted host. Only numeric IPv4 bind addresses are accepted.
+
+`--profile` is `exact` by default. `fast-q8-kv` explicitly selects the
+experimental approximate paged-Q8 cache; context length never changes the
+profile. Every inference response reports its execution `profile`. `/health`
+uses `profile` for artifact metadata and `execution_profile` for this runtime
+selection. See [execution profiles](execution-profiles.md) for the numerical
+and biological acceptance gates.
 
 `--max-queue` bounds pending inference work. `--max-batch` is the maximum
 number of isolated request contexts launched together after the

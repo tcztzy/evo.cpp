@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "evo/model_format.hpp"
+#include "evo/profile.hpp"
 #include "evo/sampler.hpp"
 #include "evo/status.hpp"
 #include "evo/tokenizer.hpp"
@@ -136,6 +137,7 @@ struct evo_model final {
 struct evo_context final {
   std::shared_ptr<ModelState> state;
   std::size_t capacity{0};
+  evo::InferenceProfile profile{evo::InferenceProfile::kExact};
   bool failed{false};
 #if defined(EVO_HAS_CUDA)
   std::unique_ptr<evo::cuda::PipelineModel> cuda;
@@ -338,10 +340,15 @@ evo_status evo_context_create(const evo_model *const model,
     }
     const evo_context_params options =
         params == nullptr ? evo_context_default_params() : *params;
-    if (options.context_size == 0 || options.flags != 0) {
+    constexpr std::uint32_t known_flags = EVO_CONTEXT_FLAG_FAST_Q8_KV;
+    if (options.context_size == 0 || (options.flags & ~known_flags) != 0) {
       return publish(EVO_STATUS_INVALID_ARGUMENT,
                      "invalid_argument: invalid context parameters");
     }
+    [[maybe_unused]] const evo::InferenceProfile profile =
+        (options.flags & EVO_CONTEXT_FLAG_FAST_Q8_KV) != 0
+            ? evo::InferenceProfile::kFastQ8Kv
+            : evo::InferenceProfile::kExact;
     if (model->state->max_context != 0 &&
         options.context_size > model->state->max_context) {
       return publish(EVO_STATUS_INVALID_ARGUMENT,
@@ -363,12 +370,13 @@ evo_status evo_context_create(const evo_model *const model,
     }
     auto cuda = std::make_unique<evo::cuda::PipelineModel>();
     const auto status = cuda->initialize_shared(*model->state->cuda_weights,
-                                                options.context_size);
+                                                options.context_size, profile);
     if (!status.ok())
       return publish(status);
     auto handle = std::make_unique<evo_context>();
     handle->state = model->state;
     handle->capacity = options.context_size;
+    handle->profile = profile;
     handle->cuda = std::move(cuda);
     *context_out = handle.release();
     return publish(evo::Status::Ok());
@@ -392,6 +400,11 @@ size_t evo_context_position(const evo_context *const context) {
 
 size_t evo_context_capacity(const evo_context *const context) {
   return context == nullptr ? 0 : context->capacity;
+}
+
+const char *evo_context_profile(const evo_context *const context) {
+  return context == nullptr ? ""
+                            : evo::inference_profile_name(context->profile);
 }
 
 evo_status evo_context_prefill(evo_context *const context,

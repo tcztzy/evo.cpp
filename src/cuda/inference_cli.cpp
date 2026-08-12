@@ -212,7 +212,8 @@ Status log_probability(const float *const logits, const std::size_t vocab_size,
 }
 
 void print_score_record(const SequenceRecord &record,
-                        const std::vector<double> &token_scores) {
+                        const std::vector<double> &token_scores,
+                        const RuntimeModelConfig &config) {
   double total = 0.0;
   for (const double value : token_scores) {
     total += value;
@@ -222,6 +223,14 @@ void print_score_record(const SequenceRecord &record,
 
   std::cout << "{\"name\":";
   write_json_string(std::cout, record.name);
+  std::cout << ",\"backend\":\"cuda\",\"profile\":";
+  write_json_string(std::cout,
+                    inference_profile_name(config.inference_profile));
+  std::cout << ",\"model_id\":";
+  if (config.model_id.empty())
+    std::cout << "null";
+  else
+    write_json_string(std::cout, config.model_id);
   std::cout << ",\"tokens\":" << record.bytes.size()
             << ",\"scored_tokens\":" << token_scores.size()
             << ",\"log_likelihood\":" << std::setprecision(17) << total
@@ -268,8 +277,9 @@ void write_embedding_metadata(
          << ",\"point\":\"block_output\",\"pooling\":\""
          << pooling_name(pooling)
          << "\",\"dtype\":\"float32\",\"backend\":\"cuda\",\"profile\":\""
-         << (config.test_fixture ? "test_fixture" : "exact")
-         << "\",\"model_id\":";
+         << inference_profile_name(config.inference_profile)
+         << "\",\"test_fixture\":" << (config.test_fixture ? "true" : "false")
+         << ",\"model_id\":";
   if (config.model_id.empty()) {
     output << "null";
   } else {
@@ -601,7 +611,7 @@ Status run_score(const CliOptions &options, PipelineModel *const model,
           return {ErrorCode::kInternal,
                   "score prefill returned incomplete token log likelihoods"};
         }
-        print_score_record(record, token_scores);
+        print_score_record(record, token_scores, model->config());
         ++processed_records;
         return Status::Ok();
       });
@@ -795,8 +805,10 @@ Status run_variant_score(const CliOptions &options, PipelineModel *const model,
             << ",\"normalization\":\""
             << variant_normalization_name(options.variant_normalization)
             << "\",\"backend\":\"cuda\",\"profile\":\""
-            << (model->config().test_fixture ? "test_fixture" : "exact")
-            << "\",\"model_id\":";
+            << inference_profile_name(model->config().inference_profile)
+            << "\",\"test_fixture\":"
+            << (model->config().test_fixture ? "true" : "false")
+            << ",\"model_id\":";
   if (model->config().model_id.empty()) {
     std::cout << "null";
   } else {
@@ -977,7 +989,8 @@ Status run_embed(const CliOptions &options, PipelineModel *const model,
 
 void print_metrics(const Metrics &metrics, const MemoryTracker &memory,
                    const std::vector<StageAssignment> &stages,
-                   const bool q8_kv_cache) {
+                   const bool q8_kv_cache,
+                   const InferenceProfile inference_profile) {
   const double prefill_rate =
       metrics.prefill_seconds > 0.0
           ? static_cast<double>(metrics.prefill_tokens) /
@@ -1005,6 +1018,7 @@ void print_metrics(const Metrics &metrics, const MemoryTracker &memory,
             << ",\"decode_tokens_per_second\":" << decode_rate
             << ",\"kv_cache\":\""
             << (q8_kv_cache ? "q8_paged" : "bf16_contiguous")
+            << "\",\"profile\":\"" << inference_profile_name(inference_profile)
             << "\",\"retained_logits_peak_bytes\":"
             << metrics.retained_logits_peak_bytes << ",\"gpus\":[";
   for (std::size_t index = 0; index < memory.entries().size(); ++index) {
@@ -1056,7 +1070,7 @@ Status run_inference_cli(const CliOptions &options,
   std::cerr << '\n';
   PipelineModel model;
   status = model.load(model_file, options.gpu_ids, options.context_size,
-                      allow_test_fixture);
+                      allow_test_fixture, options.inference_profile);
   metrics.model_load_seconds = seconds_since(load_start);
   if (!status.ok()) {
     return status;
@@ -1079,7 +1093,8 @@ Status run_inference_cli(const CliOptions &options,
     return status;
   }
   model.refresh_cache_bytes();
-  print_metrics(metrics, memory, model.stages(), model.uses_q8_kv_cache());
+  print_metrics(metrics, memory, model.stages(), model.uses_q8_kv_cache(),
+                model.config().inference_profile);
   return Status::Ok();
 }
 
