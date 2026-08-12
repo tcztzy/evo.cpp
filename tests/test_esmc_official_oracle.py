@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import shutil
@@ -29,6 +30,10 @@ def write_npy(path: Path, shape: tuple[int, ...], values: list[float]) -> None:
     )
 
 
+def sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def run(*arguments: object) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [str(argument) for argument in arguments],
@@ -47,14 +52,37 @@ def main() -> int:
     shutil.rmtree(args.work_dir, ignore_errors=True)
     oracle = args.work_dir / "oracle"
     oracle.mkdir(parents=True)
-    (oracle / "oracle.json").write_text(
-        json.dumps({"schema_version": 1, "model_id": "esmc_300m"}),
-        encoding="utf-8",
-    )
     logits = [0.25, -0.5, 1.0, 2.0]
     hidden = [-1.0, 0.5, 0.75, -0.25, 1.25, 0.0]
     write_npy(oracle / "logits.npy", (2, 2), logits)
     write_npy(oracle / "final-hidden.npy", (2, 3), hidden)
+    (oracle / "oracle.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "model_id": "esmc_300m",
+                "official_reference": {
+                    "commit": "3a8956fb4d4ea16b0ec8e71deef2c2909b6a5cbf"
+                },
+                "attention_implementation": "official_manual_f32",
+                "rotary_implementation": "official_pytorch_fallback",
+                "layer_norm_linear_implementation": "official_pytorch_fallback",
+                "dtype": "float32",
+                "tf32": False,
+                "outputs": {
+                    "logits": {
+                        "path": "logits.npy",
+                        "sha256": sha256(oracle / "logits.npy"),
+                    },
+                    "final_hidden": {
+                        "path": "final-hidden.npy",
+                        "sha256": sha256(oracle / "final-hidden.npy"),
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     native_logits = args.work_dir / "native-logits.npy"
     native_hidden = args.work_dir / "native-hidden.npy"
     write_npy(native_logits, (2, 2), logits)
@@ -93,6 +121,7 @@ def main() -> int:
     assert "--reference-commit" in help_result.stdout
     generator_text = args.generator.read_text(encoding="utf-8")
     assert "modeling_esmc._flash_attn_rotary_available = False" in generator_text
+    assert "modeling_esmc._te_available = False" in generator_text
     assert "output_attentions=True" in generator_text
     specification = importlib.util.spec_from_file_location("esmc_oracle", args.generator)
     assert specification is not None and specification.loader is not None

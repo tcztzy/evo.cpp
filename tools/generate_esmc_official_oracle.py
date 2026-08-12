@@ -56,6 +56,15 @@ def load_official_checkpoint(model: Any, model_dir: Path, load_file: Any) -> Non
     loaded: set[str] = set()
     for checkpoint_path in checkpoint_paths:
         state = load_file(str(checkpoint_path), device="cpu")
+        for name in list(state):
+            value = state[name]
+            if (
+                name.endswith("._extra_state")
+                and name not in expected
+                and str(value.dtype) == "torch.uint8"
+                and value.numel() == 0
+            ):
+                del state[name]
         duplicate = loaded.intersection(state)
         if duplicate:
             raise OracleError(
@@ -224,6 +233,8 @@ def main() -> int:
     torch.backends.cudnn.allow_tf32 = False
     modeling_esmc._flash_attn_rotary_available = False
     modeling_esmc.apply_triton_rotary = None
+    modeling_esmc._te_available = False
+    modeling_esmc.te = None
     model = ESMCForMaskedLM(config)
     load_official_checkpoint(model, model_dir, load_file)
     model.eval().to(args.device)
@@ -267,6 +278,7 @@ def main() -> int:
         "token_ids": token_ids,
         "attention_implementation": "official_manual_f32",
         "rotary_implementation": "official_pytorch_fallback",
+        "layer_norm_linear_implementation": "official_pytorch_fallback",
         "dtype": "float32",
         "tf32": False,
         "outputs": {

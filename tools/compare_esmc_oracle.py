@@ -12,6 +12,8 @@ import math
 import struct
 from pathlib import Path
 
+REFERENCE_COMMIT = "3a8956fb4d4ea16b0ec8e71deef2c2909b6a5cbf"
+
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -94,6 +96,33 @@ def main() -> int:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if manifest.get("model_id") != args.model_id:
         parser.error("oracle model_id differs from --model-id")
+    reference = manifest.get("official_reference")
+    if not isinstance(reference, dict) or reference.get("commit") != REFERENCE_COMMIT:
+        parser.error("oracle does not identify the pinned Biohub reference commit")
+    if (
+        manifest.get("attention_implementation") != "official_manual_f32"
+        or manifest.get("rotary_implementation") != "official_pytorch_fallback"
+        or manifest.get("layer_norm_linear_implementation")
+        != "official_pytorch_fallback"
+        or manifest.get("dtype") != "float32"
+        or manifest.get("tf32") is not False
+    ):
+        parser.error("oracle implementation metadata differs from the portable gate")
+    outputs = manifest.get("outputs")
+    if not isinstance(outputs, dict):
+        parser.error("oracle manifest has no output descriptors")
+    for output_name, filename in (
+        ("logits", "logits.npy"),
+        ("final_hidden", "final-hidden.npy"),
+    ):
+        descriptor = outputs.get(output_name)
+        output_path = args.oracle_dir / filename
+        if (
+            not isinstance(descriptor, dict)
+            or descriptor.get("path") != filename
+            or descriptor.get("sha256") != sha256(output_path)
+        ):
+            parser.error(f"oracle {output_name} descriptor failed its SHA256 gate")
     results = {
         "logits": metrics(args.oracle_dir / "logits.npy", args.native_logits),
         "final_hidden": metrics(

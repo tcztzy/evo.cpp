@@ -151,3 +151,4 @@ B30|2026-08-12|ESMC oracle 假设 config 暴露 `expansion_ratio`，但 pinned �
 B31|2026-08-12|通用 Transformers 5.1 loader 把 TE 的 Safetensors `_extra_state` 当普通 attribute，无法装载官方权重→oracle 改用 PyTorch extra-state-aware `load_state_dict` 且逐 shard 核对完整 key set|R8,R12,V28,V30
 B32|2026-08-12|BioNeMo 容器的可选 FlashAttention Triton RoPE 找不到无版本 `libcuda.so`→oracle 固定使用 pinned 官方 pure-PyTorch RoPE fallback 与 manual F32 attention，避免环境相关 kernel dispatch|R8,V26,V30
 B33|2026-08-12|ESMC 验收脚本在 gpu02 宿主直接启动容器构建的 CUDA binary→动态链接器找不到 `libcudart.so.12`|V16,V30
+B34|2026-08-12|初次 oracle 隐式采用可选 Transformer Engine fused reduction，与原生/官方 portable fallback 的顺序不同且将 hidden 微差放大为 logits 超阈值→oracle manifest 固定并校验官方 PyTorch F32 fallback|R8,V26,V30
