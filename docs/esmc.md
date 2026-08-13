@@ -183,3 +183,45 @@ the worst logits maximum absolute errors were respectively `5.34e-5`,
 `0.999999999998`. The archived gate also records the converted artifact,
 official oracle, native NPY outputs, comparison JSON, GPU state, binary hash,
 and recursive artifact hashes.
+
+## A800 performance boundary
+
+The same pinned checkpoints were measured on one idle A800 80GB. Entries are
+native/official median milliseconds; the parenthesized value is native
+speedup. Both sides use batch 1, F32 with TF32 disabled, identical token IDs,
+two warmups, five retained samples, CUDA synchronization, and
+`forward_with_host_logits`. Model load is timed separately.
+
+| Model | Load | 128 tokens | 512 tokens | 2048 tokens |
+|---|---:|---:|---:|---:|
+| ESMC-300M | 241.7 / 884.9 (3.66×) | 19.23 / 28.35 (1.47×) | 37.32 / 28.29 (0.76×) | 142.01 / 52.88 (0.37×) |
+| ESMC-600M | 444.6 / 1054.5 (2.37×) | 26.26 / 34.66 (1.32×) | 56.58 / 41.91 (0.74×) | 221.87 / 77.90 (0.35×) |
+| ESMC-6B | 4716.4 / 5757.1 (1.22×) | 162.47 / 85.64 (0.53×) | 483.63 / 104.43 (0.22×) | 1891.57 / 490.21 (0.26×) |
+
+Thus the native path is a latency win for short 300M/600M requests and for
+loading every size, while the pinned official runtime remains the performance
+choice for longer sequences and 6B forward. The native deployment advantage
+does not depend on that crossover: product inference has no Python, PyTorch,
+Transformers, Transformer Engine, or libtorch runtime dependency.
+
+The maintained reproduction command is:
+
+```sh
+export HF_HOME=/build/grp_icg/users/tang/.cache/huggingface
+scripts/gpu02_benchmark_esmc.sh
+```
+
+This run used source commit `6c16115`, source fingerprint
+`8c08607794d452840d435a869ad9e1b8702051d3cd30ec43a98244420594dd01`,
+the three revisions in the identity table, and Biohub Transformers commit
+`3a8956fb4d4ea16b0ec8e71deef2c2909b6a5cbf`. The native Release/CUDA 12.8
+binary SHA256 was
+`7ef2c8a48e566c5db84dba0a44cfb53b4e0170e41b42bfb6dc2ab8660db4b9d4`.
+The official container used Python 3.12.3, PyTorch
+`2.13.0a0+8145d630e8.nv26.06`, Transformers 5.1.0, CUDA runtime 13.3,
+`config._attn_implementation=eager`, available Transformer Engine, and the
+official PyTorch RoPE fallback. The GPU was idle at 41 MiB before and after;
+driver version was 580.126.20. The complete report is archived on gpu02 at
+`$HOME/evo.cpp-artifacts/esmc-performance-8c08607794d4-gpu1`; its
+`artifact-sha256.txt` has SHA256
+`ac7c7dc883924184f721c3cf77226fb71de8bde3da0f1f066327f82a16bbac67`.

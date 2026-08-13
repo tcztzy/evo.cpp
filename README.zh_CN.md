@@ -27,6 +27,11 @@ encoder，在 CPU 或单张 CUDA GPU 上输出逐 token logits 与官方 hidden-
 - **它是 runtime，不是 framework 发行包。**核心是专用 C++/CUDA executable，
   提供有界模型加载、scoring、generation、embedding、variant scoring、原生 HTTP
   服务、多 GPU pipeline parallelism 和白盒 tensor dump。
+- **原生 ESMC，不带 Python 技术栈。**固定 Biohub 权重的 logits/embedding 已通过
+  官方 oracle 校验，推理不依赖 Python、PyTorch、Transformers 或 TE。单张 A800
+  上，batch-1、128-token 的 300M/600M host-logits 快 1.47×/1.32×，三个模型加载
+  快 1.22–3.66×；512–2048 tokens 与 6B forward 仍是官方 runtime 更快
+  （[方法与完整数据](docs/esmc.md#a800-performance-boundary)）。
 - **精确也可以很快。**单张 A800 上，exact 7B prefill 在
   16 / 128 / 1,024 tokens 下达到 1,071.5 / 7,619.2 / 11,369.3 tok/s，
   是同场预热官方 runtime 的 1.80× / 1.60× / 1.21×。

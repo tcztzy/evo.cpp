@@ -32,6 +32,12 @@ official hidden-state indices without a Python/PyTorch inference dependency.
   C++/CUDA with bounded model loading, scoring, generation, multi-GPU pipeline
   parallelism, embeddings, variant scoring, a native HTTP server, and white-box
   tensor dumps.
+- **Native ESMC without the Python stack.** Pinned Biohub weights produce
+  oracle-checked logits and embeddings without Python, PyTorch, Transformers,
+  or TE at inference. On A800, batch-one 128-token 300M/600M host-logits are
+  1.47×/1.32× faster and all three models load 1.22–3.66× faster; the official
+  runtime remains faster at 512–2048 tokens and for 6B forward
+  ([method and full results](docs/esmc.md#a800-performance-boundary)).
 - **Exactness is fast.** On one A800, exact 7B prefill reaches
   1,071.5 / 7,619.2 / 11,369.3 tok/s at 16 / 128 / 1,024 tokens—
   1.80× / 1.60× / 1.21× the warmed official runtime in the same comparison.
