@@ -701,6 +701,13 @@ if(BUILD_TESTING)
       --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_esmc_official_oracle.py
       --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/esmc-official-oracle)
   add_test(
+    NAME esmc_benchmark_contract
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_esmc_benchmark.py
+      --official-tool ${CMAKE_CURRENT_SOURCE_DIR}/tools/benchmark_esmc_official.py
+      --summarizer ${CMAKE_CURRENT_SOURCE_DIR}/tools/summarize_esmc_benchmark.py
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/esmc-benchmark)
+  add_test(
     NAME prefill_benchmark_gate
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_prefill_benchmark_gate.py

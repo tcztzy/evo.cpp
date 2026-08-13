@@ -160,3 +160,4 @@ B37|2026-08-12|官方 tokenizer 对用户字面 `<pad>` 仍输出 attention-mask
 B38|2026-08-12|共享 `HF_HOME` 已有精确 revision snapshot 且 21/21 注册 SHA256 正确，但 `huggingface_hub` 离线 API 因客户端元数据布局差异拒绝命中→`evo-fetch source --local-files-only` 对 immutable commit snapshot 直接定位 registry 文件并先验 size/SHA256；缺失或不符仍 fail closed|C15,V28,V34
 B39|2026-08-12|gpu02 宿主可读共享 `HF_HOME`，但 BioNeMo Apptainer image 默认不 bind `/build/grp_icg`→ESMC fetch/conversion/oracle 容器统一显式只读 bind C15 `HF_HOME` 到同路径，避免误报 snapshot 缺失或复制权重|C15,V28,V34
 B40|2026-08-12|共享 snapshot 按 B39 只读挂载后，`evo-fetch` 默认尝试在 cache child 写 receipt→新增独立 `--receipt-dir`；gpu02 gate 将 receipt 写入本次验收制品，模型 cache 全程只读|C15,V28,V34
+B41|2026-08-13|ESMC benchmark contract 用 `==` 比较由二进制浮点样本计算的 median，正确聚合因表示误差失败→数值断言改用严格容差比较|V21

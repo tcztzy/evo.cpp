@@ -602,6 +602,21 @@ def main() -> int:
     )
     assert esmc_syntax.returncode == 0, esmc_syntax.stderr
 
+    esmc_benchmark = (
+        args.source_dir / "scripts" / "gpu02_benchmark_esmc.sh"
+    ).read_text(encoding="utf-8")
+    assert "benchmark_esmc_official.py" in esmc_benchmark
+    assert "summarize_esmc_benchmark.py" in esmc_benchmark
+    assert "128 512 2048" in esmc_benchmark
+    assert "EVO_ESMC_BENCHMARK_WARMUPS:-2" in esmc_benchmark
+    assert "EVO_ESMC_BENCHMARK_REPEATS:-5" in esmc_benchmark
+    assert '-B "$hf_home:$hf_home:ro"' in esmc_benchmark
+    assert "CUDA device $gpu is not idle" in esmc_benchmark
+    esmc_benchmark_syntax = run_bash(
+        "-n", str(args.source_dir / "scripts" / "gpu02_benchmark_esmc.sh")
+    )
+    assert esmc_benchmark_syntax.returncode == 0, esmc_benchmark_syntax.stderr
+
     benchmark_7b = (
         args.source_dir / "scripts" / "gpu02_benchmark_7b.sh"
     ).read_text(encoding="utf-8")
