@@ -19,8 +19,8 @@ Validated on 2026-07-23:
 
 The checkpoint cache is remote-only. Set
 `HF_HOME=/build/grp_icg/users/tang/.cache/huggingface`; Hugging Face stores repository
-objects below its `hub/` child. The official Hugging Face
-revision is `d529aa57c30771814217ad89baaeaf6e2315c7d7`; gpu02 uses
+objects below its `hub/` child. The Evo 2 7B source revision is
+`d529aa57c30771814217ad89baaeaf6e2315c7d7`; gpu02 uses
 `https://hf-mirror.com` (equivalent to `HF_ENDPOINT=https://hf-mirror.com`)
 because the canonical endpoint is not reachable from the server.
 

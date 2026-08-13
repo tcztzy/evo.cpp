@@ -32,12 +32,15 @@ and other languages with a C foreign-function interface.
 
 ## Minimal use
 
+The lifetime pattern is architecture-neutral; the loaded artifact determines
+tokenization, capabilities, context limit, and supported backends.
+
 ```c
 #include <evo/evo.h>
 
 evo_model_params mp = evo_model_default_params();
 evo_model *model = NULL;
-if (evo_model_load("evo2.safetensors", &mp, &model) != EVO_STATUS_OK) {
+if (evo_model_load("MODEL.safetensors", &mp, &model) != EVO_STATUS_OK) {
     fprintf(stderr, "%s\n", evo_last_error());
     return 1;
 }

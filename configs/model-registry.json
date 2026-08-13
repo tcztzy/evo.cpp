@@ -1,7 +1,12 @@
 {
   "schema_version": 1,
-  "architecture_revision": "arcinstitute/evo2@53f195997257c56c00e5ef8d33a54f5baad143a6",
-  "runtime_layout_revision": "evo-design/vortex@8b00afebeac745d1f31e7e2788f0e0e39fa47637 (vtx 1.1.0)",
+  "evo2_architecture_revision": "arcinstitute/evo2@53f195997257c56c00e5ef8d33a54f5baad143a6",
+  "evo2_runtime_layout_revision": "evo-design/vortex@8b00afebeac745d1f31e7e2788f0e0e39fa47637 (vtx 1.1.0)",
+  "runtime_architectures": [
+    {"id": "StripedHyena2", "artifact_profile": "evo2-runtime-v1", "runtime_abi": "evo2-safetensors-v1"},
+    {"id": "HyenaDNA", "artifact_profile": "hyenadna-runtime-v1", "runtime_abi": "hyenadna-safetensors-v1"},
+    {"id": "ESMC", "artifact_profile": "esmc-runtime-v1", "runtime_abi": "esmc-safetensors-v1"}
+  ],
   "profiles": {
     "1b_base": {
       "hidden_size": 1920, "num_layers": 25, "num_attention_heads": 15,
@@ -95,6 +100,7 @@
   },
   "models": {
     "evo2_1b_base": {
+      "family": "evo2", "architecture": "StripedHyena2",
       "profile": "1b_base",
       "exact_support": "validated",
       "exact_evidence": "model-size-validation/2026-08-04/evo2_1b_base",
@@ -115,6 +121,7 @@
       "container_manifest": {"tensors": 291, "bf16": 180, "f32": 90, "e4m3": 21, "bytes": 1986759592}
     },
     "evo2_7b": {
+      "family": "evo2", "architecture": "StripedHyena2",
       "profile": "7b_1m",
       "exact_support": "validated",
       "exact_evidence": "model-size-validation/2026-08-04/evo2_7b",
@@ -136,6 +143,7 @@
       "container_manifest": {"tensors": 345, "bf16": 257, "f32": 88, "e4m3": 0, "bytes": 13170533120}
     },
     "evo2_7b_base": {
+      "family": "evo2", "architecture": "StripedHyena2",
       "profile": "7b_base",
       "exact_support": "unsupported",
       "exact_evidence": null,
@@ -157,6 +165,7 @@
       "container_manifest": {"tensors": 345, "bf16": 257, "f32": 88, "e4m3": 0, "bytes": 12969206528}
     },
     "evo2_7b_262k": {
+      "family": "evo2", "architecture": "StripedHyena2",
       "profile": "7b_262k",
       "exact_support": "unsupported",
       "exact_evidence": null,
@@ -178,6 +187,7 @@
       "container_manifest": {"tensors": 345, "bf16": 257, "f32": 88, "e4m3": 0, "bytes": 12969206528}
     },
     "evo2_20b": {
+      "family": "evo2", "architecture": "StripedHyena2",
       "profile": "20b_1m",
       "exact_support": "validated",
       "exact_evidence": "model-size-validation/2026-08-04/evo2_20b",
@@ -198,6 +208,7 @@
       "container_manifest": {"tensors": 282, "bf16": 174, "f32": 87, "e4m3": 21, "bytes": 35262564264}
     },
     "evo2_40b": {
+      "family": "evo2", "architecture": "StripedHyena2",
       "profile": "40b_1m",
       "exact_support": "validated",
       "exact_evidence": "model-size-validation/2026-08-04/evo2_40b",
@@ -222,6 +233,7 @@
       "container_manifest": {"tensors": 579, "bf16": 358, "f32": 179, "e4m3": 42, "bytes": 73796817232}
     },
     "evo2_40b_base": {
+      "family": "evo2", "architecture": "StripedHyena2",
       "profile": "40b_base",
       "exact_support": "unsupported",
       "exact_evidence": null,
@@ -246,6 +258,7 @@
       "container_manifest": {"tensors": 579, "bf16": 358, "f32": 179, "e4m3": 42, "bytes": 72223953232}
     },
     "evo2_40b_bionemo_bf16": {
+      "family": "evo2", "architecture": "StripedHyena2",
       "profile": "40b_1m",
       "exact_support": "unsupported",
       "exact_evidence": null,

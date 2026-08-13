@@ -13,9 +13,13 @@ namespace evo {
 
 using TokenId = std::uint16_t;
 
-inline constexpr std::size_t kTokenizerVocabSize = 512;
-inline constexpr TokenId kEosToken = 0;
-inline constexpr TokenId kPadToken = 1;
+inline constexpr std::size_t kEvo2TokenizerVocabSize = 512;
+inline constexpr TokenId kEvo2EosToken = 0;
+inline constexpr TokenId kEvo2PadToken = 1;
+// Source-compatible aliases from the original single-architecture API.
+inline constexpr std::size_t kTokenizerVocabSize = kEvo2TokenizerVocabSize;
+inline constexpr TokenId kEosToken = kEvo2EosToken;
+inline constexpr TokenId kPadToken = kEvo2PadToken;
 
 // Evo 2 CharLevelTokenizer maps each UTF-8 byte to the numerically identical ID.
 [[nodiscard]] std::vector<TokenId> encode_bytes(std::string_view bytes);

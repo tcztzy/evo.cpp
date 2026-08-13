@@ -15,7 +15,7 @@ from evo.bionemo_checkpoint import (
     validate_source_sha256,
 )
 from evo.checkpoint import CheckpointError
-from evo.format import FormatError, TensorSource, write_model
+from evo.format import EVO2_PROFILE_VALUE, FormatError, TensorSource, write_model
 from evo.model_config import config_metadata, load_config
 
 
@@ -130,6 +130,7 @@ def main() -> int:
             args.output,
             metadata,
             sources,
+            artifact_profile=EVO2_PROFILE_VALUE,
             force=args.force,
             chunk_size=args.chunk_mib * 1024 * 1024,
             max_shard_size=args.max_shard_mib * 1024 * 1024,

@@ -12,7 +12,8 @@
 namespace {
 
 void print_help() {
-  std::cout << "evo-inspect - inspect an Evo 2 runtime Safetensors file\n\n"
+  std::cout
+      << "evo-inspect - inspect a biological-model runtime Safetensors file\n\n"
             << "Usage:\n"
             << "  evo-inspect --help\n"
             << "  evo-inspect --version\n"
@@ -56,20 +57,37 @@ int inspect(const std::string &path, const std::string_view selected_tensor) {
               << " value=" << evo::metadata_value_text(entry) << '\n';
   }
   const auto *const model_id = model.find_metadata("model.id");
-  const auto *const official =
+  const auto *const official_evo2 =
       model_id != nullptr && model_id->type == evo::MetadataType::kString
           ? evo::find_official_model(evo::metadata_value_text(*model_id))
           : nullptr;
-  if (model.profile() == evo::kModelProfile) {
+  const auto *const official_esmc =
+      model_id != nullptr && model_id->type == evo::MetadataType::kString
+          ? evo::find_official_esmc_model(evo::metadata_value_text(*model_id))
+          : nullptr;
+  if (model.profile() == evo::kEvo2ModelProfile) {
     std::cout << "exact_support="
-              << (official == nullptr
+              << (official_evo2 == nullptr
                       ? "unknown"
                       : evo::official_exact_support_name(
-                            official->exact_support))
+                            official_evo2->exact_support))
               << " evidence="
-              << (official == nullptr || official->exact_evidence.empty()
+              << (official_evo2 == nullptr ||
+                          official_evo2->exact_evidence.empty()
                       ? "none"
-                      : official->exact_evidence)
+                      : official_evo2->exact_evidence)
+              << '\n';
+  } else if (model.profile() == evo::kEsmcModelProfile) {
+    std::cout << "exact_support="
+              << (official_esmc == nullptr
+                      ? "unknown"
+                      : evo::official_exact_support_name(
+                            official_esmc->exact_support))
+              << " evidence="
+              << (official_esmc == nullptr ||
+                          official_esmc->exact_evidence.empty()
+                      ? "none"
+                      : official_esmc->exact_evidence)
               << '\n';
   }
 

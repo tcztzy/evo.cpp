@@ -131,13 +131,16 @@ const std::vector<OfficialEsmcModelSpec> &official_esmc_model_specs() {
   static const std::vector<OfficialEsmcModelSpec> specs{
       {"esmc_300m", "biohub/ESMC-300M",
        "a59b831785f907e96e6a246b1d142bfb76df31ee", "esmc-300m-2024-12",
-       64, 960, 30, 15, 2560, 2048},
+       64, 960, 30, 15, 2560, 2048, OfficialExactSupport::kValidated,
+       "esmc-official-oracle/2026-08-12/esmc_300m"},
       {"esmc_600m", "biohub/ESMC-600M",
        "a7e82012c83126b9eedb055fea9fa84b6c02f094", "esmc-600m-2024-12",
-       64, 1152, 36, 18, 3072, 2048},
+       64, 1152, 36, 18, 3072, 2048, OfficialExactSupport::kValidated,
+       "esmc-official-oracle/2026-08-12/esmc_600m"},
       {"esmc_6b", "biohub/ESMC-6B",
        "45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a", "esmc-6b-2024-12",
-       64, 2560, 80, 40, 6912, 2048},
+       64, 2560, 80, 40, 6912, 2048, OfficialExactSupport::kValidated,
+       "esmc-official-oracle/2026-08-12/esmc_6b"},
   };
   return specs;
 }

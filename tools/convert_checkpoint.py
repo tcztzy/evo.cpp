@@ -14,7 +14,7 @@ from evo.checkpoint import (
     prepare_runtime_image_sources,
     prepare_runtime_sources,
 )
-from evo.format import FormatError, TensorSource, write_model
+from evo.format import EVO2_PROFILE_VALUE, FormatError, TensorSource, write_model
 from evo.model_config import (
     checkpoint_manifest,
     container_manifest,
@@ -149,6 +149,7 @@ def main() -> int:
             args.output,
             metadata,
             image_sources,
+            artifact_profile=EVO2_PROFILE_VALUE,
             force=args.force,
             chunk_size=args.chunk_mib * 1024 * 1024,
             max_shard_size=args.max_shard_mib * 1024 * 1024,

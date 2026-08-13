@@ -80,6 +80,8 @@ struct OfficialEsmcModelSpec final {
   std::size_t heads;
   std::size_t inner_width;
   std::size_t max_seqlen;
+  OfficialExactSupport exact_support;
+  std::string_view exact_evidence;
 };
 
 [[nodiscard]] const std::vector<OfficialModelSpec> &official_model_specs();

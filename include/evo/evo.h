@@ -48,7 +48,7 @@ typedef enum evo_backend {
 } evo_backend;
 
 enum {
-  // Synthetic StripedHyena2 fixtures are never accepted unless this explicit
+  // Synthetic architecture fixtures are never accepted unless this explicit
   // test-only flag is set.
   EVO_MODEL_FLAG_TEST_ONLY_ALLOW_SYNTHETIC = 1u << 0u
 };

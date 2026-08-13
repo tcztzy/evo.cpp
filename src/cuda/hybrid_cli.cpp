@@ -42,14 +42,14 @@ void write_json_string(std::ostream &output, const std::string_view value) {
 Status log_probability(const float *const logits, const TokenId target,
                        double *const result) {
   float maximum = -std::numeric_limits<float>::infinity();
-  for (std::size_t index = 0; index < kTokenizerVocabSize; ++index) {
+  for (std::size_t index = 0; index < kEvo2TokenizerVocabSize; ++index) {
     if (!std::isfinite(logits[index]))
       return {ErrorCode::kInternal,
               "hybrid backend produced non-finite logits"};
     maximum = std::max(maximum, logits[index]);
   }
   double denominator = 0.0;
-  for (std::size_t index = 0; index < kTokenizerVocabSize; ++index)
+  for (std::size_t index = 0; index < kEvo2TokenizerVocabSize; ++index)
     denominator += std::exp(static_cast<double>(logits[index] - maximum));
   *result =
       static_cast<double>(logits[target] - maximum) - std::log(denominator);
@@ -146,7 +146,7 @@ Status prefill(HybridContext *const context, const std::vector<TokenId> &tokens,
                               : context->prefill_chunk(chunk, &logits);
     if (!status.ok())
       return status;
-    if (logits.size() != rows * kTokenizerVocabSize)
+    if (logits.size() != rows * kEvo2TokenizerVocabSize)
       return {ErrorCode::kInternal,
               "hybrid prefill returned incomplete logits"};
     if (scores != nullptr) {
@@ -154,7 +154,7 @@ Status prefill(HybridContext *const context, const std::vector<TokenId> &tokens,
            ++row) {
         double value = 0.0;
         const auto inner =
-            log_probability(logits.data() + row * kTokenizerVocabSize,
+            log_probability(logits.data() + row * kEvo2TokenizerVocabSize,
                             tokens[offset + row + 1], &value);
         if (!inner.ok())
           return inner;
@@ -179,7 +179,7 @@ Status run_generate(const CliOptions &options, const HybridWeights &weights) {
   if (!status.ok())
     return status;
   std::vector<float> current(
-      logits.end() - static_cast<std::ptrdiff_t>(kTokenizerVocabSize),
+      logits.end() - static_cast<std::ptrdiff_t>(kEvo2TokenizerVocabSize),
       logits.end());
   Sampler sampler(options.sampling);
   std::string generated;

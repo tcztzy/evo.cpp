@@ -12,7 +12,7 @@ evo.cpp !成为本地、可嵌入、可移植的生物序列基础模型推理�
 - C4: checkpoint 转换、mmap、manifest、FP8 extra-state 与原子发布契约 !保持 `docs/model-format.md`、`docs/checkpoint-conversion.md` 约束。
 - C5: 训练/微调由 Savanna 或 NVIDIA BioNeMo 负责；本仓库只加载其推理产物与未来 adapter。
 - C6: CUDA/Ampere 仍为 exact 主后端；新后端与 fast profile ⊥冒充 exact。
-- C7: 平台首先覆盖 DNA 序列；多模型架构必须抽象扩展点，⊥在 Evo 2 CUDA 类上继续堆叠公共接口。
+- C7: 平台覆盖 DNA 与蛋白质序列；多模型架构必须抽象扩展点，⊥在任一 architecture 私有类上继续堆叠公共接口。
 - C8: 大 checkpoint、转换结果、数据集 ⊥提交 Git；下载缓存与 revision/hash !可审计。
 - C9: ESMC canonical source !为 `biohub/ESMC-300M`、`biohub/ESMC-600M`、`biohub/ESMC-6B`；2024-12 HF repos 仅作 deprecated alias/source 说明，⊥隐式混载旧权重布局。
 - C10: ESMC production runtime !为 C++17 CPU/CUDA；Python/PyTorch/官方 Transformers fork 仅限隔离的 converter/oracle，不进入产品依赖图。
@@ -31,7 +31,7 @@ evo.cpp !成为本地、可嵌入、可移植的生物序列基础模型推理�
 - I5 bio-input: FASTA、raw、stdin；后续 FASTQ/gzip/VCF/reference FASTA；record name、坐标、strand !保留。
 - I6 output: scoring/bench JSONL；embedding NPY/Safetensors；generation stdout `raw|fasta`；错误→nonzero + typed status。
 - I7 server: `/v1/generate`、`/v1/score`、`/v1/embeddings`、`/v1/variants`、`/health`、`/metrics`；请求可取消、限长、隔离 context。
-- I8 install: `cmake --install` 提供 library、headers、CLI、CMake package；release 提供校验和与平台元数据。
+- I8 install: `cmake --install` 提供 library、headers、CLI、CMake package；release 提供校验和与平台元数据，含 registry 对齐的 production architectures/artifact profiles。
 - I9 esmc-source: `evo_fetch.py source esmc_{300m,600m,6b}` 获取 pinned config/tokenizer/checkpoint；`convert_esmc_checkpoint.py --receipt ...` 离线产出严格 runtime artifact。
 - I10 esmc-cli: `evo logits -m MODEL --input INPUT --output DIR` 输出逐 token 64-way F32 NPY；既有 `evo embed ...` 输出选定 hidden layer，蛋白质输入默认添加 `<cls>`/`<eos>`。
 - I11 esmc-artifact: metadata 至少含 architecture/profile/model-id/revision、layers/width/heads/vocab/context、tokenizer identity、tensor manifest 与 source receipt hash。
@@ -89,6 +89,7 @@ R12|ESMC weights|当前 300M/600M revision 分别为 `a59b831…`/`a7e8201…` �
 - V32: ESMC CUDA v1 ∀ device selection → exactly one CUDA device；0/2+ devices 或 unsupported compute/runtime → typed fail，且失败前⊥部分输出。
 - V33: ESMC hidden index !bit-exact 对齐 pinned Transformers `layers_to_collect`：`0=token_embedding`、`i∈[1,n-1]=block(i-1)_output`、`n=final_layer_norm`；⊥沿用旧 ESM SDK 的逐 block-output convention。
 - V34: gpu02 ESMC fetch/conversion/oracle gate → !export C15 `HF_HOME` 且默认 `cache_dir=$HF_HOME/hub`；显式 override !可审计。
+- V35: ∀ platform-level docs/help/release metadata → !表述 biological-sequence platform 且与 registry production architectures/artifact profiles 对齐；architecture-specific 页面 !显式限定 scope；⊥把 evo.cpp 全局等同 Evo 2 runtime。
 
 ## §T TASKS
 
@@ -115,6 +116,7 @@ T19|x|实现 bit-exact protein tokenizer 与 CPU F32 forward/logits/embedding；
 T20|x|实现单卡 CUDA F32 ESMC forward/logits/embedding 与 typed unsupported 边界|C10,C12,C13,V26,V27,V29,V30,V32,I10,I12
 T21|x|接入 C API/CLI/HF offline artifact validation；补 logits/embedding metadata、能力 gate 与用户文档|C9,C12,C14,V24,V25,V27,V29,I2,I6,I10,I11,I12
 T22|x|生成 pinned 官方 oracle；gpu02 验证三尺寸；跑 full regression、记录证据并清理非制品文件|C8,C10,C14,C15,V16,V26,V28,V30,V31,V34
+T23|x|审计全仓 scope；修复 platform-level Evo 2-only 表述与 release metadata；增加 registry-driven contract|C7,V10,V16,V35,I8
 
 ## §B BUGS
 

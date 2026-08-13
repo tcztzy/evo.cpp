@@ -15,6 +15,7 @@ from pathlib import Path
 
 from evo.format import (
     DEFAULT_MAX_SHARD_SIZE,
+    EVO2_PROFILE_VALUE,
     BytesTensorSource,
     FormatError,
     TensorSource,
@@ -210,7 +211,14 @@ class ConverterTests(unittest.TestCase):
             "fixture.opaque": b"\x00\xff",
         }
         path = WORK_DIR / "roundtrip.safetensors"
-        write_model(path, metadata, tensors, chunk_size=3, force=True)
+        write_model(
+            path,
+            metadata,
+            tensors,
+            artifact_profile=EVO2_PROFILE_VALUE,
+            chunk_size=3,
+            force=True,
+        )
 
         inspected = subprocess.run(
             [str(INSPECTOR), str(path)],
@@ -246,14 +254,30 @@ class ConverterTests(unittest.TestCase):
     def test_writer_refuses_overwrite_and_duplicate_names(self) -> None:
         source = BytesTensorSource("x", "BF16", (1,), b"\x00\x00")
         path = WORK_DIR / "overwrite.safetensors"
-        write_model(path, {"model.name": "first"}, [source], force=True)
+        with self.assertRaisesRegex(TypeError, "artifact_profile"):
+            write_model(path, {"model.name": "implicit"}, [source])
+        write_model(
+            path,
+            {"model.name": "first"},
+            [source],
+            artifact_profile=EVO2_PROFILE_VALUE,
+            force=True,
+        )
         original = path.read_bytes()
         with self.assertRaises(FileExistsError):
-            write_model(path, {"model.name": "second"}, [source])
+            write_model(
+                path,
+                {"model.name": "second"},
+                [source],
+                artifact_profile=EVO2_PROFILE_VALUE,
+            )
         self.assertEqual(path.read_bytes(), original)
         with self.assertRaisesRegex(FormatError, "duplicate or reserved tensor name"):
             write_model(
-                WORK_DIR / "duplicate.safetensors", {}, [source, source]
+                WORK_DIR / "duplicate.safetensors",
+                {},
+                [source, source],
+                artifact_profile=EVO2_PROFILE_VALUE,
             )
 
     def test_writer_size_shards_use_the_standard_index_contract(self) -> None:
@@ -267,6 +291,7 @@ class ConverterTests(unittest.TestCase):
             output,
             {"model.name": "sharded"},
             tensors,
+            artifact_profile=EVO2_PROFILE_VALUE,
             max_shard_size=10,
             force=True,
         )
@@ -327,9 +352,19 @@ class ConverterTests(unittest.TestCase):
         short = BrokenTensorSource("short", "BF16", (2,), 4, (b"\x00\x00",))
         long = BrokenTensorSource("long", "BF16", (2,), 4, (b"\x00" * 5,))
         with self.assertRaisesRegex(FormatError, "yielded 2 bytes"):
-            write_model(WORK_DIR / "short.safetensors", {}, [short])
+            write_model(
+                WORK_DIR / "short.safetensors",
+                {},
+                [short],
+                artifact_profile=EVO2_PROFILE_VALUE,
+            )
         with self.assertRaisesRegex(FormatError, "yielded more bytes"):
-            write_model(WORK_DIR / "long.safetensors", {}, [long])
+            write_model(
+                WORK_DIR / "long.safetensors",
+                {},
+                [long],
+                artifact_profile=EVO2_PROFILE_VALUE,
+            )
 
 
 def parse_args() -> argparse.Namespace:

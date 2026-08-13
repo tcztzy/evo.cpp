@@ -14,8 +14,8 @@ from pathlib import Path
 from typing import Protocol
 
 
-PROFILE_KEY = "evo2.profile"
-PROFILE_VALUE = "evo2-runtime-v1"
+EVO2_PROFILE_KEY = "evo2.profile"
+EVO2_PROFILE_VALUE = "evo2-runtime-v1"
 RUNTIME_PROFILE_KEY = "runtime.profile"
 HYENADNA_PROFILE_VALUE = "hyenadna-runtime-v1"
 ESMC_PROFILE_VALUE = "esmc-runtime-v1"
@@ -126,7 +126,7 @@ def _encode_metadata_value(value: object) -> str:
 
 
 def encode_metadata(
-    metadata: Mapping[str, object], artifact_profile: str = PROFILE_VALUE
+    metadata: Mapping[str, object], artifact_profile: str
 ) -> dict[str, str]:
     if len(metadata) >= 4096:
         raise FormatError("metadata entry count exceeds 4095")
@@ -134,11 +134,11 @@ def encode_metadata(
     for key in sorted(metadata):
         if not KEY_PATTERN.fullmatch(key) or len(key.encode("ascii")) > 255:
             raise FormatError(f"invalid metadata key {key!r}")
-        if key in {PROFILE_KEY, RUNTIME_PROFILE_KEY}:
+        if key in {EVO2_PROFILE_KEY, RUNTIME_PROFILE_KEY}:
             raise FormatError(f"{key} is reserved by the writer")
         encoded[key] = _encode_metadata_value(metadata[key])
-    if artifact_profile == PROFILE_VALUE:
-        encoded[PROFILE_KEY] = f"s:{PROFILE_VALUE}"
+    if artifact_profile == EVO2_PROFILE_VALUE:
+        encoded[EVO2_PROFILE_KEY] = f"s:{EVO2_PROFILE_VALUE}"
     elif artifact_profile in {HYENADNA_PROFILE_VALUE, ESMC_PROFILE_VALUE}:
         encoded[RUNTIME_PROFILE_KEY] = f"s:{artifact_profile}"
     else:
@@ -363,7 +363,7 @@ def write_model(
     metadata: Mapping[str, object],
     tensors: Sequence[TensorSource],
     *,
-    artifact_profile: str = PROFILE_VALUE,
+    artifact_profile: str,
     force: bool = False,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     max_shard_size: int = DEFAULT_MAX_SHARD_SIZE,

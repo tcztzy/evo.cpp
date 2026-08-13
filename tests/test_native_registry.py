@@ -32,7 +32,7 @@ def main() -> int:
             architectures[fields[1]] = fields[2:]
             continue
         if fields[0] == "$":
-            assert len(fields) == 11, line
+            assert len(fields) == 13, line
             native_esmc[fields[1]] = fields[2:]
             continue
         assert len(fields) == 22, line
@@ -40,7 +40,7 @@ def main() -> int:
     evo_models = {
         model_id: entry
         for model_id, entry in registry["models"].items()
-        if entry.get("family", "evo2") == "evo2"
+        if entry["family"] == "evo2"
     }
     assert set(native) == set(evo_models)
 
@@ -83,13 +83,17 @@ def main() -> int:
             entry["source_revision"],
             entry["hosted_alias"],
         ]
-        assert [int(value) for value in fields[3:]] == [
+        assert [int(value) for value in fields[3:9]] == [
             profile["vocab_size"],
             profile["hidden_size"],
             profile["num_layers"],
             profile["num_attention_heads"],
             profile["inner_mlp_size"],
             profile["max_seqlen"],
+        ]
+        assert fields[9:] == [
+            entry["exact_support"],
+            entry["exact_evidence"],
         ]
     assert set(architectures) == {
         "StripedHyena2",
@@ -99,6 +103,15 @@ def main() -> int:
         "ESMC",
         "ESMCTest",
     }
+    production_architectures = {
+        entry["id"]: [entry["artifact_profile"], entry["runtime_abi"]]
+        for entry in registry["runtime_architectures"]
+    }
+    assert set(production_architectures) == {
+        name for name in architectures if not name.endswith("Test")
+    }
+    for name, contract in production_architectures.items():
+        assert architectures[name][:2] == contract
     assert architectures["StripedHyena2"] == [
         "evo2-runtime-v1",
         "evo2-safetensors-v1",

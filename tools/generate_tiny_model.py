@@ -9,7 +9,7 @@ import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from evo.format import BytesTensorSource, write_model
+from evo.format import EVO2_PROFILE_VALUE, BytesTensorSource, write_model
 
 
 VOCAB = 512
@@ -482,7 +482,13 @@ def main() -> int:
         "hcm_filter_dtype": "F32",
     }
     args.model.parent.mkdir(parents=True, exist_ok=True)
-    write_model(args.model, metadata, model.sources(), force=True)
+    write_model(
+        args.model,
+        metadata,
+        model.sources(),
+        artifact_profile=EVO2_PROFILE_VALUE,
+        force=True,
+    )
     if args.config_only:
         return 0
 

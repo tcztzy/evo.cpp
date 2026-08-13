@@ -18,12 +18,13 @@ This repository is a format-converted copy of the official
 The official PyTorch `.pt` checkpoint was converted to sharded Safetensors for
 direct loading by [evo.cpp](https://github.com/tcztzy/evo.cpp).
 
-evo.cpp is an independent C++17/CUDA inference runtime for Evo 2. It is aimed
-at running official Evo 2 checkpoints on CUDA devices that do not provide the
-Hopper FP8 execution path. Model files are memory-mapped and converted into
-the required runtime representation while loading; inference does not embed
-or invoke a Python runtime. The 7B checkpoint in this repository uses BF16
-weights and has been validated on NVIDIA A800 hardware.
+evo.cpp is an independent C++17 biological-sequence inference runtime with
+registered StripedHyena2 (Evo 2), HyenaDNA, and ESMC architectures. This model
+card is scoped only to its Evo 2 artifact, which runs on CUDA devices without a
+Hopper FP8 execution path. Model files are memory-mapped and loaded into the
+required runtime representation without embedding or invoking Python. The 7B
+checkpoint in this repository uses BF16 weights and has been validated on
+NVIDIA A800 hardware.
 
 No training or fine-tuning was performed. The BF16 model weights retain their
 source values. Small normalization and RoPE tensors are exactly widened from
@@ -82,9 +83,9 @@ Inspect and run it with a build of evo.cpp that supports
 `evo2-safetensors-v1`:
 
 ```bash
-build/evo2c-inspect evo2-7b/model.safetensors.index.json
+build/evo-inspect evo2-7b/model.safetensors.index.json
 
-build/evo2c \
+build/evo run \
   -m evo2-7b/model.safetensors.index.json \
   -p ACGTGCAATGCCGTTA \
   -n 128 \

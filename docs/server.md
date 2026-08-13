@@ -1,10 +1,11 @@
 # Native bio-sequence server
 
-`evo serve` loads one validated Evo 2 artifact and exposes generation,
-likelihood scoring, intermediate embeddings, and strand-aware variant scoring
-over HTTP/1.1. The production process is C++17; Python is not in the runtime
-dependency graph. The same process can use the portable CPU backend or the
-exact/fast CUDA profiles, and requests never switch backend implicitly.
+`evo serve` loads one validated causal-model artifact (`StripedHyena2` or
+`HyenaDNA`) and exposes generation, likelihood scoring, intermediate
+embeddings, and strand-aware variant scoring over HTTP/1.1. ESMC v1 is a
+logits/embedding CLI and C API path; server startup returns typed unsupported.
+The production process is C++17; Python is not in the runtime dependency graph.
+Requests never switch architecture, backend, or profile implicitly.
 
 ## Start the server
 

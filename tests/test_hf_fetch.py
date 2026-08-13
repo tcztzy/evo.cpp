@@ -101,6 +101,18 @@ def main() -> int:
     parser.add_argument("--work-dir", required=True, type=Path)
     args = parser.parse_args()
     args.work_dir.mkdir(parents=True, exist_ok=True)
+    help_result = subprocess.run(
+        [sys.executable, str(args.tool), "--help"],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if (
+        help_result.returncode != 0
+        or "biological-model checkpoints" not in help_result.stdout
+    ):
+        raise AssertionError("evo-fetch help has stale project scope")
     python_path = write_fake_hub(args.work_dir)
     remote = args.work_dir / "remote"
     cache = args.work_dir / "cache"

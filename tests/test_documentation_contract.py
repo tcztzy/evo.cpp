@@ -49,6 +49,12 @@ def main() -> int:
         source_dir / "docs" / "compatibility.md",
         source_dir / "docs" / "benchmark-matrix.md",
         source_dir / "docs" / "artifact-distribution.md",
+        source_dir / "docs" / "architectures.md",
+        source_dir / "docs" / "checkpoint-conversion.md",
+        source_dir / "docs" / "model-format.md",
+        source_dir / "docs" / "server.md",
+        source_dir / "NOTICE",
+        source_dir / ".evo2-7b-hf-upload" / "README.md",
     ]
     for path in required_paths:
         if not path.is_file():
@@ -58,6 +64,12 @@ def main() -> int:
     compatibility = required_paths[3].read_text(encoding="utf-8")
     benchmarks = required_paths[4].read_text(encoding="utf-8")
     releases = required_paths[5].read_text(encoding="utf-8")
+    architectures_document = required_paths[6].read_text(encoding="utf-8")
+    conversion = required_paths[7].read_text(encoding="utf-8")
+    model_format = required_paths[8].read_text(encoding="utf-8")
+    server = required_paths[9].read_text(encoding="utf-8")
+    notice = required_paths[10].read_text(encoding="utf-8")
+    evo2_model_card = required_paths[11].read_text(encoding="utf-8")
     exactness = (source_dir / "docs" / "model-size-validation.md").read_text(
         encoding="utf-8"
     )
@@ -119,6 +131,59 @@ def main() -> int:
             encoding="utf-8"
         )
     )
+    runtime_architectures = registry.get("runtime_architectures")
+    if not isinstance(runtime_architectures, list) or not runtime_architectures:
+        raise AssertionError("model registry omitted runtime_architectures")
+    architecture_ids = tuple(entry["id"] for entry in runtime_architectures)
+    artifact_profiles = tuple(
+        dict.fromkeys(entry["artifact_profile"] for entry in runtime_architectures)
+    )
+    readme = required_paths[1].read_text(encoding="utf-8")
+    readme_zh = required_paths[2].read_text(encoding="utf-8")
+    for label, text in (
+        ("README.md", readme),
+        ("README.zh_CN.md", readme_zh),
+        ("architecture registry", architectures_document),
+        ("release documentation", releases),
+    ):
+        require(text, architecture_ids, label)
+    for label, text in (
+        ("release documentation", releases),
+        ("checkpoint conversion", conversion),
+        ("model format", model_format),
+    ):
+        require(text, artifact_profiles, label)
+    require(server, architecture_ids, "server capability boundary")
+    require(notice, ("Evo 2", "HyenaDNA", "ESMC"), "NOTICE")
+    require(
+        evo2_model_card,
+        ("biological-sequence inference runtime", *architecture_ids),
+        "Evo 2 artifact model card",
+    )
+    stale_scope_claims = (
+        "inference runtime for Evo 2.",
+        "生产 runtime 只读取 `evo2-runtime-v1`",
+        "loads one validated Evo 2 artifact",
+        "inspect an Evo 2 runtime Safetensors file",
+        "Fetch revision-pinned Evo source checkpoints",
+    )
+    scope_sources = {
+        "README.md": readme,
+        "README.zh_CN.md": readme_zh,
+        "checkpoint conversion": conversion,
+        "server": server,
+        "Evo 2 artifact model card": evo2_model_card,
+        "model inspector": (source_dir / "src" / "inspect_main.cpp").read_text(
+            encoding="utf-8"
+        ),
+        "fetch helper": (source_dir / "tools" / "evo_fetch.py").read_text(
+            encoding="utf-8"
+        ),
+    }
+    for label, text in scope_sources.items():
+        for stale in stale_scope_claims:
+            if stale in text:
+                raise AssertionError(f"{label} contains stale scope claim: {stale}")
     for model_id, model in registry["models"].items():
         if model_id not in exactness or model["exact_support"] not in exactness:
             raise AssertionError(

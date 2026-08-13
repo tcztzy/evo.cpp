@@ -51,6 +51,20 @@ def main() -> int:
     if result.returncode != 0:
         raise AssertionError(f"metadata tool failed: {result.stderr}")
     metadata = json.loads(output.read_text(encoding="utf-8"))
+    registry = json.loads(
+        (args.source_dir / "configs" / "model-registry.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    registered_architectures = [
+        entry["id"] for entry in registry["runtime_architectures"]
+    ]
+    runtime_profiles = list(
+        dict.fromkeys(
+            entry["artifact_profile"]
+            for entry in registry["runtime_architectures"]
+        )
+    )
     expected_digest = hashlib.sha256(payload).hexdigest()
     if any(
         (
@@ -63,9 +77,9 @@ def main() -> int:
             metadata["cuda_version"] != "12.8",
             metadata["build_image"] != "nvidia/cuda@sha256:" + "b" * 64,
             metadata["registered_architectures"]
-            != ["StripedHyena2", "HyenaDNA"],
+            != registered_architectures,
             metadata["runtime_profiles"]
-            != ["evo2-runtime-v1", "hyenadna-runtime-v1"],
+            != runtime_profiles,
             metadata["execution_profiles"]
             != ["exact", "fast-q8-kv", "cpu-f32"],
             metadata["model_registry"]["installed_path"]

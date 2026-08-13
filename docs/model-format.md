@@ -1,7 +1,7 @@
 # Safetensors runtime profiles
 
 `evo.cpp` 使用标准 Safetensors 作为生产模型容器。Evo 2 保持严格、确定性的
-`evo2-runtime-v1` profile；第二个 model family 使用独立的
+`evo2-runtime-v1` profile；HyenaDNA 使用独立的
 `hyenadna-runtime-v1` profile；ESMC 使用 `esmc-runtime-v1`。单文件使用
 `.safetensors` 后缀；大模型使用
 标准 Safetensors 分片名与 `model.safetensors.index.json`。
@@ -14,8 +14,8 @@
 - Python、Rust 与其他生态工具可以直接查看 tensor；
 - runtime 只实现一个很小的严格 parser，不需要 JSON 或 Safetensors 第三方库。
 
-Safetensors 是存储协议，不是完整的 Evo 2 模型契约。因此 runtime 仍会校验
-profile metadata、官方模型签名和精确 tensor 集。
+Safetensors 是存储协议，不是完整的模型契约。因此 runtime 仍会按 architecture
+校验 profile metadata、官方模型签名和精确 tensor 集。
 
 ## 物理布局
 

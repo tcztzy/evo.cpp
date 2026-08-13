@@ -1,8 +1,9 @@
 # Artifact acquisition and releases
 
 `evo.cpp` keeps model weights outside Git. It distinguishes upstream source
-checkpoints from converted `evo2-runtime-v1` artifacts so a downloaded `.pt`
-file is never mistaken for an inference-ready model.
+checkpoints from the registered `evo2-runtime-v1`, `hyenadna-runtime-v1`, and
+`esmc-runtime-v1` artifacts so source files are never mistaken for
+inference-ready models.
 
 ## Fetch an official source checkpoint
 
@@ -107,7 +108,7 @@ fetch helper, but never model weights.
 
 | Asset | Backend and architecture | Intended host | Status |
 |---|---|---|---|
-| `evo-VERSION-linux-x86_64-cuda12.8.tar.gz` | CUDA exact/fast, CPU, hybrid; StripedHyena2 and HyenaDNA | Linux x86-64, CUDA 12.8, sm80 for gated exact execution | Produced by tagged release workflow |
+| `evo-VERSION-linux-x86_64-cuda12.8.tar.gz` | CUDA exact/fast, CPU, hybrid; StripedHyena2, HyenaDNA, and ESMC | Linux x86-64, CUDA 12.8, sm80 for gated exact execution | Produced by tagged release workflow |
 | Source tag | CPU portable build | Linux and macOS C++17 environments in CI | Supported build path |
 | macOS, Windows, other CUDA, HIP, Metal, Vulkan, SYCL archive | — | — | Not published |
 
@@ -121,7 +122,9 @@ archive's size/SHA256, tag and commit, platform, backend, CUDA and build-image
 identity, `registered_architectures`, `runtime_profiles`, execution profiles,
 and the installed model-registry SHA256. It also states
 `contains_model_weights: false`; runtime binaries and model artifacts are
-distributed and verified separately.
+distributed and verified separately. Architecture/profile lists are generated
+from the registry's `runtime_architectures` descriptors rather than maintained
+as a release-only allowlist.
 
 Each release carries:
 

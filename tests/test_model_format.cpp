@@ -79,6 +79,18 @@ Fixture valid_fixture() {
                                0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x40});
 }
 
+Fixture esmc_fixture() {
+  const std::string header =
+      "{\"__metadata__\":{"
+      "\"runtime.profile\":\"s:esmc-runtime-v1\","
+      "\"runtime.abi\":\"s:esmc-safetensors-v1\","
+      "\"model.id\":\"s:esmc_300m\","
+      "\"model.architecture\":\"s:ESMC\"},"
+      "\"embedding_layer.weight\":{"
+      "\"dtype\":\"F32\",\"shape\":[1],\"data_offsets\":[0,4]}}";
+  return make_fixture(header, {0, 0, 0, 0});
+}
+
 class TemporaryFile final {
 public:
   TemporaryFile() {
@@ -247,8 +259,16 @@ int main(const int argc, char **argv) {
     }
     return 0;
   }
+  if (argc == 3 && std::string_view{argv[1]} == "--write-esmc-fixture") {
+    if (!write_file(argv[2], esmc_fixture().bytes)) {
+      std::cerr << "failed to write ESMC fixture: " << argv[2] << '\n';
+      return 1;
+    }
+    return 0;
+  }
   if (argc != 1) {
-    std::cerr << "usage: test_model_format [--write-fixture PATH]\n";
+    std::cerr << "usage: test_model_format "
+                 "[--write-fixture|--write-esmc-fixture PATH]\n";
     return 2;
   }
 

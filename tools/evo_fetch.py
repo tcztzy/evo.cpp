@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Fetch revision-pinned Evo source checkpoints or runtime artifacts."""
+"""Fetch revision-pinned biological-model sources or runtime artifacts."""
 
 from __future__ import annotations
 
@@ -462,7 +462,10 @@ def runtime_command(args: argparse.Namespace) -> dict[str, object]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Fetch hash-verified Evo checkpoints through the Hugging Face cache"
+        description=(
+            "Fetch hash-verified biological-model checkpoints and runtime "
+            "artifacts through the Hugging Face cache"
+        )
     )
     parser.add_argument("--cache-dir", type=Path, default=default_cache_dir())
     parser.add_argument(

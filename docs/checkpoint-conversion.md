@@ -1,10 +1,13 @@
 # Checkpoint conversion
 
-生产 runtime 只读取 `evo2-runtime-v1` Safetensors。Arc `.pt` 与 BioNeMo DCP
-都在离线环境中转换；推理进程不加载 Python、PyTorch 或 libtorch。
+生产 runtime 读取严格注册的 `evo2-runtime-v1`、`hyenadna-runtime-v1` 与
+`esmc-runtime-v1` Safetensors。Arc `.pt` 与 BioNeMo DCP 使用隔离的 PyTorch
+转换环境；HyenaDNA/ESMC converter 不依赖 PyTorch。任何产品推理路径都不加载
+Python、PyTorch 或 libtorch。
 
-模型、revision、checksum、source/runtime manifest 的机器可读来源是
-[`configs/model-registry.json`](../configs/model-registry.json)。
+Evo 2/ESMC 的 model ID、revision、checksum、source/runtime manifest 以
+[`configs/model-registry.json`](../configs/model-registry.json) 为机器可读来源。
+HyenaDNA v1 的显式 model ID/revision/hash 由其 converter 写入并校验。
 
 可先用注册表锁定的 fetch helper 获取并验证源 checkpoint：
 

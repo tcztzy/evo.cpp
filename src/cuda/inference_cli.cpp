@@ -455,7 +455,7 @@ Status run_generate(const CliOptions &options, PipelineModel *const model,
   }
 
   const std::size_t vocab_size = model->config().vocab_size;
-  if (vocab_size != kTokenizerVocabSize || logits.size() < vocab_size ||
+  if (vocab_size != kEvo2TokenizerVocabSize || logits.size() < vocab_size ||
       logits.size() % vocab_size != 0) {
     return {ErrorCode::kModelFormat,
             "generation requires a 512-token vocabulary and complete final "
@@ -538,7 +538,7 @@ Status run_generate(const CliOptions &options, PipelineModel *const model,
 Status run_score(const CliOptions &options, PipelineModel *const model,
                  MemoryTracker *const memory, Metrics *const metrics) {
   const std::size_t vocab_size = model->config().vocab_size;
-  if (vocab_size != kTokenizerVocabSize) {
+  if (vocab_size != kEvo2TokenizerVocabSize) {
     return {ErrorCode::kModelFormat, "scoring requires a 512-token vocabulary"};
   }
   std::size_t processed_records = 0;
@@ -712,7 +712,7 @@ Status score_sequence(const std::string_view sequence,
             "variant sequence must contain at least two bytes"};
   }
   const std::size_t vocab_size = model->config().vocab_size;
-  if (vocab_size != kTokenizerVocabSize) {
+  if (vocab_size != kEvo2TokenizerVocabSize) {
     return {ErrorCode::kModelFormat,
             "variant scoring requires a 512-token vocabulary"};
   }

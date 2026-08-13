@@ -27,6 +27,10 @@ limit. It does not claim equivalence to the upstream FFT implementation; see
 the [architecture registry](architectures.md) for its numerical gate and
 support boundary.
 
+ESMC uses `cpu-f32` for its portable F32 reference and `exact` on one CUDA GPU;
+both preserve the source F32 weights. ESMC does not support causal cache or
+hybrid-placement profiles.
+
 CPU+GPU placement is also explicit:
 
 ```sh

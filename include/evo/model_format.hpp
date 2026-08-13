@@ -13,7 +13,12 @@
 
 namespace evo {
 
-inline constexpr std::string_view kModelProfile = "evo2-runtime-v1";
+inline constexpr std::string_view kEvo2ModelProfile = "evo2-runtime-v1";
+inline constexpr std::string_view kHyenaDnaModelProfile =
+    "hyenadna-runtime-v1";
+inline constexpr std::string_view kEsmcModelProfile = "esmc-runtime-v1";
+// Source-compatible alias for the original Evo 2-only public constant.
+inline constexpr std::string_view kModelProfile = kEvo2ModelProfile;
 inline constexpr std::size_t kMaximumSafetensorsHeaderSize =
     16U * 1024U * 1024U;
 inline constexpr std::size_t kTensorNameCapacity = 96;
@@ -61,7 +66,7 @@ public:
   ModelFile(ModelFile &&) noexcept = default;
   ModelFile &operator=(ModelFile &&) noexcept = default;
 
-  // Opens the strict Evo 2 Safetensors runtime profile. Payload authenticity
+  // Opens a registered strict Safetensors runtime profile. Payload authenticity
   // is established by the external artifact SHA256, not by a startup rescan.
   [[nodiscard]] Status open(const std::string &path);
 

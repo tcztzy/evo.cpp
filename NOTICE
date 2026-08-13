@@ -5,14 +5,17 @@ This product is an independent implementation informed by the Evo 2 and
 Vortex projects from Arc Institute and their contributors, distributed under
 the Apache License 2.0.
 
+The HyenaDNA architecture and Biohub ESMC architecture/tokenizer behavior are
+implemented from their public upstream specifications. Their model and code
+licenses and use terms remain separate from evo.cpp's Apache-2.0 license.
+
 BioNeMo NeMo2/Megatron Bridge checkpoint naming and the BF16-to-Vortex
 conversion semantics are informed by NVIDIA BioNeMo Recipes, distributed
 under the Apache License 2.0:
 https://github.com/NVIDIA/bionemo-framework
 
 Architecture and validation design also draw on public engineering techniques
-documented by llama.cpp and ds4. No source code from those projects is included
-in this initial scaffold.
+documented by llama.cpp and ds4. No source code from those projects is included.
 
 The software H100 QGMMA numerical model is informed by "Accurate Models of
 NVIDIA Tensor Cores" and MATLAB-tensor-core:

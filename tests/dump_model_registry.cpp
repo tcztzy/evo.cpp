@@ -58,7 +58,9 @@ int main() {
               << model.huggingface_revision << '|' << model.hosted_alias << '|'
               << model.vocab_size << '|' << model.hidden_size << '|'
               << model.layers << '|' << model.heads << '|' << model.inner_width
-              << '|' << model.max_seqlen << '\n';
+              << '|' << model.max_seqlen << '|'
+              << evo::official_exact_support_name(model.exact_support) << '|'
+              << model.exact_evidence << '\n';
   }
   for (const auto &architecture : evo::architecture_specs()) {
     const char *tokenizer = "esmc-protein";

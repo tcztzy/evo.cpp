@@ -147,7 +147,7 @@ Status decode_metadata(const std::string &key, const std::string &encoded,
   }
   if (encoded.size() < 2 || encoded[1] != ':') {
     return format_error("metadata '" + key +
-                        "' is not typed by the Evo 2 profile");
+                        "' is not typed by a registered runtime profile");
   }
   MetadataEntry entry;
   entry.key = key;

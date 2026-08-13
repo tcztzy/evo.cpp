@@ -191,8 +191,8 @@ void test_tokenizer() {
   const auto tokens = evo::encode_bytes(bytes);
   check(tokens == std::vector<evo::TokenId>({65, 195, 169, 0, 255}),
         "UTF-8 and arbitrary bytes map to identical unsigned IDs");
-  check(evo::kEosToken == 0 && evo::kPadToken == 1 &&
-            evo::kTokenizerVocabSize == 512,
+  check(evo::kEvo2EosToken == 0 && evo::kEvo2PadToken == 1 &&
+            evo::kEvo2TokenizerVocabSize == 512,
         "tokenizer constants match Vortex");
   std::uint8_t byte = 0;
   check(evo::token_to_byte(255, &byte).ok() && byte == 255,
@@ -332,7 +332,7 @@ void test_sequence_reader() {
 }
 
 void test_sampler() {
-  std::vector<float> logits(evo::kTokenizerVocabSize, -10.0F);
+  std::vector<float> logits(evo::kEvo2TokenizerVocabSize, -10.0F);
   logits[7] = 4.0F;
   logits[9] = 4.0F;
   evo::TokenId token = 0;

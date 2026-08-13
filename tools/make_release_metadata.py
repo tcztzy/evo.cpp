@@ -34,6 +34,32 @@ def project_version(source_dir: Path) -> str:
     return match.group(1)
 
 
+def runtime_contract(registry_path: Path) -> tuple[list[str], list[str]]:
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    entries = registry.get("runtime_architectures")
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("model registry has no runtime_architectures")
+    architectures: list[str] = []
+    profiles: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError("runtime architecture descriptor must be an object")
+        architecture = entry.get("id")
+        profile = entry.get("artifact_profile")
+        runtime_abi = entry.get("runtime_abi")
+        if not all(
+            isinstance(value, str) and value
+            for value in (architecture, profile, runtime_abi)
+        ):
+            raise ValueError("runtime architecture descriptor is incomplete")
+        if architecture in architectures:
+            raise ValueError(f"duplicate runtime architecture {architecture!r}")
+        architectures.append(architecture)
+        if profile not in profiles:
+            profiles.append(profile)
+    return architectures, profiles
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--archive", required=True, type=Path)
@@ -69,6 +95,7 @@ def main() -> int:
         registry = source_dir / "configs" / "model-registry.json"
         if not registry.is_file():
             raise ValueError("source tree does not contain the model registry")
+        registered_architectures, runtime_profiles = runtime_contract(registry)
         metadata = {
             "schema_version": 2,
             "artifact_kind": "runtime-binary",
@@ -83,8 +110,8 @@ def main() -> int:
             "backend": args.backend,
             "cuda_version": args.cuda_version,
             "build_image": args.build_image,
-            "registered_architectures": ["StripedHyena2", "HyenaDNA"],
-            "runtime_profiles": ["evo2-runtime-v1", "hyenadna-runtime-v1"],
+            "registered_architectures": registered_architectures,
+            "runtime_profiles": runtime_profiles,
             "execution_profiles": ["exact", "fast-q8-kv", "cpu-f32"],
             "model_registry": {
                 "installed_path": "share/evo/configs/model-registry.json",

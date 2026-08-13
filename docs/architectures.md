@@ -23,7 +23,7 @@ gates are documented in [native ESMC inference](esmc.md).
 
 ## HyenaDNA support boundary
 
-The first second-family adapter targets the official Hugging Face
+The HyenaDNA adapter targets the official Hugging Face
 `HyenaDNAForCausalLM` F32 layout: character embeddings, post-residual
 LayerNorm blocks, order-2 Hyena operators, two-layer GELU MLPs, final
 LayerNorm, and an untied LM head. It is based on the official HyenaDNA code and

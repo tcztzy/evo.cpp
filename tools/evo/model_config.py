@@ -1,4 +1,4 @@
-"""Strict official Evo 2 model registry and checkpoint tensor manifests."""
+"""Strict Evo 2 config/manifests from the shared biological-model registry."""
 
 from __future__ import annotations
 
@@ -557,8 +557,8 @@ def config_metadata(
         "model.source_repo": entry["source_repo"],
         "model.source_revision": entry["source_revision"],
         "model.registry_schema": registry["schema_version"],
-        "model.architecture_revision": registry["architecture_revision"],
-        "model.runtime_layout_revision": registry["runtime_layout_revision"],
+        "model.architecture_revision": registry["evo2_architecture_revision"],
+        "model.runtime_layout_revision": registry["evo2_runtime_layout_revision"],
         "checkpoint.filename": checkpoint_name,
         "checkpoint.size": checkpoint_size,
         "checkpoint.extra_state_count": entry["extra_state_count"],
