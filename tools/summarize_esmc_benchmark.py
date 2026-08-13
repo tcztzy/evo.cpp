@@ -13,6 +13,7 @@ from typing import Any
 
 
 METRICS_PREFIX = "evo_metrics "
+RECORD_METRICS_PREFIX = "evo_record_metrics "
 
 
 def load_object(path: Path) -> dict[str, Any]:
@@ -36,20 +37,42 @@ def main() -> int:
         parser.error("warmups/repeats are outside the benchmark contract")
     lengths = list(dict.fromkeys(args.length))
     official = load_object(args.official)
-    metrics = []
+    aggregate_metrics = []
+    record_metrics = []
     for line in args.native_log.read_text(encoding="utf-8").splitlines():
         if line.startswith(METRICS_PREFIX):
             value = json.loads(line[len(METRICS_PREFIX) :])
             if value.get("architecture") == "ESMC":
-                metrics.append(value)
+                aggregate_metrics.append(value)
+        elif line.startswith(RECORD_METRICS_PREFIX):
+            value = json.loads(line[len(RECORD_METRICS_PREFIX) :])
+            if value.get("architecture") == "ESMC":
+                record_metrics.append(value)
     expected = len(lengths) * (args.warmups + args.repeats)
-    if len(metrics) != expected:
-        raise ValueError(f"native log has {len(metrics)} ESMC samples, expected {expected}")
+    if len(record_metrics) != expected:
+        raise ValueError(
+            f"native log has {len(record_metrics)} ESMC record samples, "
+            f"expected {expected}"
+        )
+    if len(aggregate_metrics) != 1:
+        raise ValueError("native log must contain exactly one aggregate ESMC metric")
+    aggregate = aggregate_metrics[0]
+    if int(aggregate.get("prefill_tokens", -1)) != sum(
+        int(item.get("prefill_tokens", -1)) for item in record_metrics
+    ):
+        raise ValueError("native aggregate token count differs from record samples")
+    if not math.isclose(
+        float(aggregate.get("prefill_seconds", math.nan)),
+        sum(float(item.get("prefill_seconds", math.nan)) for item in record_metrics),
+        rel_tol=1e-6,
+        abs_tol=1e-9,
+    ):
+        raise ValueError("native aggregate time differs from record samples")
 
     comparison: dict[str, Any] = {}
     offset = 0
     for length in lengths:
-        group = metrics[offset : offset + args.warmups + args.repeats]
+        group = record_metrics[offset : offset + args.warmups + args.repeats]
         offset += len(group)
         if any(int(item.get("prefill_tokens", -1)) != length for item in group):
             raise ValueError(f"native token count differs from requested length {length}")
@@ -70,9 +93,6 @@ def main() -> int:
             "native_speedup": official_median / native_median,
         }
 
-    model_loads = {float(item["model_load_seconds"]) for item in metrics}
-    if len(model_loads) != 1:
-        raise ValueError("native samples disagree on model-load time")
     report = {
         "schema_version": 1,
         "model_id": official.get("model_id"),
@@ -81,7 +101,7 @@ def main() -> int:
         "warmups": args.warmups,
         "repeats": args.repeats,
         "official_load_seconds": official.get("load_seconds"),
-        "native_load_seconds": model_loads.pop(),
+        "native_load_seconds": float(aggregate["model_load_seconds"]),
         "cases": comparison,
     }
     args.output.write_text(

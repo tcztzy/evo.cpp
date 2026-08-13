@@ -50,20 +50,34 @@ def main() -> int:
     )
     native = args.work_dir / "native.log"
     samples = []
+    aggregate_seconds = 0.0
+    aggregate_tokens = 0
+    record_index = 0
     for length, values in ((128, (0.5, 0.1, 0.2)), (512, (0.8, 0.2, 0.4))):
         for seconds in values:
+            aggregate_seconds += seconds
+            aggregate_tokens += length
             samples.append(
-                "evo_metrics "
+                "evo_record_metrics "
                 + json.dumps(
                     {
                         "architecture": "ESMC",
-                        "model_load_seconds": 2.0,
+                        "record_index": record_index,
                         "prefill_tokens": length,
                         "prefill_seconds": seconds,
                     }
                 )
             )
-    native.write_text("\n".join(samples) + "\n", encoding="utf-8")
+            record_index += 1
+    aggregate = "evo_metrics " + json.dumps(
+        {
+            "architecture": "ESMC",
+            "model_load_seconds": 2.0,
+            "prefill_tokens": aggregate_tokens,
+            "prefill_seconds": aggregate_seconds,
+        }
+    )
+    native.write_text("\n".join([*samples, aggregate]) + "\n", encoding="utf-8")
     output = args.work_dir / "comparison.json"
     result = run(
         args.summarizer,

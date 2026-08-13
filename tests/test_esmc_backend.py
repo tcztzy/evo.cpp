@@ -200,7 +200,7 @@ def main() -> int:
         shutil.rmtree(logits_dir, ignore_errors=True)
         shutil.rmtree(embedding_dir, ignore_errors=True)
         common = ["--ctx", "16", "--gpu", "0"]
-        subprocess.run(
+        cuda_logits = subprocess.run(
             [
                 str(args.cuda_cli_binary),
                 "logits",
@@ -213,7 +213,10 @@ def main() -> int:
                 *common,
             ],
             check=True,
+            capture_output=True,
+            text=True,
         )
+        assert cuda_logits.stderr.count("evo_record_metrics ") == 1
         subprocess.run(
             [
                 str(args.cuda_cli_binary),

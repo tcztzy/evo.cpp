@@ -1163,12 +1163,19 @@ Status run_esmc_logits(const CliOptions &options, EsmcModel *const model,
         std::vector<float> logits;
         const auto start = Clock::now();
         inner = context.prefill(tokens, &logits);
-        metrics->prefill_seconds += seconds_since(start);
+        const double record_prefill_seconds = seconds_since(start);
+        metrics->prefill_seconds += record_prefill_seconds;
         metrics->prefill_tokens += tokens.size();
         metrics->retained_logits_peak_bytes = std::max(
             metrics->retained_logits_peak_bytes, logits.size() * sizeof(float));
         if (!inner.ok())
           return inner;
+        std::cerr << "evo_record_metrics {\"backend\":\"cuda\","
+                     "\"profile\":\"exact\",\"architecture\":\"ESMC\","
+                     "\"record_index\":"
+                  << record_index << ",\"prefill_tokens\":" << tokens.size()
+                  << ",\"prefill_seconds\":" << std::setprecision(9)
+                  << record_prefill_seconds << "}\n";
         std::ostringstream filename;
         filename << std::setw(6) << std::setfill('0') << record_index << ".npy";
         inner = npy::write_f32((directory / filename.str()).string(), logits,
