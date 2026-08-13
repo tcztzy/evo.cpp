@@ -37,6 +37,8 @@ def main() -> int:
         parser.error("warmups/repeats are outside the benchmark contract")
     lengths = list(dict.fromkeys(args.length))
     official = load_object(args.official)
+    if official.get("timing_scope") != "forward_with_host_logits":
+        raise ValueError("official report has an incompatible timing scope")
     aggregate_metrics = []
     record_metrics = []
     for line in args.native_log.read_text(encoding="utf-8").splitlines():
@@ -98,6 +100,7 @@ def main() -> int:
         "model_id": official.get("model_id"),
         "batch_size": 1,
         "dtype": "float32",
+        "timing_scope": "forward_with_host_logits",
         "warmups": args.warmups,
         "repeats": args.repeats,
         "official_load_seconds": official.get("load_seconds"),

@@ -162,3 +162,4 @@ B39|2026-08-12|gpu02 宿主可读共享 `HF_HOME`，但 BioNeMo Apptainer image 
 B40|2026-08-12|共享 snapshot 按 B39 只读挂载后，`evo-fetch` 默认尝试在 cache child 写 receipt→新增独立 `--receipt-dir`；gpu02 gate 将 receipt 写入本次验收制品，模型 cache 全程只读|C15,V28,V34
 B41|2026-08-13|ESMC benchmark contract 用 `==` 比较由二进制浮点样本计算的 median，正确聚合因表示误差失败→数值断言改用严格容差比较|V21
 B42|2026-08-13|ESMC CLI 的 `evo_metrics` 按整个多记录输入聚合，benchmark 错把它当逐记录样本→CUDA logits 另发逐记录计时，summarizer 同时校验逐记录样本与单条 aggregate|V21
+B43|2026-08-13|ESMC official benchmark 只同步 device logits，而原生 `prefill` 计时包含 logits 回传主机→两侧统一 `forward_with_host_logits` timing scope 并由 summarizer 拒绝混用|V21

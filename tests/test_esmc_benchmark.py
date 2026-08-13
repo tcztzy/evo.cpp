@@ -40,6 +40,7 @@ def main() -> int:
             {
                 "model_id": "esmc_test",
                 "load_seconds": 3.0,
+                "timing_scope": "forward_with_host_logits",
                 "cases": {
                     "128": {"median_seconds": 0.2},
                     "512": {"median_seconds": 0.4},
@@ -101,6 +102,8 @@ def main() -> int:
     report = json.loads(output.read_text(encoding="utf-8"))
     if report["native_load_seconds"] != 2.0:
         raise AssertionError("native model-load time was not preserved")
+    if report["timing_scope"] != "forward_with_host_logits":
+        raise AssertionError("benchmark timing scope was not preserved")
     if not math.isclose(
         report["cases"]["128"]["native_median_seconds"], 0.15, abs_tol=1e-12
     ):

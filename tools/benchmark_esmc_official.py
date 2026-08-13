@@ -123,9 +123,12 @@ def main() -> int:
                     return_dict=True,
                     compute_sae=False,
                 )
+                host_logits = output.logits.detach().to(
+                    dtype=torch.float32, device="cpu"
+                )
                 torch.cuda.synchronize()
                 elapsed = time.perf_counter() - started
-                if output.logits.shape != (1, length, int(config.vocab_size)):
+                if host_logits.shape != (1, length, int(config.vocab_size)):
                     raise OracleError("official benchmark returned unexpected logits shape")
                 if iteration >= args.warmups:
                     samples.append(elapsed)
@@ -147,6 +150,7 @@ def main() -> int:
         "reference_commit": REFERENCE_COMMIT,
         "dtype": "float32",
         "batch_size": 1,
+        "timing_scope": "forward_with_host_logits",
         "tf32": False,
         "warmups": args.warmups,
         "repeats": args.repeats,
