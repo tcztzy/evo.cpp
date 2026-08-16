@@ -11,6 +11,11 @@ import re
 import sys
 from pathlib import Path
 
+from evo.artifact_profiles import (
+    ProfileRegistryError,
+    load_artifact_profiles,
+)
+
 
 COMMIT_RE = re.compile(r"[0-9a-fA-F]{40}")
 VERSION_RE = re.compile(
@@ -35,6 +40,10 @@ def project_version(source_dir: Path) -> str:
 
 
 def runtime_contract(registry_path: Path) -> tuple[list[str], list[str]]:
+    try:
+        profiles_by_id = load_artifact_profiles(registry_path)
+    except ProfileRegistryError as error:
+        raise ValueError(str(error)) from error
     registry = json.loads(registry_path.read_text(encoding="utf-8"))
     entries = registry.get("runtime_architectures")
     if not isinstance(entries, list) or not entries:
@@ -54,6 +63,8 @@ def runtime_contract(registry_path: Path) -> tuple[list[str], list[str]]:
             raise ValueError("runtime architecture descriptor is incomplete")
         if architecture in architectures:
             raise ValueError(f"duplicate runtime architecture {architecture!r}")
+        if profile not in profiles_by_id:
+            raise ValueError(f"unknown artifact profile {profile!r}")
         architectures.append(architecture)
         if profile not in profiles:
             profiles.append(profile)

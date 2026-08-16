@@ -508,6 +508,9 @@ install(
   DESTINATION "${CMAKE_INSTALL_BINDIR}"
   RENAME evo-fetch)
 install(
+  FILES tools/evo/__init__.py tools/evo/artifact_profiles.py
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/evo/python/evo")
+install(
   PROGRAMS tools/evo_profile_gate.py
   DESTINATION "${CMAKE_INSTALL_BINDIR}"
   RENAME evo-profile-gate)
@@ -768,6 +771,7 @@ if(BUILD_TESTING)
       -DEVO_CONSUMER_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/install_consumer
       -DEVO_CONSUMER_BUILD=${CMAKE_CURRENT_BINARY_DIR}/Testing/install-consumer
       -DEVO_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+      -DEVO_PYTHON_EXECUTABLE=${Python3_EXECUTABLE}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/install_contract.cmake)
 
   add_test(
@@ -836,6 +840,7 @@ if(BUILD_TESTING)
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_hf_fetch.py
       --tool ${CMAKE_CURRENT_SOURCE_DIR}/tools/evo_fetch.py
+      --registry ${CMAKE_CURRENT_SOURCE_DIR}/configs/model-registry.json
       --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/hf-fetch)
   add_test(
     NAME geneb_catalog_contract

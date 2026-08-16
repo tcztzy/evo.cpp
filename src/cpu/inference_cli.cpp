@@ -33,12 +33,72 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-std::size_t esmc_input_byte_limit(const std::size_t context_size) noexcept {
-  constexpr std::size_t kLongestTokenBytes = 6;
-  return context_size >
-                 std::numeric_limits<std::size_t>::max() / kLongestTokenBytes
-             ? std::numeric_limits<std::size_t>::max()
-             : context_size * kLongestTokenBytes;
+std::size_t input_byte_limit(const ArchitectureTokenizer tokenizer,
+                             const std::size_t context_size) noexcept {
+  switch (tokenizer) {
+  case ArchitectureTokenizer::kByteIdentity:
+  case ArchitectureTokenizer::kHyenaDnaCharacter:
+    return context_size;
+  case ArchitectureTokenizer::kEsmcProtein: {
+    // The longest registered raw spelling is the six-byte <mask> token.
+    constexpr std::size_t kLongestTokenBytes = 6;
+    return context_size >
+                   std::numeric_limits<std::size_t>::max() / kLongestTokenBytes
+               ? std::numeric_limits<std::size_t>::max()
+               : context_size * kLongestTokenBytes;
+  }
+  }
+  return context_size;
+}
+
+std::size_t embedding_layer_count(const ModelConfig &config) noexcept {
+  switch (config.implementation) {
+  case ArchitectureImplementation::kUnknown:
+    return 0;
+  case ArchitectureImplementation::kStripedHyena2:
+  case ArchitectureImplementation::kHyenaDna:
+    return config.layers;
+  case ArchitectureImplementation::kEsmc:
+    return config.layers + 1U;
+  }
+  return 0;
+}
+
+const char *embedding_point(const ArchitectureImplementation implementation)
+    noexcept {
+  switch (implementation) {
+  case ArchitectureImplementation::kUnknown:
+    return "unknown";
+  case ArchitectureImplementation::kStripedHyena2:
+  case ArchitectureImplementation::kHyenaDna:
+    return "block_output";
+  case ArchitectureImplementation::kEsmc:
+    return "official_hidden_state";
+  }
+  return "unknown";
+}
+
+const ArchitectureBackendFactorySpec *architecture_backend_factory(
+    const ArchitectureSpec &architecture,
+    const ExecutionBackend backend) noexcept {
+  switch (backend) {
+  case ExecutionBackend::kCpu:
+    return find_architecture_backend_factory(architecture,
+                                             kArchitectureBackendCpu);
+  case ExecutionBackend::kCuda:
+    return find_architecture_backend_factory(architecture,
+                                             kArchitectureBackendCuda);
+  case ExecutionBackend::kMps:
+    return find_architecture_backend_factory(architecture,
+                                             kArchitectureBackendMps);
+  case ExecutionBackend::kAuto:
+    // The all-CUDA frontend handles automatic GPU dispatch before this host
+    // surface is entered. Direct host callers retain the portable CPU choice;
+    // MPS is intentionally never selected automatically.
+    return find_architecture_backend_factory(architecture,
+                                             kArchitectureBackendCpu);
+  }
+  return nullptr;
 }
 
 void write_json_string(std::ostream &output, const std::string_view value) {
@@ -569,7 +629,8 @@ Status run_logits(const CliOptions &options, const Model &model) {
   const std::filesystem::path directory{options.embed_output_dir};
   std::size_t record_index = 0;
   return stream_sequence_file(
-      options.embed_path, esmc_input_byte_limit(options.context_size),
+      options.embed_path,
+      input_byte_limit(model.config().tokenizer, options.context_size),
       [&](const SequenceRecord &record) -> Status {
         std::vector<TokenId> tokens;
         auto inner = model.encode(record.bytes, &tokens);
@@ -637,10 +698,7 @@ const char *pooling_name(const EmbeddingPooling pooling) noexcept {
 }
 
 Status run_embed(const CliOptions &options, const Model &model) {
-  const bool esmc =
-      model.config().tokenizer == ArchitectureTokenizer::kEsmcProtein;
-  const std::size_t layer_count =
-      model.config().layers + static_cast<std::size_t>(esmc);
+  const std::size_t layer_count = embedding_layer_count(model.config());
   if (options.embed_layer >= layer_count)
     return {ErrorCode::kInvalidArgument, "embedding layer exceeds model"};
   const std::filesystem::path directory{options.embed_output_dir};
@@ -661,7 +719,7 @@ Status run_embed(const CliOptions &options, const Model &model) {
   std::size_t record_index = 0;
   return stream_sequence_file(
       options.embed_path,
-      esmc ? esmc_input_byte_limit(options.context_size) : options.context_size,
+      input_byte_limit(model.config().tokenizer, options.context_size),
       [&](const SequenceRecord &record) -> Status {
         Context context;
         auto status = context.initialize_shared(model, options.context_size);
@@ -723,7 +781,7 @@ Status run_embed(const CliOptions &options, const Model &model) {
         manifest << ",\"source_tokens\":" << tokens.size() << ",\"shape\":["
                  << rows << ',' << width
                  << "],\"layer\":" << options.embed_layer << ",\"point\":\""
-                 << (esmc ? "official_hidden_state" : "block_output")
+                 << embedding_point(model.config().implementation)
                  << "\",\"pooling\":\""
                  << pooling_name(options.embedding_pooling)
                  << "\",\"dtype\":\"float32\",\"backend\":\""
@@ -750,19 +808,34 @@ Status run_inference_cli_loaded(const CliOptions &options, const Model &model,
   const auto *const architecture =
       find_architecture(model.config().architecture);
   unsigned capability = 0;
-  if (options.mode == RunMode::kGenerate)
+  switch (options.mode) {
+  case RunMode::kGenerate:
     capability = kArchitectureGenerate;
-  else if (options.mode == RunMode::kScore || options.mode == RunMode::kBench)
+    break;
+  case RunMode::kScore:
+  case RunMode::kBench:
     capability = kArchitectureScore;
-  else if (options.mode == RunMode::kLogits)
+    break;
+  case RunMode::kLogits:
     capability = kArchitectureLogits;
-  else if (options.mode == RunMode::kEmbed)
+    break;
+  case RunMode::kEmbed:
     capability = kArchitectureEmbed;
-  else if (options.mode == RunMode::kVariantScore)
+    break;
+  case RunMode::kVariantScore:
     capability = kArchitectureVariant;
-  if (architecture == nullptr || (architecture->capabilities & capability) == 0)
+    break;
+  case RunMode::kServe:
+    capability = kArchitectureServe;
+    break;
+  }
+  if (architecture == nullptr ||
+      architecture->implementation != model.config().implementation ||
+      (architecture->capabilities & capability) == 0 ||
+      architecture_backend_factory(*architecture, options.backend) == nullptr) {
     return {ErrorCode::kUnsupported,
             "operation is not supported by the selected model backend"};
+  }
   Status status = Status::Ok();
   if (options.mode == RunMode::kGenerate)
     status = run_generate(options, model);

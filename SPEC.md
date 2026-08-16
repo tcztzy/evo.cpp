@@ -167,7 +167,7 @@ T22|x|生成 pinned 官方 oracle；gpu02 验证三尺寸；跑 full regression�
 T23|x|审计全仓 scope；修复 platform-level Evo 2-only 表述与 release metadata；增加 registry-driven contract|C7,V10,V16,V35,I8
 T24|x|实现 macOS arm64 MPS backend、CLI/C ABI/server、数值与构建契约|C2,C6,C10,C14,C16,R13,R14,R15,R16,V1,V2,V7,V8,V9,V10,V14,V15,V16,V21,V26,V31,V35,V36,V37,V38,V39,V40,V41,V42,I2,I3,I6,I7,I8,I10,I12,I13
 T25|x|冻结 GENEB 40-model 三 ID 双射、canonical source/file receipt、分项 license/AUP、reference/normalized extractor patch+input-transform+preset decision、oracle/env lock 与完整性 contract|C17,C18,C20,C21,C23,R17,R18,R19,R20,R21,R22,V43,V44,V45,V48,V54,V57,V58,I14,I16,I18
-T26|.|重构通用 model/architecture/backend factory、registry-driven artifact profile 与 capability dispatch|C2,C3,C7,C14,C19,V1,V2,V8,V10,V14,V15,V46,V51,V52,V55,I2,I3,I4,I7,I8,I17
+T26|x|重构通用 model/architecture/backend factory、registry-driven artifact profile 与 capability dispatch|C2,C3,C7,C14,C19,V1,V2,V8,V10,V14,V15,V46,V51,V52,V55,I2,I3,I4,I7,I8,I17
 T27|.|实现 artifact-driven BPE/k-mer/SN/mixed/BioToken tokenizer、strict asset converter 与 catalog input-transform engine|C2,C18,C19,C21,V5,V10,V17,V25,V43,V45,V47,V49,V53,V55,V58,I4,I5,I17
 T28|.|实现 METAGENE、GenomeOcean×2、GENERator×2、BioFM、OmniNA 的 Llama/Mistral-derived CPU embedding/converter/oracle|C18,C19,C20,C21,C22,C23,R17,R18,V8,V10,V11,V44,V45,V48,V49,V51,V53,V55,V58,I15,I16,I17,I18
 T29|.|实现 OmniDNA×2、GPT2-Gene×2、DNA-GPT×2 的 OLMo/GPT2/custom-decoder CPU embedding/converter/oracle|C18,C19,C20,C21,C22,C23,R17,R18,V8,V10,V11,V44,V45,V48,V49,V51,V53,V55,V58,I15,I16,I17,I18
@@ -231,3 +231,6 @@ B42|2026-08-13|ESMC CLI 的 `evo_metrics` 按整个多记录输入聚合，bench
 B43|2026-08-13|ESMC official benchmark 只同步 device logits，而原生 `prefill` 计时包含 logits 回传主机→两侧统一 `forward_with_host_logits` timing scope 并由 summarizer 拒绝混用|V21
 B44|2026-08-16|`CXX_VISIBILITY_PRESET` 不作用于 OBJCXX 编译→MPS bridge 内部 C++ symbol 泄漏进 C ABI DSO|V41
 B45|2026-08-16|CI 把 Apple-silicon architecture 误当 Metal GPU 可用性保证→标准 macOS runner 可能让合法 MPS hardware gate 误失败|V42
+B46|2026-08-16|Evo2/HyenaDNA 已有 logits 路径未登记 `kArchitectureLogits`，旧分派又未查 capability→registry 与 C API 行为漂移；统一 V52 gate 后现形|V52
+B47|2026-08-16|架构感知 `--dump-tokens` 被移到 artifact open 后→无效模型路径不再输出既有字节诊断；有效 artifact 用注册 tokenizer，open 失败保留 legacy byte dump|V15
+B48|2026-08-16|installed `evo-fetch` smoke 依赖 shebang 从 `PATH` 找 `python3`→gpu02 容器已配置 Nix Python 仍失败；install contract !传 CMake pinned interpreter|V19

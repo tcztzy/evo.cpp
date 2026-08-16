@@ -18,6 +18,32 @@ void indices(const std::vector<std::size_t> &values) {
 } // namespace
 
 int main() {
+  const auto *const striped = evo::find_architecture("StripedHyena2");
+  const auto *const esmc = evo::find_architecture("ESMC");
+  if (striped == nullptr || esmc == nullptr)
+    return 2;
+  const evo::ArchitectureSpec shared_tokenizer_probe{
+      "SharedTokenizerProbe", "probe-runtime-v1", "probe-abi-v1",
+      evo::ArchitectureImplementation::kEsmc, striped->tokenizer,
+      evo::kArchitectureBackendCpu, evo::kArchitectureEmbed, true};
+  const auto *const shared_tokenizer_factory =
+      evo::find_architecture_backend_factory(
+          shared_tokenizer_probe, evo::kArchitectureBackendCpu);
+  if (shared_tokenizer_probe.tokenizer != striped->tokenizer ||
+      shared_tokenizer_probe.implementation == striped->implementation ||
+      shared_tokenizer_factory == nullptr ||
+      shared_tokenizer_factory->implementation !=
+          evo::ArchitectureImplementation::kEsmc) {
+    return 3;
+  }
+  auto unknown_probe = shared_tokenizer_probe;
+  unknown_probe.implementation = evo::ArchitectureImplementation::kUnknown;
+  if (evo::find_architecture("UnregisteredArchitecture") != nullptr ||
+      evo::find_architecture_backend_factory(
+          unknown_probe, evo::kArchitectureBackendCpu) != nullptr) {
+    return 4;
+  }
+
   std::cout << std::setprecision(17);
   for (const auto &model : evo::official_model_specs()) {
     std::cout
@@ -71,7 +97,10 @@ int main() {
       tokenizer = "hyenadna-character";
     std::cout << "@|" << architecture.id << '|'
               << architecture.artifact_profile << '|'
-              << architecture.runtime_abi << '|' << tokenizer << '|'
+              << architecture.runtime_abi << '|'
+              << evo::architecture_implementation_name(
+                     architecture.implementation)
+              << '|' << tokenizer << '|'
               << architecture.backends << '|' << architecture.capabilities
               << '|' << (architecture.synthetic_fixture ? 1 : 0) << '\n';
   }

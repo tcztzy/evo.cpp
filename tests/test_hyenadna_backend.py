@@ -194,6 +194,46 @@ def main() -> int:
     if maximum_error > 1e-5:
         raise AssertionError(f"HyenaDNA logits exceeded oracle envelope: {maximum_error}")
 
+    automatic = run(
+        [
+            str(args.binary),
+            "-m",
+            str(converted),
+            "--ctx",
+            "16",
+            "--score",
+            str(fasta),
+        ]
+    )
+    automatic_document = json.loads(automatic.stdout)
+    if (
+        automatic_document.get("backend") != "cpu"
+        or '"backend":"cpu"' not in automatic.stderr
+    ):
+        raise AssertionError(
+            "no-placement automatic dispatch did not expose its resolved CPU backend"
+        )
+    placed = subprocess.run(
+        [
+            str(args.binary),
+            "-m",
+            str(converted),
+            "--gpu",
+            "0",
+            "--ctx",
+            "16",
+            "--score",
+            str(fasta),
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if placed.returncode == 0 or "backend cuda" not in placed.stderr:
+        raise AssertionError(
+            "explicit CUDA placement silently fell back for CPU-only HyenaDNA"
+        )
+
     fastq_gz = args.work_dir / "input.fastq.gz"
     fastq_gz.write_bytes(
         gzip.compress(b"@read-one\nACGTNACG\n+\nIIIIIIII\n@read-two\nACGT\n+\n!!!!\n")
@@ -251,10 +291,16 @@ def main() -> int:
             "1",
             "--top-k",
             "1",
+            "--dump-tokens",
         ]
     )
-    if generated.stdout != "T":
-        raise AssertionError("HyenaDNA generation did not detokenize DNA")
+    if (
+        generated.stdout != "T"
+        or "tokens prompt=[7,8,9,10,11,7,8,9]" not in generated.stderr
+    ):
+        raise AssertionError(
+            "HyenaDNA generation did not use its registered tokenizer"
+        )
     generated_fasta = run(
         [
             str(args.binary),

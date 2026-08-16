@@ -79,6 +79,8 @@ int main(const int argc, char **const argv) {
     return 1;
   }
   check(model.config().architecture == "ESMCTest" &&
+            model.config().implementation ==
+                evo::ArchitectureImplementation::kEsmc &&
             model.config().vocab_size == 64 && model.config().width == 4 &&
             model.config().layers == 2,
         "ESMC CPU configuration preserves fixture topology");

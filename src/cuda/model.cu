@@ -524,20 +524,27 @@ Status read_runtime_model_config(const ModelFile &model,
   auto status = metadata_string(model, "runtime.abi", &runtime_abi);
   if (!status.ok())
     return status;
-  if (runtime_abi != "evo2-safetensors-v1") {
-    return {ErrorCode::kUnsupported, "unsupported runtime ABI: " + runtime_abi};
-  }
   std::string architecture;
   status = metadata_string(model, "model.architecture", &architecture);
   if (!status.ok())
     return status;
-  if (architecture != "StripedHyena2" && architecture != "StripedHyena2Test") {
+  const auto *const registered = find_architecture(architecture);
+  const auto *const factory =
+      registered == nullptr
+          ? nullptr
+          : find_architecture_backend_factory(*registered,
+                                              kArchitectureBackendCuda);
+  if (registered == nullptr || factory == nullptr ||
+      factory->implementation != ArchitectureImplementation::kStripedHyena2 ||
+      registered->artifact_profile != model.profile() ||
+      registered->runtime_abi != runtime_abi) {
     return {ErrorCode::kUnsupported,
-            "unsupported model architecture: " + architecture};
+            "artifact is not a registered StripedHyena2 CUDA architecture"};
   }
   candidate.architecture = architecture;
   candidate.artifact_profile = std::string{model.profile()};
-  if (architecture == "StripedHyena2Test") {
+  candidate.test_fixture = registered->synthetic_fixture;
+  if (candidate.test_fixture) {
     status = metadata_bool(model, "fixture.synthetic", &candidate.test_fixture);
     if (!status.ok())
       return status;

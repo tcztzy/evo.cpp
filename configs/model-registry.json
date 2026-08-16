@@ -2,6 +2,11 @@
   "schema_version": 1,
   "evo2_architecture_revision": "arcinstitute/evo2@53f195997257c56c00e5ef8d33a54f5baad143a6",
   "evo2_runtime_layout_revision": "evo-design/vortex@8b00afebeac745d1f31e7e2788f0e0e39fa47637 (vtx 1.1.0)",
+  "artifact_profiles": [
+    {"id": "evo2-runtime-v1", "metadata_key": "evo2.profile", "runtime_abi": "evo2-safetensors-v1"},
+    {"id": "hyenadna-runtime-v1", "metadata_key": "runtime.profile", "runtime_abi": "hyenadna-safetensors-v1"},
+    {"id": "esmc-runtime-v1", "metadata_key": "runtime.profile", "runtime_abi": "esmc-safetensors-v1"}
+  ],
   "runtime_architectures": [
     {"id": "StripedHyena2", "artifact_profile": "evo2-runtime-v1", "runtime_abi": "evo2-safetensors-v1"},
     {"id": "HyenaDNA", "artifact_profile": "hyenadna-runtime-v1", "runtime_abi": "hyenadna-safetensors-v1"},

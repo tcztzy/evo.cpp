@@ -579,6 +579,24 @@ void test_cli() {
                  &options);
   check(!status.ok() && status.message().find("mps-f32") != std::string::npos,
         "MPS backend rejects contradictory execution profiles");
+  status = parse({"evo", "score", "-m", "model.safetensors", "--input",
+                  "input.fa", "--backend", "auto"},
+                 &options);
+  check(status.ok() && options.backend == evo::ExecutionBackend::kAuto &&
+            options.gpu_ids.empty(),
+        "automatic backend defers no-placement selection to the artifact");
+  status = parse({"evo", "score", "-m", "model.safetensors", "--input",
+                  "input.fa", "--backend", "auto", "--profile", "cpu-f32"},
+                 &options);
+  check(status.ok() &&
+            options.inference_profile == evo::InferenceProfile::kCpuF32,
+        "automatic CPU profile validation is deferred to artifact dispatch");
+  status = parse({"evo", "score", "-m", "model.safetensors", "--input",
+                  "input.fa", "--backend", "cuda"},
+                 &options);
+  check(!status.ok() && status.message().find("--gpu is required") !=
+                            std::string::npos,
+        "explicit CUDA backend still requires explicit GPU placement");
   status = parse({"evo", "-m", "model.safetensors", "--score", "input.fa",
                   "--gpu", "0", "--gpu-layers", "17"},
                  &options);

@@ -13,12 +13,20 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
 
+from .artifact_profiles import (
+    ProfileRegistryError,
+    load_artifact_profiles as _load_artifact_profiles,
+)
+
 
 EVO2_PROFILE_KEY = "evo2.profile"
 EVO2_PROFILE_VALUE = "evo2-runtime-v1"
 RUNTIME_PROFILE_KEY = "runtime.profile"
 HYENADNA_PROFILE_VALUE = "hyenadna-runtime-v1"
 ESMC_PROFILE_VALUE = "esmc-runtime-v1"
+_MODEL_REGISTRY_PATH = (
+    Path(__file__).resolve().parents[2] / "configs" / "model-registry.json"
+)
 HEADER_ALIGNMENT = 8
 MAX_HEADER_SIZE = 16 * 1024 * 1024
 MAX_RANK = 8
@@ -36,6 +44,20 @@ KEY_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 
 class FormatError(ValueError):
     """Raised when an input cannot be represented by the runtime profile."""
+
+
+def load_artifact_profiles(
+    registry_path: Path | None = None,
+) -> dict[str, dict[str, str]]:
+    """Load and cross-check the canonical runtime artifact-profile registry."""
+    path = registry_path
+    if path is None:
+        override = os.environ.get("EVO_MODEL_REGISTRY")
+        path = Path(override) if override else _MODEL_REGISTRY_PATH
+    try:
+        return _load_artifact_profiles(path)
+    except ProfileRegistryError as error:
+        raise FormatError(str(error)) from error
 
 
 class TensorSource(Protocol):
@@ -126,7 +148,29 @@ def _encode_metadata_value(value: object) -> str:
 
 
 def encode_metadata(
-    metadata: Mapping[str, object], artifact_profile: str
+    metadata: Mapping[str, object],
+    artifact_profile: str,
+    *,
+    registry_path: Path | None = None,
+) -> dict[str, str]:
+    profiles = load_artifact_profiles(registry_path)
+    registered = profiles.get(artifact_profile)
+    if registered is None:
+        raise FormatError(f"unsupported artifact profile {artifact_profile!r}")
+    reserved_keys = {profile["metadata_key"] for profile in profiles.values()}
+    return _encode_metadata(
+        metadata,
+        artifact_profile,
+        registered["metadata_key"],
+        reserved_keys,
+    )
+
+
+def _encode_metadata(
+    metadata: Mapping[str, object],
+    artifact_profile: str,
+    profile_metadata_key: str,
+    reserved_profile_keys: set[str],
 ) -> dict[str, str]:
     if len(metadata) >= 4096:
         raise FormatError("metadata entry count exceeds 4095")
@@ -134,15 +178,10 @@ def encode_metadata(
     for key in sorted(metadata):
         if not KEY_PATTERN.fullmatch(key) or len(key.encode("ascii")) > 255:
             raise FormatError(f"invalid metadata key {key!r}")
-        if key in {EVO2_PROFILE_KEY, RUNTIME_PROFILE_KEY}:
+        if key in reserved_profile_keys:
             raise FormatError(f"{key} is reserved by the writer")
         encoded[key] = _encode_metadata_value(metadata[key])
-    if artifact_profile == EVO2_PROFILE_VALUE:
-        encoded[EVO2_PROFILE_KEY] = f"s:{EVO2_PROFILE_VALUE}"
-    elif artifact_profile in {HYENADNA_PROFILE_VALUE, ESMC_PROFILE_VALUE}:
-        encoded[RUNTIME_PROFILE_KEY] = f"s:{artifact_profile}"
-    else:
-        raise FormatError(f"unsupported artifact profile {artifact_profile!r}")
+    encoded[profile_metadata_key] = f"s:{artifact_profile}"
     return dict(sorted(encoded.items()))
 
 
@@ -150,9 +189,16 @@ def _encode_header(
     metadata: Mapping[str, object],
     tensors: Sequence[TensorSource],
     artifact_profile: str,
+    profile_metadata_key: str,
+    reserved_profile_keys: set[str],
 ) -> bytes:
     root: dict[str, object] = {
-        "__metadata__": encode_metadata(metadata, artifact_profile)
+        "__metadata__": _encode_metadata(
+            metadata,
+            artifact_profile,
+            profile_metadata_key,
+            reserved_profile_keys,
+        )
     }
     offset = 0
     for source in tensors:
@@ -251,10 +297,18 @@ def _write_safetensors(
     tensors: Sequence[TensorSource],
     *,
     artifact_profile: str,
+    profile_metadata_key: str,
+    reserved_profile_keys: set[str],
     chunk_size: int,
     progress: Callable[[TensorSource], None] | None,
 ) -> Path:
-    encoded_header = _encode_header(metadata, tensors, artifact_profile)
+    encoded_header = _encode_header(
+        metadata,
+        tensors,
+        artifact_profile,
+        profile_metadata_key,
+        reserved_profile_keys,
+    )
     temporary, temp_path = _temporary_path(output_path)
     try:
         with temporary as output:
@@ -364,6 +418,7 @@ def write_model(
     tensors: Sequence[TensorSource],
     *,
     artifact_profile: str,
+    registry_path: Path | None = None,
     force: bool = False,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     max_shard_size: int = DEFAULT_MAX_SHARD_SIZE,
@@ -382,6 +437,13 @@ def write_model(
         raise FormatError("model must contain at least one tensor")
     if len(tensors) > 1_000_000:
         raise FormatError("tensor count exceeds 1000000")
+    profiles = load_artifact_profiles(registry_path)
+    registered = profiles.get(artifact_profile)
+    if registered is None:
+        raise FormatError(f"unsupported artifact profile {artifact_profile!r}")
+    reserved_profile_keys = {
+        profile["metadata_key"] for profile in profiles.values()
+    }
 
     names: set[str] = set()
     for source in tensors:
@@ -421,6 +483,8 @@ def write_model(
                     metadata,
                     shard,
                     artifact_profile=artifact_profile,
+                    profile_metadata_key=registered["metadata_key"],
+                    reserved_profile_keys=reserved_profile_keys,
                     chunk_size=chunk_size,
                     progress=report,
                 )

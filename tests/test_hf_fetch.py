@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -98,6 +99,7 @@ def require_success(result: subprocess.CompletedProcess[str]) -> dict[str, objec
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--tool", required=True, type=Path)
+    parser.add_argument("--registry", required=True, type=Path)
     parser.add_argument("--work-dir", required=True, type=Path)
     args = parser.parse_args()
     args.work_dir.mkdir(parents=True, exist_ok=True)
@@ -123,8 +125,8 @@ def main() -> int:
     source_path = remote / "owner" / "source" / source_revision / "source.pt"
     source_path.parent.mkdir(parents=True, exist_ok=True)
     source_path.write_bytes(source_payload)
-    registry = args.work_dir / "registry.json"
-    registry.write_text(
+    source_registry = args.work_dir / "source-registry.json"
+    source_registry.write_text(
         json.dumps(
             {
                 "models": {
@@ -156,7 +158,7 @@ def main() -> int:
             "source",
             "tiny",
             "--registry",
-            str(registry),
+            str(source_registry),
         ],
     )
     source_receipt = require_success(source_result)
@@ -185,7 +187,7 @@ def main() -> int:
             "source",
             "tiny",
             "--registry",
-            str(registry),
+            str(source_registry),
         ],
     )
     require_success(repaired_result)
@@ -210,7 +212,7 @@ def main() -> int:
             "source",
             "tiny",
             "--registry",
-            str(registry),
+            str(source_registry),
         ],
     )
     require_success(local_result)
@@ -230,7 +232,7 @@ def main() -> int:
             "source",
             "tiny",
             "--registry",
-            str(registry),
+            str(source_registry),
         ],
     )
     if (
@@ -256,7 +258,7 @@ def main() -> int:
             "source",
             "tiny",
             "--registry",
-            str(registry),
+            str(source_registry),
         ],
     )
     isolated_receipt = require_success(isolated_result)
@@ -302,6 +304,8 @@ def main() -> int:
             str(cache),
             "runtime",
             "owner/runtime@release-v1",
+            "--registry",
+            str(args.registry),
         ],
     )
     runtime_receipt = require_success(runtime_result)
@@ -327,6 +331,8 @@ def main() -> int:
             "--local-files-only",
             "runtime",
             f"owner/runtime@{runtime_revision}",
+            "--registry",
+            str(args.registry),
         ],
     )
     require_success(offline_runtime_result)
@@ -344,6 +350,8 @@ def main() -> int:
             "--local-files-only",
             "runtime",
             f"owner/runtime@{runtime_revision}",
+            "--registry",
+            str(args.registry),
         ],
     )
     if (
@@ -380,10 +388,119 @@ def main() -> int:
             str(cache),
             "runtime",
             f"owner/invalid@{invalid_revision}",
+            "--registry",
+            str(args.registry),
         ],
     )
     if invalid_result.returncode == 0 or "normalized relative path" not in invalid_result.stderr:
         raise AssertionError("runtime manifest path traversal was not rejected")
+    unknown_revision = "d" * 40
+    unknown_root = remote / "owner" / "unknown" / unknown_revision
+    unknown_root.mkdir(parents=True, exist_ok=True)
+    unknown_manifest = copy.deepcopy(runtime_manifest)
+    unknown_manifest["artifact_profile"] = "unknown-runtime-v1"
+    (unknown_root / "evo-artifact.json").write_text(
+        json.dumps(unknown_manifest), encoding="utf-8"
+    )
+    unknown_result = run_tool(
+        args.tool,
+        python_path,
+        remote,
+        log,
+        unknown_revision,
+        [
+            "--cache-dir",
+            str(cache),
+            "runtime",
+            f"owner/unknown@{unknown_revision}",
+            "--registry",
+            str(args.registry),
+        ],
+    )
+    if (
+        unknown_result.returncode == 0
+        or "unknown-runtime-v1' is not registered" not in unknown_result.stderr
+    ):
+        raise AssertionError("runtime fetch accepted an unregistered artifact profile")
+
+    canonical_registry = json.loads(args.registry.read_text(encoding="utf-8"))
+    extended_registry = copy.deepcopy(canonical_registry)
+    extended_registry["artifact_profiles"].append(
+        {
+            "id": "fixture-runtime-v1",
+            "metadata_key": "runtime.profile",
+            "runtime_abi": "fixture-safetensors-v1",
+        }
+    )
+    extended_registry["runtime_architectures"].append(
+        {
+            "id": "FixtureArchitecture",
+            "artifact_profile": "fixture-runtime-v1",
+            "runtime_abi": "fixture-safetensors-v1",
+        }
+    )
+    extended_registry_path = args.work_dir / "extended-runtime-registry.json"
+    extended_registry_path.write_text(
+        json.dumps(extended_registry), encoding="utf-8"
+    )
+    custom_revision = "e" * 40
+    custom_root = remote / "owner" / "custom" / custom_revision
+    custom_root.mkdir(parents=True, exist_ok=True)
+    custom_manifest = copy.deepcopy(runtime_manifest)
+    custom_manifest["artifact_profile"] = "fixture-runtime-v1"
+    (custom_root / "evo-artifact.json").write_text(
+        json.dumps(custom_manifest), encoding="utf-8"
+    )
+    (custom_root / "model.safetensors.index.json").write_bytes(index_payload)
+    (custom_root / "model-00001-of-00001.safetensors").write_bytes(shard_payload)
+    custom_result = run_tool(
+        args.tool,
+        python_path,
+        remote,
+        log,
+        custom_revision,
+        [
+            "--cache-dir",
+            str(cache),
+            "runtime",
+            f"owner/custom@{custom_revision}",
+            "--registry",
+            str(extended_registry_path),
+        ],
+    )
+    custom_receipt = require_success(custom_result)
+    if custom_receipt["artifact_profile"] != "fixture-runtime-v1":
+        raise AssertionError("runtime fetch did not use its explicit profile registry")
+
+    corrupt_registry = copy.deepcopy(canonical_registry)
+    corrupt_registry["artifact_profiles"].append(
+        copy.deepcopy(corrupt_registry["artifact_profiles"][0])
+    )
+    corrupt_registry_path = args.work_dir / "corrupt-runtime-registry.json"
+    corrupt_registry_path.write_text(
+        json.dumps(corrupt_registry), encoding="utf-8"
+    )
+    corrupt_result = run_tool(
+        args.tool,
+        python_path,
+        remote,
+        log,
+        custom_revision,
+        [
+            "--cache-dir",
+            str(cache),
+            "runtime",
+            f"owner/custom@{custom_revision}",
+            "--registry",
+            str(corrupt_registry_path),
+        ],
+    )
+    if (
+        corrupt_result.returncode == 0
+        or "duplicate artifact profile" not in corrupt_result.stderr
+    ):
+        raise AssertionError("runtime fetch accepted a corrupt profile registry")
+
     revision_traversal = run_tool(
         args.tool,
         python_path,
@@ -396,6 +513,8 @@ def main() -> int:
             "--local-files-only",
             "runtime",
             "owner/runtime@../../escape",
+            "--registry",
+            str(args.registry),
         ],
     )
     if revision_traversal.returncode == 0 or "path traversal" not in revision_traversal.stderr:

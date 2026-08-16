@@ -1,7 +1,8 @@
 if(NOT DEFINED EVO_BUILD_DIR OR
    NOT DEFINED EVO_INSTALL_PREFIX OR
    NOT DEFINED EVO_CONSUMER_SOURCE OR
-   NOT DEFINED EVO_CONSUMER_BUILD)
+   NOT DEFINED EVO_CONSUMER_BUILD OR
+   NOT DEFINED EVO_PYTHON_EXECUTABLE)
   message(FATAL_ERROR "install contract requires build, prefix, and consumer paths")
 endif()
 
@@ -54,9 +55,24 @@ if(NOT EXISTS "${EVO_INSTALL_PREFIX}/include/evo/evo.h" OR
    NOT EXISTS "${EVO_INSTALL_PREFIX}/bin/evo" OR
    NOT EXISTS "${EVO_INSTALL_PREFIX}/bin/evo-inspect" OR
    NOT EXISTS "${EVO_INSTALL_PREFIX}/bin/evo-fetch" OR
+   NOT EXISTS "${EVO_INSTALL_PREFIX}/share/evo/python/evo/__init__.py" OR
+   NOT EXISTS "${EVO_INSTALL_PREFIX}/share/evo/python/evo/artifact_profiles.py" OR
    NOT EXISTS "${EVO_INSTALL_PREFIX}/share/evo/configs/model-registry.json" OR
    NOT EXISTS "${EVO_INSTALL_PREFIX}/share/evo/configs/geneb-models.json" OR
    NOT EXISTS "${EVO_INSTALL_PREFIX}/share/evo/configs/geneb-reference-patches/enformer-seq-length.patch" OR
    NOT EXISTS "${EVO_INSTALL_PREFIX}/share/evo/requirements-fetch.txt")
   message(FATAL_ERROR "install tree is missing public headers or CLI binaries")
+endif()
+
+execute_process(
+  COMMAND "${EVO_PYTHON_EXECUTABLE}"
+          "${EVO_INSTALL_PREFIX}/bin/evo-fetch" runtime --help
+  RESULT_VARIABLE fetch_help_result
+  OUTPUT_VARIABLE fetch_help_output
+  ERROR_VARIABLE fetch_help_error)
+if(NOT fetch_help_result EQUAL 0 OR
+   NOT fetch_help_output MATCHES "--registry")
+  message(FATAL_ERROR
+    "installed evo-fetch cannot import its profile registry: "
+    "${fetch_help_error}${fetch_help_output}")
 endif()

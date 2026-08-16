@@ -10,6 +10,11 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .artifact_profiles import (
+    ProfileRegistryError,
+    load_artifact_profiles,
+)
+
 
 # Backward-compatible names for existing 40B converter clients.
 HCS_LAYERS = (0, 4, 7, 11, 14, 18, 21, 25, 28, 32, 36, 39, 43, 46)
@@ -63,6 +68,10 @@ def load_model_registry(path: Path = _REGISTRY_PATH) -> dict[str, Any]:
         or not isinstance(value.get("models"), dict)
     ):
         raise ConfigError(f"{path}: unsupported or incomplete registry schema")
+    try:
+        load_artifact_profiles(path)
+    except ProfileRegistryError as error:
+        raise ConfigError(str(error)) from error
     return value
 
 

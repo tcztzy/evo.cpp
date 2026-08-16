@@ -63,7 +63,9 @@ int main(const int argc, char **argv) {
   status = model.load(artifact, true);
   check(status.ok(), "CPU model loads: " + status.message());
   check(model.config().layers == 50 && model.config().width == 8 &&
-            model.config().vocab_size == 512,
+            model.config().vocab_size == 512 &&
+            model.config().implementation ==
+                evo::ArchitectureImplementation::kStripedHyena2,
         "CPU model exposes validated configuration");
   const std::string kernel = model.kernel_name();
   check(kernel == "neon-f32" || kernel == "avx2-fma-f32" ||

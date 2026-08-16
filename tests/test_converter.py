@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import dataclasses
 import json
 import struct
@@ -16,9 +17,12 @@ from pathlib import Path
 from evo.format import (
     DEFAULT_MAX_SHARD_SIZE,
     EVO2_PROFILE_VALUE,
+    ESMC_PROFILE_VALUE,
+    HYENADNA_PROFILE_VALUE,
     BytesTensorSource,
     FormatError,
     TensorSource,
+    load_artifact_profiles,
     plan_shards,
     write_model,
 )
@@ -60,6 +64,112 @@ class BrokenTensorSource:
 
 
 class ConverterTests(unittest.TestCase):
+    def write_registry(self, value: object, name: str) -> Path:
+        path = WORK_DIR / name
+        path.write_text(json.dumps(value), encoding="utf-8")
+        return path
+
+    def test_artifact_profiles_are_registry_driven_and_cross_checked(self) -> None:
+        registry = load_model_registry()
+        profiles = load_artifact_profiles()
+        self.assertEqual(
+            set(profiles),
+            {
+                EVO2_PROFILE_VALUE,
+                HYENADNA_PROFILE_VALUE,
+                ESMC_PROFILE_VALUE,
+            },
+        )
+        self.assertEqual(
+            profiles[EVO2_PROFILE_VALUE]["metadata_key"], "evo2.profile"
+        )
+        self.assertEqual(
+            profiles[HYENADNA_PROFILE_VALUE]["metadata_key"], "runtime.profile"
+        )
+        self.assertEqual(
+            profiles[ESMC_PROFILE_VALUE]["metadata_key"], "runtime.profile"
+        )
+
+        extended = copy.deepcopy(registry)
+        extended["artifact_profiles"].append(
+            {
+                "id": "fixture-runtime-v1",
+                "metadata_key": "runtime.profile",
+                "runtime_abi": "fixture-safetensors-v1",
+            }
+        )
+        extended["runtime_architectures"].append(
+            {
+                "id": "FixtureArchitecture",
+                "artifact_profile": "fixture-runtime-v1",
+                "runtime_abi": "fixture-safetensors-v1",
+            }
+        )
+        registry_path = self.write_registry(extended, "extended-registry.json")
+        source = BytesTensorSource("x", "BF16", (1,), b"\x00\x00")
+        output = WORK_DIR / "registry-profile.safetensors"
+        write_model(
+            output,
+            {},
+            [source],
+            artifact_profile="fixture-runtime-v1",
+            registry_path=registry_path,
+            force=True,
+        )
+        raw = output.read_bytes()
+        header_size = struct.unpack_from("<Q", raw)[0]
+        header = json.loads(raw[8 : 8 + header_size])
+        self.assertEqual(
+            header["__metadata__"]["runtime.profile"],
+            "s:fixture-runtime-v1",
+        )
+
+    def test_artifact_profile_registry_corruption_fails_closed(self) -> None:
+        registry = load_model_registry()
+        corruptions: list[tuple[str, object, str]] = []
+
+        duplicate = copy.deepcopy(registry)
+        duplicate["artifact_profiles"].append(
+            copy.deepcopy(duplicate["artifact_profiles"][0])
+        )
+        corruptions.append(("duplicate", duplicate, "duplicate artifact profile"))
+
+        bad_key = copy.deepcopy(registry)
+        bad_key["artifact_profiles"][0]["metadata_key"] = "unknown.profile"
+        corruptions.append(("metadata-key", bad_key, "not a registered metadata key"))
+
+        duplicate_abi = copy.deepcopy(registry)
+        duplicate_abi["artifact_profiles"][1]["runtime_abi"] = duplicate_abi[
+            "artifact_profiles"
+        ][0]["runtime_abi"]
+        corruptions.append(("runtime-abi", duplicate_abi, "duplicate runtime ABI"))
+
+        unknown = copy.deepcopy(registry)
+        unknown["runtime_architectures"][0]["artifact_profile"] = "missing-runtime-v1"
+        corruptions.append(("unknown-reference", unknown, "unknown artifact profile"))
+
+        mismatch = copy.deepcopy(registry)
+        mismatch["runtime_architectures"][0]["runtime_abi"] = "wrong-safetensors-v1"
+        corruptions.append(("abi-mismatch", mismatch, "disagrees"))
+
+        for name, value, message in corruptions:
+            with self.subTest(corruption=name):
+                path = self.write_registry(value, f"corrupt-{name}.json")
+                with self.assertRaisesRegex(FormatError, message):
+                    load_artifact_profiles(path)
+
+    def test_writer_rejects_unregistered_artifact_profile(self) -> None:
+        output = WORK_DIR / "unknown-profile.safetensors"
+        source = BytesTensorSource("x", "BF16", (1,), b"\x00\x00")
+        with self.assertRaisesRegex(FormatError, "unsupported artifact profile"):
+            write_model(
+                output,
+                {},
+                [source],
+                artifact_profile="unknown-runtime-v1",
+            )
+        self.assertFalse(output.exists())
+
     def test_every_registered_model_has_an_exact_manifest(self) -> None:
         registry = load_model_registry()
         models = {

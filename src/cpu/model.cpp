@@ -704,8 +704,19 @@ struct Context::Impl final {
 
 Model::Model() : impl_(std::make_shared<Impl>()) {}
 Model::~Model() = default;
-Model::Model(Model &&) noexcept = default;
-Model &Model::operator=(Model &&) noexcept = default;
+Model::Model(Model &&other) noexcept
+    : impl_(std::move(other.impl_)), hyena_(std::move(other.hyena_)),
+      esmc_(std::move(other.esmc_)),
+      factory_(std::exchange(other.factory_, nullptr)) {}
+Model &Model::operator=(Model &&other) noexcept {
+  if (this != &other) {
+    impl_ = std::move(other.impl_);
+    hyena_ = std::move(other.hyena_);
+    esmc_ = std::move(other.esmc_);
+    factory_ = std::exchange(other.factory_, nullptr);
+  }
+  return *this;
+}
 
 Status Model::load(const ModelFile &model, const bool allow_test_fixture) {
   return load_with_executor(model, {}, allow_test_fixture);
@@ -715,8 +726,7 @@ Status Model::load_with_executor(
     const ModelFile &model,
     std::shared_ptr<evo::detail::LinearExecutor> executor,
     const bool allow_test_fixture) {
-  if ((!impl_ && !hyena_ && !esmc_) ||
-      (impl_ && impl_->file != nullptr) || hyena_ || esmc_)
+  if (factory_ != nullptr || (!impl_ && !hyena_ && !esmc_))
     return {ErrorCode::kInvalidArgument, "host model is already loaded"};
   std::string runtime_abi;
   std::string architecture;
@@ -727,38 +737,61 @@ Status Model::load_with_executor(
   if (!status.ok())
     return status;
   const auto *const registered = find_architecture(architecture);
-  const unsigned required_backend = executor ? kArchitectureBackendMps
-                                             : kArchitectureBackendCpu;
-  if (registered == nullptr || registered->artifact_profile != model.profile() ||
-      registered->runtime_abi != runtime_abi ||
-      (registered->backends & required_backend) == 0) {
+  if (registered == nullptr) {
     return {ErrorCode::kUnsupported,
-            "selected backend does not support this runtime architecture"};
+            "unregistered runtime architecture: " + architecture};
   }
-  if (registered->tokenizer == ArchitectureTokenizer::kHyenaDnaCharacter) {
+  if (registered->artifact_profile != model.profile() ||
+      registered->runtime_abi != runtime_abi) {
+    return {ErrorCode::kUnsupported,
+            "artifact profile/runtime ABI does not match architecture '" +
+                architecture + "'"};
+  }
+  const auto backend = executor ? kArchitectureBackendMps
+                                : kArchitectureBackendCpu;
+  const auto *const factory =
+      find_architecture_backend_factory(*registered, backend);
+  if (factory == nullptr) {
+    return {ErrorCode::kUnsupported,
+            "no " + std::string{executor ? "MPS" : "CPU"} +
+                " backend factory is registered for architecture '" +
+                architecture + "'"};
+  }
+  switch (factory->implementation) {
+  case ArchitectureImplementation::kUnknown:
+    return {ErrorCode::kUnsupported,
+            "architecture backend factory has unknown implementation"};
+  case ArchitectureImplementation::kHyenaDna: {
     auto candidate = std::make_shared<detail::HyenaDnaModel>();
     status = candidate->load(model, allow_test_fixture, std::move(executor));
     if (!status.ok())
       return status;
     impl_.reset();
     hyena_ = std::move(candidate);
+    factory_ = factory;
     return Status::Ok();
   }
-  if (registered->tokenizer == ArchitectureTokenizer::kEsmcProtein) {
+  case ArchitectureImplementation::kEsmc: {
     auto candidate = std::make_shared<detail::EsmcModel>();
     status = candidate->load(model, allow_test_fixture, std::move(executor));
     if (!status.ok())
       return status;
     impl_.reset();
     esmc_ = std::move(candidate);
+    factory_ = factory;
     return Status::Ok();
+  }
+  case ArchitectureImplementation::kStripedHyena2:
+    break;
   }
   auto candidate = std::make_shared<Impl>();
   candidate->executor = std::move(executor);
   candidate->public_config.architecture = architecture;
   candidate->public_config.artifact_profile = std::string{model.profile()};
+  candidate->public_config.implementation = registered->implementation;
   candidate->public_config.tokenizer = registered->tokenizer;
-  if (architecture == "StripedHyena2Test") {
+  candidate->public_config.test_fixture = registered->synthetic_fixture;
+  if (candidate->public_config.test_fixture) {
     status = metadata_bool(model, "fixture.synthetic",
                            &candidate->public_config.test_fixture);
     if (!status.ok())
@@ -967,20 +1000,44 @@ Status Model::load_with_executor(
   }
   candidate->file = &model;
   impl_ = std::move(candidate);
+  factory_ = factory;
   return Status::Ok();
 }
 
 const ModelConfig &Model::config() const noexcept {
-  if (hyena_)
+  if (factory_ == nullptr) {
+    if (impl_)
+      return impl_->public_config;
+    static const ModelConfig unloaded;
+    return unloaded;
+  }
+  switch (factory_->implementation) {
+  case ArchitectureImplementation::kUnknown:
+    break;
+  case ArchitectureImplementation::kStripedHyena2:
+    return impl_->public_config;
+  case ArchitectureImplementation::kHyenaDna:
     return hyena_->config();
-  return esmc_ ? esmc_->config() : impl_->public_config;
+  case ArchitectureImplementation::kEsmc:
+    return esmc_->config();
+  }
+  static const ModelConfig unsupported;
+  return unsupported;
 }
 const char *Model::kernel_name() const noexcept {
-  if (hyena_)
+  if (factory_ == nullptr)
+    return "unloaded";
+  switch (factory_->implementation) {
+  case ArchitectureImplementation::kUnknown:
+    return "unsupported-architecture";
+  case ArchitectureImplementation::kStripedHyena2:
+    return impl_->executor ? impl_->executor->name() : selected_kernel_name();
+  case ArchitectureImplementation::kHyenaDna:
     return hyena_->kernel_name();
-  if (esmc_)
+  case ArchitectureImplementation::kEsmc:
     return esmc_->kernel_name();
-  return impl_->executor ? impl_->executor->name() : selected_kernel_name();
+  }
+  return "unsupported-architecture";
 }
 
 Status Model::encode(const std::string_view sequence,
@@ -995,14 +1052,34 @@ Status Model::decode_token(const TokenId token,
 
 Context::Context() : impl_(std::make_unique<Impl>()) {}
 Context::~Context() = default;
-Context::Context(Context &&) noexcept = default;
-Context &Context::operator=(Context &&) noexcept = default;
+Context::Context(Context &&other) noexcept
+    : impl_(std::move(other.impl_)), hyena_(std::move(other.hyena_)),
+      esmc_(std::move(other.esmc_)),
+      factory_(std::exchange(other.factory_, nullptr)) {}
+Context &Context::operator=(Context &&other) noexcept {
+  if (this != &other) {
+    impl_ = std::move(other.impl_);
+    hyena_ = std::move(other.hyena_);
+    esmc_ = std::move(other.esmc_);
+    factory_ = std::exchange(other.factory_, nullptr);
+  }
+  return *this;
+}
 
 Status Context::initialize_shared(const Model &model,
                                   const std::size_t context_capacity,
                                   const std::size_t layer_begin) {
-  if (model.hyena_) {
-    if (!impl_ || hyena_ || layer_begin != 0)
+  if (factory_ != nullptr)
+    return {ErrorCode::kInvalidArgument, "host context is already initialized"};
+  if (model.factory_ == nullptr)
+    return {ErrorCode::kInvalidArgument,
+            "host context requires a loaded model"};
+  switch (model.factory_->implementation) {
+  case ArchitectureImplementation::kUnknown:
+    return {ErrorCode::kUnsupported,
+            "host model implementation is not registered"};
+  case ArchitectureImplementation::kHyenaDna: {
+    if (!impl_ || !model.hyena_ || layer_begin != 0)
       return {ErrorCode::kInvalidArgument,
               "HyenaDNA contexts do not support suffix-layer placement"};
     auto candidate = std::make_unique<detail::HyenaDnaContext>();
@@ -1012,10 +1089,11 @@ Status Context::initialize_shared(const Model &model,
       return status;
     impl_.reset();
     hyena_ = std::move(candidate);
+    factory_ = model.factory_;
     return Status::Ok();
   }
-  if (model.esmc_) {
-    if (!impl_ || hyena_ || esmc_ || layer_begin != 0)
+  case ArchitectureImplementation::kEsmc: {
+    if (!impl_ || !model.esmc_ || layer_begin != 0)
       return {ErrorCode::kInvalidArgument,
               "ESMC contexts do not support suffix-layer placement"};
     auto candidate = std::make_unique<detail::EsmcContext>();
@@ -1025,7 +1103,11 @@ Status Context::initialize_shared(const Model &model,
       return status;
     impl_.reset();
     esmc_ = std::move(candidate);
+    factory_ = model.factory_;
     return Status::Ok();
+  }
+  case ArchitectureImplementation::kStripedHyena2:
+    break;
   }
   if (!impl_ || impl_->weights || !model.impl_ ||
       model.impl_->file == nullptr || context_capacity == 0 ||
@@ -1057,67 +1139,117 @@ Status Context::initialize_shared(const Model &model,
                                            0.0F);
     }
   }
+  factory_ = model.factory_;
   return Status::Ok();
 }
 
 Status Context::prefill(const std::vector<TokenId> &tokens,
                         std::vector<float> *const logits) {
-  if (hyena_)
+  if (factory_ == nullptr)
+    return {ErrorCode::kInvalidArgument, "host context is not initialized"};
+  switch (factory_->implementation) {
+  case ArchitectureImplementation::kUnknown:
+    break;
+  case ArchitectureImplementation::kStripedHyena2:
+    return impl_->forward(tokens, true, logits,
+                          std::numeric_limits<std::size_t>::max(), nullptr);
+  case ArchitectureImplementation::kHyenaDna:
     return hyena_->prefill(tokens, logits);
-  if (esmc_)
+  case ArchitectureImplementation::kEsmc:
     return esmc_->prefill(tokens, logits);
-  return impl_->forward(tokens, true, logits,
-                        std::numeric_limits<std::size_t>::max(), nullptr);
+  }
+  return {ErrorCode::kUnsupported,
+          "host context implementation is not registered"};
 }
 
 Status Context::prefill_chunk(const std::vector<TokenId> &tokens,
                               std::vector<float> *const logits) {
-  if (hyena_)
+  if (factory_ == nullptr)
+    return {ErrorCode::kInvalidArgument, "host context is not initialized"};
+  switch (factory_->implementation) {
+  case ArchitectureImplementation::kUnknown:
+    break;
+  case ArchitectureImplementation::kStripedHyena2:
+    return impl_->forward(tokens, false, logits,
+                          std::numeric_limits<std::size_t>::max(), nullptr);
+  case ArchitectureImplementation::kHyenaDna:
     return hyena_->prefill_chunk(tokens, logits);
-  if (esmc_)
+  case ArchitectureImplementation::kEsmc:
     return {ErrorCode::kUnsupported,
             "ESMC requires one full-sequence bidirectional prefill"};
-  return impl_->forward(tokens, false, logits,
-                        std::numeric_limits<std::size_t>::max(), nullptr);
+  }
+  return {ErrorCode::kUnsupported,
+          "host context implementation is not registered"};
 }
 
 Status Context::decode(const TokenId token, std::vector<float> *const logits) {
-  if (hyena_)
+  if (factory_ == nullptr)
+    return {ErrorCode::kInvalidArgument, "host context is not initialized"};
+  switch (factory_->implementation) {
+  case ArchitectureImplementation::kUnknown:
+    break;
+  case ArchitectureImplementation::kStripedHyena2:
+    return impl_->forward({token}, false, logits,
+                          std::numeric_limits<std::size_t>::max(), nullptr);
+  case ArchitectureImplementation::kHyenaDna:
     return hyena_->decode(token, logits);
-  if (esmc_)
+  case ArchitectureImplementation::kEsmc:
     return {ErrorCode::kUnsupported,
             "ESMC does not support autoregressive decode"};
-  return impl_->forward({token}, false, logits,
-                        std::numeric_limits<std::size_t>::max(), nullptr);
+  }
+  return {ErrorCode::kUnsupported,
+          "host context implementation is not registered"};
 }
 
 Status Context::prefill_embedding(const std::vector<TokenId> &tokens,
                                   const std::size_t layer,
                                   std::vector<float> *const embedding) {
-  if (hyena_)
+  if (factory_ == nullptr)
+    return {ErrorCode::kInvalidArgument, "host context is not initialized"};
+  switch (factory_->implementation) {
+  case ArchitectureImplementation::kUnknown:
+    break;
+  case ArchitectureImplementation::kStripedHyena2:
+    return impl_->forward(tokens, true, nullptr, layer, embedding);
+  case ArchitectureImplementation::kHyenaDna:
     return hyena_->prefill_embedding(tokens, layer, embedding);
-  if (esmc_)
+  case ArchitectureImplementation::kEsmc:
     return esmc_->prefill_embedding(tokens, layer, embedding);
-  return impl_->forward(tokens, true, nullptr, layer, embedding);
+  }
+  return {ErrorCode::kUnsupported,
+          "host context implementation is not registered"};
 }
 
 Status Context::prefill_chunk_embedding(const std::vector<TokenId> &tokens,
                                         const std::size_t layer,
                                         std::vector<float> *const embedding) {
-  if (hyena_)
+  if (factory_ == nullptr)
+    return {ErrorCode::kInvalidArgument, "host context is not initialized"};
+  switch (factory_->implementation) {
+  case ArchitectureImplementation::kUnknown:
+    break;
+  case ArchitectureImplementation::kStripedHyena2:
+    return impl_->forward(tokens, false, nullptr, layer, embedding);
+  case ArchitectureImplementation::kHyenaDna:
     return hyena_->prefill_chunk_embedding(tokens, layer, embedding);
-  if (esmc_)
+  case ArchitectureImplementation::kEsmc:
     return {ErrorCode::kUnsupported,
             "ESMC requires one full-sequence bidirectional embedding"};
-  return impl_->forward(tokens, false, nullptr, layer, embedding);
+  }
+  return {ErrorCode::kUnsupported,
+          "host context implementation is not registered"};
 }
 
 Status Context::prefill_from_hidden(const std::vector<float> &hidden,
                                     const std::size_t rows,
                                     std::vector<float> *const logits) {
-  if (hyena_ || esmc_)
+  if (factory_ == nullptr)
+    return {ErrorCode::kInvalidArgument, "host context is not initialized"};
+  if (factory_->implementation !=
+      ArchitectureImplementation::kStripedHyena2) {
     return {ErrorCode::kUnsupported,
             "this architecture does not support CUDA-prefix hidden input"};
+  }
   return impl_->forward_hidden(hidden, rows, true, logits,
                                std::numeric_limits<std::size_t>::max(),
                                nullptr);
@@ -1126,36 +1258,81 @@ Status Context::prefill_from_hidden(const std::vector<float> &hidden,
 Status Context::prefill_chunk_from_hidden(const std::vector<float> &hidden,
                                           const std::size_t rows,
                                           std::vector<float> *const logits) {
-  if (hyena_ || esmc_)
+  if (factory_ == nullptr)
+    return {ErrorCode::kInvalidArgument, "host context is not initialized"};
+  if (factory_->implementation !=
+      ArchitectureImplementation::kStripedHyena2) {
     return {ErrorCode::kUnsupported,
             "this architecture does not support CUDA-prefix hidden input"};
+  }
   return impl_->forward_hidden(hidden, rows, false, logits,
                                std::numeric_limits<std::size_t>::max(),
                                nullptr);
 }
 
 std::size_t Context::position() const noexcept {
-  if (hyena_)
+  if (factory_ == nullptr)
+    return 0;
+  switch (factory_->implementation) {
+  case ArchitectureImplementation::kUnknown:
+    return 0;
+  case ArchitectureImplementation::kStripedHyena2:
+    return impl_->position;
+  case ArchitectureImplementation::kHyenaDna:
     return hyena_->position();
-  return esmc_ ? esmc_->position() : impl_->position;
+  case ArchitectureImplementation::kEsmc:
+    return esmc_->position();
+  }
+  return 0;
 }
 std::size_t Context::activation_capacity() const noexcept {
-  if (hyena_)
+  if (factory_ == nullptr)
+    return 0;
+  switch (factory_->implementation) {
+  case ArchitectureImplementation::kUnknown:
+    return 0;
+  case ArchitectureImplementation::kStripedHyena2:
+    return impl_->arena_capacity;
+  case ArchitectureImplementation::kHyenaDna:
     return hyena_->activation_capacity();
-  return esmc_ ? esmc_->activation_capacity() : impl_->arena_capacity;
+  case ArchitectureImplementation::kEsmc:
+    return esmc_->activation_capacity();
+  }
+  return 0;
 }
 const ModelConfig &Context::config() const noexcept {
-  if (hyena_)
+  if (factory_ == nullptr) {
+    static const ModelConfig unloaded;
+    return unloaded;
+  }
+  switch (factory_->implementation) {
+  case ArchitectureImplementation::kUnknown:
+    break;
+  case ArchitectureImplementation::kStripedHyena2:
+    return impl_->weights->public_config;
+  case ArchitectureImplementation::kHyenaDna:
     return hyena_->config();
-  return esmc_ ? esmc_->config() : impl_->weights->public_config;
+  case ArchitectureImplementation::kEsmc:
+    return esmc_->config();
+  }
+  static const ModelConfig unsupported;
+  return unsupported;
 }
 const char *Context::kernel_name() const noexcept {
-  if (hyena_)
+  if (factory_ == nullptr)
+    return "unloaded";
+  switch (factory_->implementation) {
+  case ArchitectureImplementation::kUnknown:
+    return "unsupported-architecture";
+  case ArchitectureImplementation::kStripedHyena2:
+    return impl_->weights->executor ? impl_->weights->executor->name()
+                                    : selected_kernel_name();
+  case ArchitectureImplementation::kHyenaDna:
     return hyena_->kernel_name();
-  if (esmc_)
+  case ArchitectureImplementation::kEsmc:
     return esmc_->kernel_name();
-  return impl_->weights->executor ? impl_->weights->executor->name()
-                                  : selected_kernel_name();
+  }
+  return "unsupported-architecture";
 }
 
 } // namespace evo::cpu

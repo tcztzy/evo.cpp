@@ -782,15 +782,15 @@ Status parse_cli(const int argc, char *const argv[],
           ErrorCode::kInvalidArgument,
           "hybrid offload requires --profile cpu-f32 when profile is explicit"};
     options->inference_profile = InferenceProfile::kCpuF32;
-  } else if (options->inference_profile == InferenceProfile::kCpuF32) {
+  } else if (options->inference_profile == InferenceProfile::kCpuF32 &&
+             options->backend != ExecutionBackend::kAuto) {
     return {ErrorCode::kInvalidArgument,
             "--profile cpu-f32 requires --backend cpu"};
   } else if (options->inference_profile == InferenceProfile::kMpsF32) {
     return {ErrorCode::kInvalidArgument,
             "--profile mps-f32 requires --backend mps"};
   }
-  const bool requires_gpu = options->backend != ExecutionBackend::kCpu &&
-                            options->backend != ExecutionBackend::kMps;
+  const bool requires_gpu = options->backend == ExecutionBackend::kCuda;
   const bool seen_server_option =
       seen_server_host || seen_server_port || seen_server_max_queue ||
       seen_server_max_batch || seen_server_batch_window ||

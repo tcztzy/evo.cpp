@@ -698,11 +698,15 @@ Status EsmcModel::load(const ModelFile &artifact,
     return status;
   const auto *const registered =
       find_architecture(candidate->public_config.architecture);
-  if (registered == nullptr ||
-      registered->tokenizer != ArchitectureTokenizer::kEsmcProtein ||
+  const auto *const factory =
+      registered == nullptr
+          ? nullptr
+          : find_architecture_backend_factory(*registered,
+                                              kArchitectureBackendCuda);
+  if (registered == nullptr || factory == nullptr ||
+      factory->implementation != ArchitectureImplementation::kEsmc ||
       registered->artifact_profile != artifact.profile() ||
-      registered->runtime_abi != runtime_abi ||
-      (registered->backends & kArchitectureBackendCuda) == 0) {
+      registered->runtime_abi != runtime_abi) {
     return {ErrorCode::kUnsupported,
             "artifact is not a registered ESMC CUDA architecture"};
   }

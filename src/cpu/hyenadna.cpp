@@ -454,7 +454,7 @@ Status HyenaDnaModel::load(const ModelFile &artifact,
     return status;
   const auto *const registered = find_architecture(architecture);
   if (registered == nullptr ||
-      registered->tokenizer != ArchitectureTokenizer::kHyenaDnaCharacter ||
+      registered->implementation != ArchitectureImplementation::kHyenaDna ||
       registered->artifact_profile != artifact.profile() ||
       registered->runtime_abi != runtime_abi) {
     return {ErrorCode::kUnsupported,
@@ -462,6 +462,7 @@ Status HyenaDnaModel::load(const ModelFile &artifact,
   }
   candidate->public_config.architecture = architecture;
   candidate->public_config.artifact_profile = std::string{artifact.profile()};
+  candidate->public_config.implementation = registered->implementation;
   candidate->public_config.tokenizer = registered->tokenizer;
   candidate->public_config.test_fixture = registered->synthetic_fixture;
   if (registered->synthetic_fixture) {

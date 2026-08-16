@@ -3,6 +3,7 @@
 """Check source text hygiene without assuming an unpinned formatter style."""
 
 import argparse
+import re
 from pathlib import Path
 
 
@@ -60,6 +61,24 @@ def main() -> int:
             "include/evo/sequence_io.hpp: public sequence input must expose "
             "only the bounded callback streaming API"
         )
+    for relative in (
+        Path("src/c_api.cpp"),
+        Path("src/cpu/inference_cli.cpp"),
+        Path("src/main.cpp"),
+    ):
+        surface = (args.source_dir / relative).read_text(encoding="utf-8")
+        if re.search(r"\bbool\s+esmc\b", surface):
+            failures.append(
+                f"{relative}: architecture dispatch must not use a bool esmc tag"
+            )
+        if re.search(r"(?:->|\.)tokenizer\s*==", surface):
+            failures.append(
+                f"{relative}: tokenizer identity must not select an architecture"
+            )
+        if "find_architecture_backend_factory" not in surface:
+            failures.append(
+                f"{relative}: backend dispatch must use the registered factory"
+            )
     if failures:
         raise AssertionError("\n".join(failures))
     return 0

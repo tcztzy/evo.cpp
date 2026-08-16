@@ -39,6 +39,8 @@ struct ModelConfig final {
   std::size_t layers{0};
   std::size_t max_seqlen{0};
   bool test_fixture{false};
+  ArchitectureImplementation implementation{
+      ArchitectureImplementation::kUnknown};
   ArchitectureTokenizer tokenizer{ArchitectureTokenizer::kByteIdentity};
 };
 
@@ -69,6 +71,7 @@ private:
   std::shared_ptr<Impl> impl_;
   std::shared_ptr<detail::HyenaDnaModel> hyena_;
   std::shared_ptr<detail::EsmcModel> esmc_;
+  const ArchitectureBackendFactorySpec *factory_{nullptr};
   friend class Context;
   friend class evo::mps::ModelLoader;
 };
@@ -113,6 +116,7 @@ private:
   std::unique_ptr<Impl> impl_;
   std::unique_ptr<detail::HyenaDnaContext> hyena_;
   std::unique_ptr<detail::EsmcContext> esmc_;
+  const ArchitectureBackendFactorySpec *factory_{nullptr};
 };
 
 } // namespace evo::cpu

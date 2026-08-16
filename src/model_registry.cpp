@@ -158,34 +158,40 @@ find_official_esmc_model(const std::string_view model_id) noexcept {
 const std::vector<ArchitectureSpec> &architecture_specs() {
   constexpr unsigned all_capabilities =
       kArchitectureGenerate | kArchitectureScore | kArchitectureEmbed |
-      kArchitectureVariant | kArchitectureServe;
+      kArchitectureVariant | kArchitectureServe | kArchitectureLogits;
   static const std::vector<ArchitectureSpec> specs{
       {"StripedHyena2", "evo2-runtime-v1", "evo2-safetensors-v1",
+       ArchitectureImplementation::kStripedHyena2,
        ArchitectureTokenizer::kByteIdentity,
        kArchitectureBackendCpu | kArchitectureBackendCuda |
            kArchitectureBackendMps,
        all_capabilities,
        false},
       {"StripedHyena2Test", "evo2-runtime-v1", "evo2-safetensors-v1",
+       ArchitectureImplementation::kStripedHyena2,
        ArchitectureTokenizer::kByteIdentity,
        kArchitectureBackendCpu | kArchitectureBackendCuda |
            kArchitectureBackendMps,
        all_capabilities,
        true},
       {"HyenaDNA", "hyenadna-runtime-v1", "hyenadna-safetensors-v1",
+       ArchitectureImplementation::kHyenaDna,
        ArchitectureTokenizer::kHyenaDnaCharacter,
        kArchitectureBackendCpu | kArchitectureBackendMps,
        all_capabilities, false},
       {"HyenaDNATest", "hyenadna-runtime-v1", "hyenadna-safetensors-v1",
+       ArchitectureImplementation::kHyenaDna,
        ArchitectureTokenizer::kHyenaDnaCharacter,
        kArchitectureBackendCpu | kArchitectureBackendMps,
        all_capabilities, true},
       {"ESMC", "esmc-runtime-v1", "esmc-safetensors-v1",
+       ArchitectureImplementation::kEsmc,
        ArchitectureTokenizer::kEsmcProtein,
        kArchitectureBackendCpu | kArchitectureBackendCuda |
            kArchitectureBackendMps,
        kArchitectureEmbed | kArchitectureLogits, false},
       {"ESMCTest", "esmc-runtime-v1", "esmc-safetensors-v1",
+       ArchitectureImplementation::kEsmc,
        ArchitectureTokenizer::kEsmcProtein,
        kArchitectureBackendCpu | kArchitectureBackendCuda |
            kArchitectureBackendMps,
@@ -212,6 +218,54 @@ find_artifact_profile(const std::string_view profile) noexcept {
         return item.artifact_profile == profile;
       });
   return found == specs.end() ? nullptr : &*found;
+}
+
+const char *architecture_implementation_name(
+    const ArchitectureImplementation implementation) noexcept {
+  switch (implementation) {
+  case ArchitectureImplementation::kUnknown:
+    return "unknown";
+  case ArchitectureImplementation::kStripedHyena2:
+    return "striped-hyena-2";
+  case ArchitectureImplementation::kHyenaDna:
+    return "hyenadna";
+  case ArchitectureImplementation::kEsmc:
+    return "esmc";
+  }
+  return "unknown";
+}
+
+const ArchitectureBackendFactorySpec *find_architecture_backend_factory(
+    const ArchitectureSpec &architecture,
+    const ArchitectureBackend backend) noexcept {
+  static const std::vector<ArchitectureBackendFactorySpec> factories{
+      {ArchitectureImplementation::kStripedHyena2,
+       kArchitectureBackendCpu},
+      {ArchitectureImplementation::kStripedHyena2,
+       kArchitectureBackendCuda},
+      {ArchitectureImplementation::kStripedHyena2,
+       kArchitectureBackendMps},
+      {ArchitectureImplementation::kHyenaDna, kArchitectureBackendCpu},
+      {ArchitectureImplementation::kHyenaDna, kArchitectureBackendMps},
+      {ArchitectureImplementation::kEsmc, kArchitectureBackendCpu},
+      {ArchitectureImplementation::kEsmc, kArchitectureBackendCuda},
+      {ArchitectureImplementation::kEsmc, kArchitectureBackendMps},
+  };
+  const auto backend_mask = static_cast<unsigned>(backend);
+  if ((backend != kArchitectureBackendCpu &&
+       backend != kArchitectureBackendCuda &&
+       backend != kArchitectureBackendMps) ||
+      (architecture.backends & backend_mask) == 0U) {
+    return nullptr;
+  }
+  const auto found =
+      std::find_if(factories.begin(), factories.end(),
+                   [&architecture, backend](const auto &factory) {
+                     return factory.implementation ==
+                                architecture.implementation &&
+                            factory.backend == backend;
+                   });
+  return found == factories.end() ? nullptr : &*found;
 }
 
 } // namespace evo

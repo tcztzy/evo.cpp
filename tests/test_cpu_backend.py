@@ -77,9 +77,57 @@ def main() -> int:
         [str(args.binary), str(model), str(logits), str(decode), str(layer)],
         check=True,
     )
+    unknown_model = args.work_dir / "unknown-architecture.safetensors"
+    model_payload = model.read_bytes()
+    registered_architecture = b"StripedHyena2Test"
+    unknown_architecture = b"UnregisteredArchX"
+    if (
+        len(registered_architecture) != len(unknown_architecture)
+        or model_payload.count(registered_architecture) != 1
+    ):
+        raise AssertionError("tiny fixture architecture marker is not unique")
+    unknown_model.write_bytes(
+        model_payload.replace(registered_architecture, unknown_architecture)
+    )
+    rejected_unknown = subprocess.run(
+        [
+            str(args.binary),
+            str(unknown_model),
+            str(logits),
+            str(decode),
+            str(layer),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if (
+        rejected_unknown.returncode == 0
+        or "unregistered runtime architecture" not in rejected_unknown.stderr
+    ):
+        raise AssertionError("unknown architecture fell through a CPU factory")
     subprocess.run([str(args.c_api_binary), str(model)], check=True)
     sequence = args.work_dir / "sequence.fa"
     sequence.write_text(">cpu\nAACCGGTT\n", encoding="ascii")
+    rejected_unknown_cli = subprocess.run(
+        [
+            str(args.cli_binary),
+            "score",
+            "-m",
+            str(unknown_model),
+            "--input",
+            str(sequence),
+            "--ctx",
+            "12",
+            "--backend",
+            "cpu",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if rejected_unknown_cli.returncode != 5:
+        raise AssertionError("unknown architecture did not return typed unsupported")
     score = subprocess.run(
         [
             str(args.cli_binary),

@@ -3,6 +3,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "evo/cli.hpp"
 #include "evo/cpu/inference_cli.hpp"
@@ -28,13 +29,31 @@ namespace {
 
 void print_help() { std::cout << evo::cli_usage(); }
 
-void dump_tokens(const std::string_view label, const std::string_view bytes) {
-  const auto tokens = evo::encode_bytes(bytes);
+evo::Status dump_tokens(const std::string_view label,
+                        const std::string_view bytes,
+                        const evo::ArchitectureTokenizer tokenizer) {
+  std::vector<evo::TokenId> tokens;
+  const auto status = evo::encode_sequence(tokenizer, bytes, &tokens);
+  if (!status.ok())
+    return status;
   std::cerr << "tokens " << label << "=[";
   for (std::size_t index = 0; index < tokens.size(); ++index) {
     if (index != 0) {
       std::cerr << ',';
     }
+    std::cerr << tokens[index];
+  }
+  std::cerr << "]\n";
+  return evo::Status::Ok();
+}
+
+void dump_byte_tokens(const std::string_view label,
+                      const std::string_view bytes) {
+  const auto tokens = evo::encode_bytes(bytes);
+  std::cerr << "tokens " << label << "=[";
+  for (std::size_t index = 0; index < tokens.size(); ++index) {
+    if (index != 0)
+      std::cerr << ',';
     std::cerr << tokens[index];
   }
   std::cerr << "]\n";
@@ -46,11 +65,63 @@ int fail(const evo::Status &status) {
   return evo::exit_code(status.code());
 }
 
-evo::Status validate_model_operation(const evo::CliOptions &options) {
+const evo::ArchitectureBackendFactorySpec *architecture_backend_factory(
+    const evo::ArchitectureSpec &architecture,
+    const evo::ExecutionBackend backend) noexcept {
+  switch (backend) {
+  case evo::ExecutionBackend::kCpu:
+    return evo::find_architecture_backend_factory(
+        architecture, evo::kArchitectureBackendCpu);
+  case evo::ExecutionBackend::kMps:
+    return evo::find_architecture_backend_factory(
+        architecture, evo::kArchitectureBackendMps);
+  case evo::ExecutionBackend::kAuto:
+    return nullptr;
+  case evo::ExecutionBackend::kCuda:
+    return evo::find_architecture_backend_factory(
+        architecture, evo::kArchitectureBackendCuda);
+  }
+  return nullptr;
+}
+
+evo::Status resolve_automatic_backend(evo::CliOptions *const options) {
+  if (options == nullptr)
+    return {evo::ErrorCode::kInvalidArgument, "CLI options are null"};
+  if (options->backend != evo::ExecutionBackend::kAuto)
+    return evo::Status::Ok();
+  const bool cuda_placement =
+      !options->gpu_ids.empty() || options->gpu_layers.has_value();
+  options->backend = cuda_placement ? evo::ExecutionBackend::kCuda
+                                    : evo::ExecutionBackend::kCpu;
+  if (options->backend == evo::ExecutionBackend::kCpu) {
+    if (options->profile_explicit &&
+        options->inference_profile != evo::InferenceProfile::kCpuF32) {
+      return {evo::ErrorCode::kInvalidArgument,
+              "automatic CPU backend requires --profile cpu-f32 when the "
+              "profile is explicit"};
+    }
+    options->inference_profile = evo::InferenceProfile::kCpuF32;
+  } else if (!options->gpu_layers.has_value() &&
+             options->inference_profile == evo::InferenceProfile::kCpuF32) {
+    return {evo::ErrorCode::kInvalidArgument,
+            "automatic CUDA backend does not accept --profile cpu-f32"};
+  }
+  return evo::Status::Ok();
+}
+
+evo::Status validate_model_operation(evo::CliOptions *const options) {
+  if (options == nullptr)
+    return {evo::ErrorCode::kInvalidArgument, "CLI options are null"};
   evo::ModelFile artifact;
-  auto status = artifact.open(options.model_path);
-  if (!status.ok())
+  auto status = artifact.open(options->model_path);
+  if (!status.ok()) {
+    // Preserve the original diagnostic contract: --dump-tokens remains useful
+    // even when the artifact itself cannot be opened.  A valid artifact uses
+    // its registered tokenizer below.
+    if (options->mode == evo::RunMode::kGenerate && options->dump_tokens)
+      dump_byte_tokens("prompt", options->prompt);
     return status;
+  }
   const auto *const entry = artifact.find_metadata("model.architecture");
   if (entry == nullptr || entry->type != evo::MetadataType::kString) {
     return {evo::ErrorCode::kModelFormat,
@@ -63,7 +134,7 @@ evo::Status validate_model_operation(const evo::CliOptions &options) {
             "artifact architecture is not registered: " + architecture};
   }
   unsigned required = 0;
-  switch (options.mode) {
+  switch (options->mode) {
   case evo::RunMode::kGenerate:
     required = evo::kArchitectureGenerate;
     break;
@@ -88,17 +159,33 @@ evo::Status validate_model_operation(const evo::CliOptions &options) {
     return {evo::ErrorCode::kUnsupported,
             "operation is not supported by architecture " + architecture};
   }
-  if (spec->tokenizer == evo::ArchitectureTokenizer::kEsmcProtein &&
-      options.backend == evo::ExecutionBackend::kCuda &&
-      options.inference_profile != evo::InferenceProfile::kExact) {
+  status = resolve_automatic_backend(options);
+  if (!status.ok())
+    return status;
+  const auto *const backend_factory =
+      architecture_backend_factory(*spec, options->backend);
+  if (backend_factory == nullptr) {
+    return {evo::ErrorCode::kUnsupported,
+            "backend " +
+                std::string{evo::execution_backend_name(options->backend)} +
+                " is not supported by architecture " + architecture};
+  }
+  if (spec->implementation == evo::ArchitectureImplementation::kEsmc &&
+      backend_factory->backend == evo::kArchitectureBackendCuda &&
+      options->inference_profile != evo::InferenceProfile::kExact) {
     return {evo::ErrorCode::kUnsupported,
             "ESMC CUDA inference supports only --profile exact"};
   }
-  if (spec->tokenizer == evo::ArchitectureTokenizer::kEsmcProtein &&
-      options.backend == evo::ExecutionBackend::kCuda &&
-      options.gpu_ids.size() > 1) {
+  if (spec->implementation == evo::ArchitectureImplementation::kEsmc &&
+      backend_factory->backend == evo::kArchitectureBackendCuda &&
+      options->gpu_ids.size() > 1) {
     return {evo::ErrorCode::kUnsupported,
             "ESMC CUDA inference currently supports exactly one GPU"};
+  }
+  if (options->mode == evo::RunMode::kGenerate && options->dump_tokens) {
+    status = dump_tokens("prompt", options->prompt, spec->tokenizer);
+    if (!status.ok())
+      return status;
   }
   return evo::Status::Ok();
 }
@@ -149,11 +236,8 @@ int main(const int argc, char **argv) {
         return fail({evo::ErrorCode::kInvalidArgument,
                      "prompt bytes plus generated tokens exceed --ctx"});
       }
-      if (options.dump_tokens) {
-        dump_tokens("prompt", options.prompt);
-      }
     }
-    status = validate_model_operation(options);
+    status = validate_model_operation(&options);
     if (!status.ok()) {
       return fail(status);
     }

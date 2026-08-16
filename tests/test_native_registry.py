@@ -28,7 +28,7 @@ def main() -> int:
     for line in lines:
         fields = line.split("|")
         if fields[0] == "@":
-            assert len(fields) == 8, line
+            assert len(fields) == 9, line
             architectures[fields[1]] = fields[2:]
             continue
         if fields[0] == "$":
@@ -107,6 +107,20 @@ def main() -> int:
         entry["id"]: [entry["artifact_profile"], entry["runtime_abi"]]
         for entry in registry["runtime_architectures"]
     }
+    artifact_profiles = {
+        entry["id"]: [entry["runtime_abi"], entry["metadata_key"]]
+        for entry in registry["artifact_profiles"]
+    }
+    assert len(artifact_profiles) == len(registry["artifact_profiles"])
+    assert set(artifact_profiles) == {
+        contract[0] for contract in production_architectures.values()
+    }
+    assert {contract[1] for contract in artifact_profiles.values()} == {
+        "evo2.profile",
+        "runtime.profile",
+    }
+    for profile, runtime_abi in production_architectures.values():
+        assert artifact_profiles[profile][0] == runtime_abi
     assert set(production_architectures) == {
         name for name in architectures if not name.endswith("Test")
     }
@@ -115,22 +129,25 @@ def main() -> int:
     assert architectures["StripedHyena2"] == [
         "evo2-runtime-v1",
         "evo2-safetensors-v1",
+        "striped-hyena-2",
         "byte",
         "7",
-        "31",
+        "63",
         "0",
     ]
     assert architectures["HyenaDNA"] == [
         "hyenadna-runtime-v1",
         "hyenadna-safetensors-v1",
+        "hyenadna",
         "hyenadna-character",
         "5",
-        "31",
+        "63",
         "0",
     ]
     assert architectures["ESMC"] == [
         "esmc-runtime-v1",
         "esmc-safetensors-v1",
+        "esmc",
         "esmc-protein",
         "7",
         "36",

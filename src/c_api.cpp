@@ -121,6 +121,25 @@ bool valid_status(const evo_status status) noexcept {
          status == EVO_STATUS_MPS || status == EVO_STATUS_INTERNAL;
 }
 
+const evo::ArchitectureBackendFactorySpec *architecture_backend_factory(
+    const evo::ArchitectureSpec &architecture,
+    const evo_backend backend) noexcept {
+  switch (backend) {
+  case EVO_BACKEND_CPU:
+    return evo::find_architecture_backend_factory(
+        architecture, evo::kArchitectureBackendCpu);
+  case EVO_BACKEND_CUDA:
+    return evo::find_architecture_backend_factory(
+        architecture, evo::kArchitectureBackendCuda);
+  case EVO_BACKEND_MPS:
+    return evo::find_architecture_backend_factory(
+        architecture, evo::kArchitectureBackendMps);
+  case EVO_BACKEND_AUTO:
+    return nullptr;
+  }
+  return nullptr;
+}
+
 struct ModelState final {
   evo::ModelFile file;
   evo_backend backend{EVO_BACKEND_AUTO};
@@ -128,13 +147,11 @@ struct ModelState final {
   std::string model_id;
   std::string architecture;
   std::string artifact_profile;
-  evo::ArchitectureTokenizer tokenizer{
-      evo::ArchitectureTokenizer::kByteIdentity};
+  const evo::ArchitectureSpec *architecture_spec{nullptr};
   std::size_t vocab_size{0};
   std::size_t max_context{0};
   std::size_t embedding_width{0};
   std::size_t layer_count{0};
-  bool esmc{false};
   bool allow_synthetic{false};
   std::mutex cpu_mutex;
   std::unique_ptr<evo::cpu::Model> cpu_weights;
@@ -286,38 +303,25 @@ evo_status evo_model_load(const char *const path,
                      "unsupported: artifact architecture/profile/ABI is not "
                      "registered");
     }
-    state->tokenizer = architecture->tokenizer;
-    state->esmc =
-        architecture->tokenizer == evo::ArchitectureTokenizer::kEsmcProtein;
+    state->architecture_spec = architecture;
     if (state->backend == EVO_BACKEND_AUTO) {
 #if defined(EVO_HAS_CUDA)
-      state->backend =
-          (architecture->backends & evo::kArchitectureBackendCuda) != 0
-              ? EVO_BACKEND_CUDA
-              : EVO_BACKEND_CPU;
+      state->backend = architecture_backend_factory(
+                           *architecture, EVO_BACKEND_CUDA) != nullptr
+                           ? EVO_BACKEND_CUDA
+                           : EVO_BACKEND_CPU;
 #else
       state->backend = EVO_BACKEND_CPU;
 #endif
     }
-    unsigned backend_flag = 0;
-    switch (state->backend) {
-    case EVO_BACKEND_CPU:
-      backend_flag = evo::kArchitectureBackendCpu;
-      break;
-    case EVO_BACKEND_CUDA:
-      backend_flag = evo::kArchitectureBackendCuda;
-      break;
-    case EVO_BACKEND_MPS:
-      backend_flag = evo::kArchitectureBackendMps;
-      break;
-    case EVO_BACKEND_AUTO:
+    if (state->backend == EVO_BACKEND_AUTO) {
       return publish(EVO_STATUS_INTERNAL,
                      "internal: automatic backend selection was unresolved");
     }
-    if ((architecture->backends & backend_flag) == 0) {
+    if (architecture_backend_factory(*architecture, state->backend) == nullptr) {
       return publish(EVO_STATUS_UNSUPPORTED,
-                     "unsupported: selected backend is not registered for "
-                     "this architecture");
+                     "unsupported: selected architecture/backend factory is "
+                     "not registered");
     }
 #if !defined(EVO_HAS_CUDA)
     if (state->backend == EVO_BACKEND_CUDA) {
@@ -334,9 +338,17 @@ evo_status evo_model_load(const char *const path,
     state->vocab_size = metadata_size(state->file, "config.vocab_size");
     state->max_context = metadata_size(state->file, "config.max_seqlen");
     state->embedding_width = metadata_size(state->file, "config.hidden_size");
-    state->layer_count = metadata_size(state->file, "config.num_layers");
-    if (state->esmc && state->layer_count != 0)
-      ++state->layer_count;
+    const std::size_t transformer_layers =
+        metadata_size(state->file, "config.num_layers");
+    const std::size_t default_embedding_layers =
+        state->architecture_spec->implementation ==
+                    evo::ArchitectureImplementation::kEsmc &&
+                transformer_layers !=
+                    std::numeric_limits<std::size_t>::max()
+            ? transformer_layers + 1U
+            : transformer_layers;
+    state->layer_count = metadata_size(
+        state->file, "runtime.embedding_layer_count", default_embedding_layers);
     if (state->max_context == 0 &&
         metadata_bool(state->file, "fixture.synthetic")) {
       state->max_context = std::numeric_limits<std::size_t>::max();
@@ -345,14 +357,25 @@ evo_status evo_model_load(const char *const path,
         (options.flags & EVO_MODEL_FLAG_TEST_ONLY_ALLOW_SYNTHETIC) != 0;
 #if defined(EVO_HAS_CUDA)
     if (state->backend == EVO_BACKEND_CUDA) {
-      if (state->esmc) {
+      switch (state->architecture_spec->implementation) {
+      case evo::ArchitectureImplementation::kUnknown:
+        return publish(EVO_STATUS_UNSUPPORTED,
+                       "unsupported: CUDA architecture implementation is "
+                       "unknown");
+      case evo::ArchitectureImplementation::kEsmc:
         state->cuda_esmc_weights = std::make_unique<evo::cuda::EsmcModel>();
         status = state->cuda_esmc_weights->load(state->file, state->devices,
                                                 state->allow_synthetic);
-      } else {
+        break;
+      case evo::ArchitectureImplementation::kStripedHyena2:
         state->cuda_weights = std::make_unique<evo::cuda::PipelineModel>();
         status = state->cuda_weights->load(state->file, state->devices, 1,
                                            state->allow_synthetic);
+        break;
+      case evo::ArchitectureImplementation::kHyenaDna:
+        return publish(EVO_STATUS_UNSUPPORTED,
+                       "unsupported: CUDA architecture factory has no "
+                       "HyenaDNA implementation");
       }
       if (!status.ok())
         return publish(status);
@@ -431,7 +454,8 @@ evo_status evo_model_encode(const evo_model *const model,
                                 sequence_length};
     std::vector<evo::TokenId> encoded;
     const auto status =
-        evo::encode_sequence(model->state->tokenizer, text, &encoded);
+        evo::encode_sequence(model->state->architecture_spec->tokenizer, text,
+                             &encoded);
     if (!status.ok())
       return publish(status);
     *token_count = encoded.size();
@@ -458,7 +482,8 @@ evo_status evo_model_decode_token(const evo_model *const model,
                      "invalid");
     }
     return publish(evo::decode_sequence_token(
-        model->state->tokenizer, static_cast<evo::TokenId>(token), byte_out));
+        model->state->architecture_spec->tokenizer,
+        static_cast<evo::TokenId>(token), byte_out));
   });
 }
 
@@ -487,7 +512,9 @@ evo_status evo_context_create(const evo_model *const model,
         (options.flags & EVO_CONTEXT_FLAG_FAST_Q8_KV) != 0
             ? evo::InferenceProfile::kFastQ8Kv
             : evo::InferenceProfile::kExact;
-    if (model->state->backend == EVO_BACKEND_CUDA && model->state->esmc &&
+    if (model->state->backend == EVO_BACKEND_CUDA &&
+        model->state->architecture_spec->implementation ==
+            evo::ArchitectureImplementation::kEsmc &&
         options.flags != 0) {
       return publish(EVO_STATUS_INVALID_ARGUMENT,
                      "invalid_argument: ESMC supports only the exact CUDA "
@@ -544,7 +571,11 @@ evo_status evo_context_create(const evo_model *const model,
     handle->state = model->state;
     handle->capacity = options.context_size;
     handle->profile = profile;
-    if (model->state->esmc) {
+    switch (model->state->architecture_spec->implementation) {
+    case evo::ArchitectureImplementation::kUnknown:
+      return publish(EVO_STATUS_UNSUPPORTED,
+                     "unsupported: CUDA context implementation is unknown");
+    case evo::ArchitectureImplementation::kEsmc: {
       if (!model->state->cuda_esmc_weights) {
         return publish(EVO_STATUS_INTERNAL,
                        "internal: ESMC CUDA model weights are unavailable");
@@ -555,7 +586,9 @@ evo_status evo_context_create(const evo_model *const model,
       if (!status.ok())
         return publish(status);
       handle->cuda_esmc = std::move(cuda);
-    } else {
+      break;
+    }
+    case evo::ArchitectureImplementation::kStripedHyena2: {
       if (!model->state->cuda_weights) {
         return publish(EVO_STATUS_INTERNAL,
                        "internal: CUDA model weights are unavailable");
@@ -566,6 +599,12 @@ evo_status evo_context_create(const evo_model *const model,
       if (!status.ok())
         return publish(status);
       handle->cuda = std::move(cuda);
+      break;
+    }
+    case evo::ArchitectureImplementation::kHyenaDna:
+      return publish(EVO_STATUS_UNSUPPORTED,
+                     "unsupported: CUDA architecture factory has no "
+                     "HyenaDNA context implementation");
     }
     *context_out = handle.release();
     return publish(evo::Status::Ok());
@@ -614,15 +653,19 @@ evo_status evo_context_prefill(evo_context *const context,
                      "invalid_argument: context is invalid after a prior "
                      "failure");
     }
+    if (!context->state ||
+        (context->state->architecture_spec->capabilities &
+         evo::kArchitectureLogits) == 0) {
+      return publish(EVO_STATUS_UNSUPPORTED,
+                     "unsupported: architecture does not expose logits");
+    }
     if (batch->sequences.size() != 1) {
       return publish(EVO_STATUS_UNSUPPORTED,
                      "unsupported: exact backend currently requires batch "
                      "size one");
     }
     const auto &sequence = batch->sequences.front();
-    if (sequence.empty() ||
-        (sequence.size() > context->capacity && !context->state->esmc) ||
-        evo_context_position(context) != 0) {
+    if (sequence.empty() || evo_context_position(context) != 0) {
       return publish(EVO_STATUS_INVALID_ARGUMENT,
                      "invalid_argument: prefill requires a fresh context and "
                      "a nonempty sequence within capacity");
@@ -631,7 +674,8 @@ evo_status evo_context_prefill(evo_context *const context,
     const std::string_view sequence_view{
         reinterpret_cast<const char *>(sequence.data()), sequence.size()};
     const auto encode_status =
-        evo::encode_sequence(context->state->tokenizer, sequence_view, &tokens);
+        evo::encode_sequence(context->state->architecture_spec->tokenizer,
+                             sequence_view, &tokens);
     if (!encode_status.ok())
       return publish(encode_status);
     if (tokens.size() > context->capacity) {
@@ -748,10 +792,12 @@ evo_status evo_context_decode(evo_context *const context, const uint32_t token,
                      "invalid_argument: context is invalid after a prior "
                      "failure");
     }
-    if (context->state && context->state->esmc) {
+    if (!context->state ||
+        (context->state->architecture_spec->capabilities &
+         evo::kArchitectureGenerate) == 0) {
       return publish(EVO_STATUS_UNSUPPORTED,
-                     "unsupported: ESMC is bidirectional and does not support "
-                     "incremental decode");
+                     "unsupported: architecture does not support incremental "
+                     "decode");
     }
     const std::size_t offset = evo_context_position(context);
     if (offset == 0 || offset >= context->capacity || !context->state ||
@@ -825,6 +871,12 @@ evo_status evo_context_embed(evo_context *const context,
                      "invalid_argument: context is invalid after a prior "
                      "failure");
     }
+    if (!context->state ||
+        (context->state->architecture_spec->capabilities &
+         evo::kArchitectureEmbed) == 0) {
+      return publish(EVO_STATUS_UNSUPPORTED,
+                     "unsupported: architecture does not expose embeddings");
+    }
     if (!context->state || layer >= context->state->layer_count) {
       return publish(EVO_STATUS_INVALID_ARGUMENT,
                      "invalid_argument: embedding layer is outside the model");
@@ -835,9 +887,7 @@ evo_status evo_context_embed(evo_context *const context,
                      "size one");
     }
     const auto &sequence = batch->sequences.front();
-    if (sequence.empty() ||
-        (sequence.size() > context->capacity && !context->state->esmc) ||
-        evo_context_position(context) != 0) {
+    if (sequence.empty() || evo_context_position(context) != 0) {
       return publish(EVO_STATUS_INVALID_ARGUMENT,
                      "invalid_argument: embedding requires a fresh context and "
                      "a nonempty sequence within capacity");
@@ -846,7 +896,8 @@ evo_status evo_context_embed(evo_context *const context,
     const std::string_view sequence_view{
         reinterpret_cast<const char *>(sequence.data()), sequence.size()};
     const auto encode_status =
-        evo::encode_sequence(context->state->tokenizer, sequence_view, &tokens);
+        evo::encode_sequence(context->state->architecture_spec->tokenizer,
+                             sequence_view, &tokens);
     if (!encode_status.ok())
       return publish(encode_status);
     if (tokens.size() > context->capacity) {

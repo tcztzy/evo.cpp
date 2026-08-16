@@ -15,6 +15,16 @@ enum class ArchitectureTokenizer {
   kEsmcProtein,
 };
 
+// The native implementation selected by an artifact architecture.  This is
+// deliberately independent from tokenizer and capability metadata: two
+// architectures may share a tokenizer without sharing an execution graph.
+enum class ArchitectureImplementation {
+  kUnknown,
+  kStripedHyena2,
+  kHyenaDna,
+  kEsmc,
+};
+
 enum ArchitectureBackend : unsigned {
   kArchitectureBackendCpu = 1U << 0U,
   kArchitectureBackendCuda = 1U << 1U,
@@ -34,10 +44,16 @@ struct ArchitectureSpec final {
   std::string_view id;
   std::string_view artifact_profile;
   std::string_view runtime_abi;
+  ArchitectureImplementation implementation;
   ArchitectureTokenizer tokenizer;
   unsigned backends;
   unsigned capabilities;
   bool synthetic_fixture;
+};
+
+struct ArchitectureBackendFactorySpec final {
+  ArchitectureImplementation implementation;
+  ArchitectureBackend backend;
 };
 
 enum class OfficialProjectionPrecision { kBF16, kE4M3Software };
@@ -101,5 +117,10 @@ find_official_esmc_model(std::string_view model_id) noexcept;
 find_architecture(std::string_view architecture) noexcept;
 [[nodiscard]] const ArchitectureSpec *
 find_artifact_profile(std::string_view profile) noexcept;
+[[nodiscard]] const char *architecture_implementation_name(
+    ArchitectureImplementation implementation) noexcept;
+[[nodiscard]] const ArchitectureBackendFactorySpec *
+find_architecture_backend_factory(const ArchitectureSpec &architecture,
+                                  ArchitectureBackend backend) noexcept;
 
 } // namespace evo

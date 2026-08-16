@@ -14,15 +14,23 @@ import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+_SCRIPT_DIRECTORY = Path(__file__).resolve().parent
+if not (_SCRIPT_DIRECTORY / "evo").is_dir():
+    _INSTALLED_PYTHON = (
+        _SCRIPT_DIRECTORY.parent / "share" / "evo" / "python"
+    )
+    if _INSTALLED_PYTHON.is_dir():
+        sys.path.insert(0, str(_INSTALLED_PYTHON))
+
+from evo.artifact_profiles import (
+    ProfileRegistryError,
+    load_artifact_profiles as _load_artifact_profiles,
+)
+
 
 COMMIT_RE = re.compile(r"[0-9a-fA-F]{40}")
 SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
 REPO_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*")
-RUNTIME_PROFILES = {
-    "evo2-runtime-v1",
-    "hyenadna-runtime-v1",
-    "esmc-runtime-v1",
-}
 
 
 class FetchError(RuntimeError):
@@ -323,8 +331,23 @@ def fetch_files(
 
 
 def load_json(path: Path, label: str) -> dict[str, object]:
+    def reject_duplicate_keys(
+        pairs: list[tuple[str, object]],
+    ) -> dict[str, object]:
+        value: dict[str, object] = {}
+        for key, item in pairs:
+            if key in value:
+                raise FetchError(f"{label} contains duplicate key {key!r}")
+            value[key] = item
+        return value
+
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=reject_duplicate_keys,
+        )
+    except FetchError:
+        raise
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise FetchError(f"cannot read {label} {path}: {error}") from error
     if not isinstance(value, dict):
@@ -375,6 +398,10 @@ def source_command(args: argparse.Namespace) -> dict[str, object]:
 
 
 def runtime_command(args: argparse.Namespace) -> dict[str, object]:
+    try:
+        runtime_profiles = _load_artifact_profiles(args.registry)
+    except ProfileRegistryError as error:
+        raise FetchError(str(error)) from error
     repo, requested_revision = parse_repo_spec(args.repository)
     manifest_name = validate_relative_path(args.manifest, "runtime manifest path")
     resolved = resolve_revision(
@@ -411,10 +438,10 @@ def runtime_command(args: argparse.Namespace) -> dict[str, object]:
     if manifest.get("schema_version") != 1:
         raise FetchError("runtime artifact manifest schema_version must be 1")
     artifact_profile = manifest.get("artifact_profile")
-    if artifact_profile not in RUNTIME_PROFILES:
+    if not isinstance(artifact_profile, str) or artifact_profile not in runtime_profiles:
         raise FetchError(
-            "runtime artifact profile must be one of "
-            + ", ".join(sorted(RUNTIME_PROFILES))
+            f"runtime artifact profile {artifact_profile!r} is not registered; "
+            "expected one of " + ", ".join(sorted(runtime_profiles))
         )
     files_value = manifest.get("files")
     if not isinstance(files_value, list) or not files_value:
@@ -485,6 +512,7 @@ def parse_args() -> argparse.Namespace:
     runtime = commands.add_parser("runtime", help="fetch a manifested runtime artifact")
     runtime.add_argument("repository", help="OWNER/NAME[@REVISION]")
     runtime.add_argument("--manifest", default="evo-artifact.json")
+    runtime.add_argument("--registry", type=Path, default=default_registry())
     return parser.parse_args()
 
 
@@ -494,8 +522,8 @@ def main() -> int:
         args.cache_dir = args.cache_dir.expanduser().resolve()
         if args.receipt_dir is not None:
             args.receipt_dir = args.receipt_dir.expanduser().resolve()
+        args.registry = args.registry.expanduser().resolve()
         if args.command == "source":
-            args.registry = args.registry.expanduser().resolve()
             receipt = source_command(args)
         else:
             receipt = runtime_command(args)
