@@ -562,6 +562,23 @@ void test_cli() {
   check(!status.ok() &&
             status.message().find("GPU options") != std::string::npos,
         "CPU backend rejects contradictory GPU placement");
+  status = parse({"evo", "score", "-m", "model.safetensors", "--input",
+                  "input.fa", "--backend", "mps"},
+                 &options);
+  check(status.ok() && options.backend == evo::ExecutionBackend::kMps &&
+            options.inference_profile == evo::InferenceProfile::kMpsF32 &&
+            options.gpu_ids.empty(),
+        "MPS backend selects its explicit non-exact profile without CUDA placement");
+  status = parse({"evo", "score", "-m", "model.safetensors", "--input",
+                  "input.fa", "--backend", "mps", "--gpu", "0"},
+                 &options);
+  check(!status.ok() && status.message().find("MPS") != std::string::npos,
+        "MPS backend rejects CUDA device placement");
+  status = parse({"evo", "score", "-m", "model.safetensors", "--input",
+                  "input.fa", "--backend", "mps", "--profile", "exact"},
+                 &options);
+  check(!status.ok() && status.message().find("mps-f32") != std::string::npos,
+        "MPS backend rejects contradictory execution profiles");
   status = parse({"evo", "-m", "model.safetensors", "--score", "input.fa",
                   "--gpu", "0", "--gpu-layers", "17"},
                  &options);

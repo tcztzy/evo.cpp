@@ -13,7 +13,7 @@ The baseline developer gate is a strict CPU-only C++17 build. It needs CMake
 
 ```sh
 cmake -S . -B build \
-  -DEVO_CUDA=OFF -DEVO_NPY=OFF \
+  -DEVO_CUDA=OFF -DEVO_MPS=OFF -DEVO_NPY=OFF \
   -DEVO_WARNINGS_AS_ERRORS=ON \
   -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
@@ -25,7 +25,7 @@ tensor bounds, the scheduler, or the public API:
 
 ```sh
 cmake -S . -B build-asan \
-  -DEVO_CUDA=OFF -DEVO_NPY=OFF \
+  -DEVO_CUDA=OFF -DEVO_MPS=OFF -DEVO_NPY=OFF \
   -DEVO_SANITIZE=ON -DEVO_WARNINGS_AS_ERRORS=ON \
   -DCMAKE_BUILD_TYPE=Debug
 cmake --build build-asan --parallel
@@ -35,6 +35,10 @@ ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=print_stacktrace=1 \
 
 CUDA changes must additionally pass the relevant gpu01/gpu02 build and CTest
 entrypoints documented in [the GPU environment record](docs/gpu02-environment.md).
+MPS changes must pass an Apple-silicon build configured with
+`-DEVO_CUDA=OFF -DEVO_NPY=OFF -DEVO_MPS=ON`, including `v42_mps_linear` and
+`v42_mps_backend` on a host with a Metal device. Standard hosted CI still gates
+the build and portable contracts but may report those hardware tests skipped.
 Never treat a skipped hardware or external-checkpoint test as evidence that
 the corresponding path passed.
 
@@ -45,7 +49,7 @@ the corresponding path passed.
 | CLI, JSONL, FASTA/FASTQ/VCF, or server surface | Existing compatibility contracts plus success, malformed-input, and late-failure tests |
 | C ABI | Old-client contract, symbol allowlist, ownership test, version-policy update, and install-consumer test |
 | Exact Evo 2 arithmetic or conversion | Full CPU suite, relevant CUDA suite, and the affected real-checkpoint raw-bit oracle |
-| CPU, hybrid, quantized, or fast profile | Independent numerical and biological acceptance report; the profile name must remain visible |
+| CPU, MPS, hybrid, quantized, or fast profile | Independent numerical and biological acceptance report; the profile name must remain visible |
 | New architecture | Registry, artifact ABI, tokenizer, converter, runtime, CLI/C API/server coverage, independent oracle, real official checkpoint, and support-boundary docs |
 | Release or dependency graph | Release metadata test, installed-tree test, runtime dependency audit, checksums, and platform metadata |
 

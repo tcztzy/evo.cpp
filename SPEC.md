@@ -15,12 +15,13 @@ evo.cpp !成为本地、可嵌入、可移植的生物序列基础模型推理�
 - C7: 平台覆盖 DNA 与蛋白质序列；多模型架构必须抽象扩展点，⊥在任一 architecture 私有类上继续堆叠公共接口。
 - C8: 大 checkpoint、转换结果、数据集 ⊥提交 Git；下载缓存与 revision/hash !可审计。
 - C9: ESMC canonical source !为 `biohub/ESMC-300M`、`biohub/ESMC-600M`、`biohub/ESMC-6B`；2024-12 HF repos 仅作 deprecated alias/source 说明，⊥隐式混载旧权重布局。
-- C10: ESMC production runtime !为 C++17 CPU/CUDA；Python/PyTorch/官方 Transformers fork 仅限隔离的 converter/oracle，不进入产品依赖图。
+- C10: ESMC production runtime !为 C++17 CPU/CUDA/MPS；Python/PyTorch/官方 Transformers fork 仅限隔离的 converter/oracle，不进入产品依赖图。
 - C11: ESMC v1 artifact !使用独立 `esmc-runtime-v1` strict Safetensors profile、F32 tensors、pinned source receipt；⊥伪装 `evo2-runtime-v1` 或 silent dtype/layout conversion。
 - C12: ESMC 是最大 2048 tokens（含 `<cls>`/`<eos>`）的双向 masked encoder；v1 只承诺 logits/hidden-state embedding，⊥autoregressive generation、causal score、variant likelihood 或 recurrent chunking。
 - C13: ESMC v1 CUDA !先支持单 device exact path；multi-GPU/CPU+GPU offload 必须 typed unsupported，⊥静默退化。
 - C14: ESMC 接入 !保持 Evo 2/HyenaDNA artifact、tokenization、CLI、C ABI 与数值 gate 行为不变。
 - C15: gpu02 Hugging Face 工作 !统一 `HF_HOME=/build/grp_icg/users/tang/.cache/huggingface`；repo cache !位于 `$HF_HOME/hub`，⊥在低配额 `$HOME` 重建 checkpoint cache。
+- C16: MPS v1 !macOS arm64；C++17 core + 最小 Objective-C++ bridge；MPS/Metal 执行 GEMM，host 执行 state/nonlinear ops；⊥MLX/PyTorch runtime，⊥exact claim，⊥silent CPU fallback。
 
 ## §I INTERFACES
 
@@ -36,6 +37,7 @@ evo.cpp !成为本地、可嵌入、可移植的生物序列基础模型推理�
 - I10 esmc-cli: `evo logits -m MODEL --input INPUT --output DIR` 输出逐 token 64-way F32 NPY；既有 `evo embed ...` 输出选定 hidden layer，蛋白质输入默认添加 `<cls>`/`<eos>`。
 - I11 esmc-artifact: metadata 至少含 architecture/profile/model-id/revision、layers/width/heads/vocab/context、tokenizer identity、tensor manifest 与 source receipt hash。
 - I12 esmc-c-api: `evo_context_prefill` callback 返回全部 encoded positions logits；`evo_context_embed` layer `0` 为 token embedding、`1..n-1` 为前一 block 输出、`n` 为官方 post-final-LayerNorm embedding；`decode/generate/causal score` → typed unsupported。
+- I13 mps-cli-c-api: `--backend mps [--profile mps-f32]`；`--gpu|--gpu-layers` → invalid_argument；C ABI append `EVO_BACKEND_MPS=3`,`EVO_STATUS_MPS=7`；ABI minor `1.4`。
 
 ## §R RESEARCH
 
@@ -52,6 +54,10 @@ R9|ESMC tokenizer|固定 64-slot vocab；33 个已分配 token，`<cls>=0,<pad>=
 R10|ESMC outputs|官方 masked-LM 返回 per-token logits、last hidden state 与可选全部 hidden states；⊥causal generation contract|https://huggingface.co/biohub/ESMC-6B
 R11|ESMC license|Biohub ESM code/models 使用 MIT license，并要求遵循 Biohub Acceptable Use Policy|https://github.com/Biohub/esm/blob/26b0bc2b771e3e419ea74f445a5f35cc094a1509b6a5cbf/README.md#license
 R12|ESMC weights|当前 300M/600M revision 分别为 `a59b831…`/`a7e8201…` 单 F32 Safetensors；6B `45b0fa5…` 为 6-shard F32 Safetensors + index|https://huggingface.co/biohub/ESMC-6B/tree/45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a
+R13|MPS GEMM|`MPSMatrixMultiplication` 执行 `C=alpha*op(A)*op(B)+beta*C`；matrix transpose + command-buffer encode 为公开 contract|https://developer.apple.com/documentation/metalperformanceshaders/mpsmatrixmultiplication
+R14|MPS matrix storage|`MPSMatrix` row-major，底层使用 `MTLBuffer`；CPU/GPU coherency 遵守 Metal buffer 规则|https://developer.apple.com/documentation/metalperformanceshaders/mpsmatrix
+R15|Metal CLI device|`MTLCreateSystemDefaultDevice()` 返回系统默认 GPU；macOS 非图形 CLI !显式链接 CoreGraphics|https://developer.apple.com/documentation/metal/mtlcreatesystemdefaultdevice%28%29?language=objc
+R16|GitHub macOS GPU|标准 arm64 macOS runner ⊥GPU acceleration contract；8-core GPU hardware acceleration 仅由 macOS xlarge runner 明示|https://docs.github.com/en/actions/reference/runners/larger-runners#available-macos-larger-runners-and-labels
 
 ## §V INVARIANTS
 
@@ -90,6 +96,13 @@ R12|ESMC weights|当前 300M/600M revision 分别为 `a59b831…`/`a7e8201…` �
 - V33: ESMC hidden index !bit-exact 对齐 pinned Transformers `layers_to_collect`：`0=token_embedding`、`i∈[1,n-1]=block(i-1)_output`、`n=final_layer_norm`；⊥沿用旧 ESM SDK 的逐 block-output convention。
 - V34: gpu02 ESMC fetch/conversion/oracle gate → !export C15 `HF_HOME` 且默认 `cache_dir=$HF_HOME/hub`；显式 override !可审计。
 - V35: ∀ platform-level docs/help/release metadata → !表述 biological-sequence platform 且与 registry production architectures/artifact profiles 对齐；architecture-specific 页面 !显式限定 scope；⊥把 evo.cpp 全局等同 Evo 2 runtime。
+- V36: MPS !显式选择、显式输出 backend/profile/kernel；device/framework/command-buffer/OOM failure → typed nonzero，⊥partial output/fallback。
+- V37: MPS `mps-f32` ∀ registered architecture → operation order/token/cache semantics 保持；StripedHyena2 tiny `max_abs<0.08`；HyenaDNA `max_abs≤1e-5`；ESMC !满足 V26；否则 fail gate。
+- V38: MPS model weights !跨 context 共享；mutable state !隔离；同 build+artifact+profile+input → deterministic。
+- V39: `EVO_MPS=ON` 仅 Apple arm64；其他 platform → actionable configure error；`EVO_MPS=OFF` !保持 Linux/CPU/CUDA build graph。
+- V40: backend dispatch !exhaustive；新 enum ⊥被既有 non-CUDA branch 当 CPU；MPS 与 `--gpu|--gpu-layers|device_count>0` 互斥。
+- V41: `libevo` 链入的 ∀ CXX/CUDA/OBJCXX backend object !编译期 hidden visibility；`v41_c_api_symbols` !严格匹配 C ABI allowlist，⊥导出内部 C++/backend symbol。
+- V42: MPS CI !始终编译 backend + 跑 portable contracts；`MTLCreateSystemDefaultDevice()==nil` 时仅 `v42_mps_*` hardware gates → CTest skip 77；skip ⊥作为 runtime 数值通过证据，真实 Metal host !全绿。
 
 ## §T TASKS
 
@@ -117,6 +130,7 @@ T20|x|实现单卡 CUDA F32 ESMC forward/logits/embedding 与 typed unsupported 
 T21|x|接入 C API/CLI/HF offline artifact validation；补 logits/embedding metadata、能力 gate 与用户文档|C9,C12,C14,V24,V25,V27,V29,I2,I6,I10,I11,I12
 T22|x|生成 pinned 官方 oracle；gpu02 验证三尺寸；跑 full regression、记录证据并清理非制品文件|C8,C10,C14,C15,V16,V26,V28,V30,V31,V34
 T23|x|审计全仓 scope；修复 platform-level Evo 2-only 表述与 release metadata；增加 registry-driven contract|C7,V10,V16,V35,I8
+T24|x|实现 macOS arm64 MPS backend、CLI/C ABI/server、数值与构建契约|C2,C6,C10,C14,C16,R13,R14,R15,R16,V1,V2,V7,V8,V9,V10,V14,V15,V16,V21,V26,V31,V35,V36,V37,V38,V39,V40,V41,V42,I2,I3,I6,I7,I8,I10,I12,I13
 
 ## §B BUGS
 
@@ -165,3 +179,5 @@ B40|2026-08-12|共享 snapshot 按 B39 只读挂载后，`evo-fetch` 默认尝�
 B41|2026-08-13|ESMC benchmark contract 用 `==` 比较由二进制浮点样本计算的 median，正确聚合因表示误差失败→数值断言改用严格容差比较|V21
 B42|2026-08-13|ESMC CLI 的 `evo_metrics` 按整个多记录输入聚合，benchmark 错把它当逐记录样本→CUDA logits 另发逐记录计时，summarizer 同时校验逐记录样本与单条 aggregate|V21
 B43|2026-08-13|ESMC official benchmark 只同步 device logits，而原生 `prefill` 计时包含 logits 回传主机→两侧统一 `forward_with_host_logits` timing scope 并由 summarizer 拒绝混用|V21
+B44|2026-08-16|`CXX_VISIBILITY_PRESET` 不作用于 OBJCXX 编译→MPS bridge 内部 C++ symbol 泄漏进 C ABI DSO|V41
+B45|2026-08-16|CI 把 Apple-silicon architecture 误当 Metal GPU 可用性保证→标准 macOS runner 可能让合法 MPS hardware gate 误失败|V42

@@ -4,6 +4,7 @@
 #include "esmc_internal.hpp"
 #include "hyenadna_internal.hpp"
 #include "evo/model_registry.hpp"
+#include "../linear_executor.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -270,10 +271,23 @@ float dot(const float *const input, const TensorView &weight,
 Status linear(const std::vector<float> &input, const std::size_t rows,
               const std::size_t input_width, const TensorView &weight,
               const std::size_t output_width, const TensorView *const bias,
+              evo::detail::LinearExecutor *const executor,
               std::vector<float> *const output) {
   if (input.size() != rows * input_width ||
       weight.elements != output_width * input_width || output == nullptr)
-    return {ErrorCode::kInternal, "CPU linear dimensions are inconsistent"};
+    return {ErrorCode::kInternal, "host linear dimensions are inconsistent"};
+  if (executor != nullptr) {
+    const evo::detail::LinearTensorView weight_view{weight.data, weight.dtype,
+                                                    weight.elements};
+    const evo::detail::LinearTensorView bias_view =
+        bias == nullptr
+            ? evo::detail::LinearTensorView{}
+            : evo::detail::LinearTensorView{bias->data, bias->dtype,
+                                            bias->elements};
+    return executor->linear(input.data(), rows, input_width, weight_view,
+                            output_width,
+                            bias == nullptr ? nullptr : &bias_view, output);
+  }
   output->resize(rows * output_width);
   for (std::size_t row = 0; row < rows; ++row) {
     const float *const source = input.data() + row * input_width;
@@ -361,6 +375,7 @@ struct Model::Impl final {
   TensorView embedding;
   TensorView final_norm;
   std::vector<Layer> layer;
+  std::shared_ptr<evo::detail::LinearExecutor> executor;
 
   [[nodiscard]] std::size_t head_dim() const noexcept {
     return heads == 0 ? 0 : public_config.width / heads;
@@ -432,7 +447,7 @@ struct Context::Impl final {
     const auto head_dim = weights->head_dim();
     std::vector<float> projected;
     auto status = linear(input, rows, width, layer.projection, width * 3,
-                         nullptr, &projected);
+                         nullptr, weights->executor.get(), &projected);
     if (!status.ok())
       return status;
     std::vector<float> query(rows * width);
@@ -524,7 +539,7 @@ struct Context::Impl final {
       return attention(input, rows, layer, cache, output);
     std::vector<float> projection;
     auto status = linear(input, rows, width, layer.projection, width * 3,
-                         nullptr, &projection);
+                         nullptr, weights->executor.get(), &projection);
     if (!status.ok())
       return status;
     std::vector<float> filtered;
@@ -585,13 +600,13 @@ struct Context::Impl final {
         hidden.size() != rows * weights->public_config.width ||
         (logits == nullptr && capture == nullptr)) {
       return {ErrorCode::kInvalidArgument,
-              "CPU hidden forward arguments are invalid"};
+              "host hidden forward arguments are invalid"};
     }
     if (initial) {
       reset();
     } else if (!valid || rows > capacity - position) {
       return {ErrorCode::kInvalidArgument,
-              "CPU continuation requires a valid prefill and free capacity"};
+              "host continuation requires a valid prefill and free capacity"};
     }
     const auto width = weights->public_config.width;
     std::vector<float> normalized;
@@ -609,10 +624,10 @@ struct Context::Impl final {
         return status;
       status = mixer(normalized, rows, layer, &state[index], &mixed);
       if (!status.ok())
-        return {status.code(), "CPU mixer block " + std::to_string(index) +
+        return {status.code(), "host mixer block " + std::to_string(index) +
                                    ": " + status.message()};
       status = linear(mixed, rows, width, layer.output_weight, width,
-                      &layer.output_bias, &residual);
+                      &layer.output_bias, weights->executor.get(), &residual);
       if (!status.ok())
         return status;
       add_inplace(&residual, hidden);
@@ -621,11 +636,11 @@ struct Context::Impl final {
       if (!status.ok())
         return status;
       status = linear(normalized, rows, width, layer.l1, weights->inner_width,
-                      nullptr, &first);
+                      nullptr, weights->executor.get(), &first);
       if (!status.ok())
         return status;
       status = linear(normalized, rows, width, layer.l2, weights->inner_width,
-                      nullptr, &second);
+                      nullptr, weights->executor.get(), &second);
       if (!status.ok())
         return status;
       gated.resize(first.size());
@@ -638,7 +653,7 @@ struct Context::Impl final {
         gated[item] = activated * second[item];
       }
       status = linear(gated, rows, weights->inner_width, layer.l3, width,
-                      nullptr, &hidden);
+                      nullptr, weights->executor.get(), &hidden);
       if (!status.ok())
         return status;
       add_inplace(&hidden, residual);
@@ -646,14 +661,15 @@ struct Context::Impl final {
         *capture = hidden;
     }
     if (capture != nullptr && capture_layer >= weights->layer.size())
-      return {ErrorCode::kInvalidArgument, "CPU embedding layer is invalid"};
+      return {ErrorCode::kInvalidArgument, "host embedding layer is invalid"};
     if (logits != nullptr) {
       auto status = rms_norm(hidden, rows, width, weights->final_norm,
                              weights->epsilon, &normalized);
       if (!status.ok())
         return status;
       status = linear(normalized, rows, width, weights->embedding,
-                      weights->public_config.vocab_size, nullptr, logits);
+                      weights->public_config.vocab_size, nullptr,
+                      weights->executor.get(), logits);
       if (!status.ok())
         return status;
     }
@@ -667,14 +683,15 @@ struct Context::Impl final {
                  const std::size_t capture_layer,
                  std::vector<float> *const capture) {
     if (!weights || tokens.empty() || tokens.size() > arena_capacity)
-      return {ErrorCode::kInvalidArgument, "CPU forward arguments are invalid"};
+      return {ErrorCode::kInvalidArgument,
+              "host forward arguments are invalid"};
     const auto rows = tokens.size();
     const auto width = weights->public_config.width;
     std::vector<float> hidden(rows * width);
     for (std::size_t row = 0; row < rows; ++row) {
       if (tokens[row] >= weights->public_config.vocab_size)
         return {ErrorCode::kInvalidArgument,
-                "token exceeds CPU model vocabulary"};
+                "token exceeds model vocabulary"};
       for (std::size_t column = 0; column < width; ++column) {
         hidden[row * width + column] = weights->embedding.at(
             static_cast<std::size_t>(tokens[row]) * width + column);
@@ -691,9 +708,16 @@ Model::Model(Model &&) noexcept = default;
 Model &Model::operator=(Model &&) noexcept = default;
 
 Status Model::load(const ModelFile &model, const bool allow_test_fixture) {
+  return load_with_executor(model, {}, allow_test_fixture);
+}
+
+Status Model::load_with_executor(
+    const ModelFile &model,
+    std::shared_ptr<evo::detail::LinearExecutor> executor,
+    const bool allow_test_fixture) {
   if ((!impl_ && !hyena_ && !esmc_) ||
       (impl_ && impl_->file != nullptr) || hyena_ || esmc_)
-    return {ErrorCode::kInvalidArgument, "CPU model is already loaded"};
+    return {ErrorCode::kInvalidArgument, "host model is already loaded"};
   std::string runtime_abi;
   std::string architecture;
   auto status = metadata_string(model, "runtime.abi", &runtime_abi);
@@ -703,15 +727,17 @@ Status Model::load(const ModelFile &model, const bool allow_test_fixture) {
   if (!status.ok())
     return status;
   const auto *const registered = find_architecture(architecture);
+  const unsigned required_backend = executor ? kArchitectureBackendMps
+                                             : kArchitectureBackendCpu;
   if (registered == nullptr || registered->artifact_profile != model.profile() ||
       registered->runtime_abi != runtime_abi ||
-      (registered->backends & kArchitectureBackendCpu) == 0) {
+      (registered->backends & required_backend) == 0) {
     return {ErrorCode::kUnsupported,
-            "CPU backend does not support this runtime architecture"};
+            "selected backend does not support this runtime architecture"};
   }
   if (registered->tokenizer == ArchitectureTokenizer::kHyenaDnaCharacter) {
     auto candidate = std::make_shared<detail::HyenaDnaModel>();
-    status = candidate->load(model, allow_test_fixture);
+    status = candidate->load(model, allow_test_fixture, std::move(executor));
     if (!status.ok())
       return status;
     impl_.reset();
@@ -720,7 +746,7 @@ Status Model::load(const ModelFile &model, const bool allow_test_fixture) {
   }
   if (registered->tokenizer == ArchitectureTokenizer::kEsmcProtein) {
     auto candidate = std::make_shared<detail::EsmcModel>();
-    status = candidate->load(model, allow_test_fixture);
+    status = candidate->load(model, allow_test_fixture, std::move(executor));
     if (!status.ok())
       return status;
     impl_.reset();
@@ -728,6 +754,7 @@ Status Model::load(const ModelFile &model, const bool allow_test_fixture) {
     return Status::Ok();
   }
   auto candidate = std::make_shared<Impl>();
+  candidate->executor = std::move(executor);
   candidate->public_config.architecture = architecture;
   candidate->public_config.artifact_profile = std::string{model.profile()};
   candidate->public_config.tokenizer = registered->tokenizer;
@@ -800,7 +827,7 @@ Status Model::load(const ModelFile &model, const bool allow_test_fixture) {
       candidate->public_config.width % candidate->hcm_filter_groups != 0 ||
       !std::isfinite(candidate->epsilon) || candidate->epsilon <= 0.0F ||
       !std::isfinite(candidate->rope_scale) || candidate->rope_scale <= 0.0F) {
-    return {ErrorCode::kUnsupported, "CPU model dimensions are unsupported"};
+    return {ErrorCode::kUnsupported, "host model dimensions are unsupported"};
   }
   std::vector<std::size_t> hcs;
   std::vector<std::size_t> hcm;
@@ -837,7 +864,8 @@ Status Model::load(const ModelFile &model, const bool allow_test_fixture) {
     types[index] = MixerType::kAttention;
   }
   if (classified.size() != types.size())
-    return {ErrorCode::kModelFormat, "mixer lists do not cover all CPU blocks"};
+    return {ErrorCode::kModelFormat,
+            "mixer lists do not cover all host blocks"};
 
   const auto width = candidate->public_config.width;
   status = tensor_view(model, "embedding_layer.weight",
@@ -950,7 +978,9 @@ const ModelConfig &Model::config() const noexcept {
 const char *Model::kernel_name() const noexcept {
   if (hyena_)
     return hyena_->kernel_name();
-  return esmc_ ? esmc_->kernel_name() : selected_kernel_name();
+  if (esmc_)
+    return esmc_->kernel_name();
+  return impl_->executor ? impl_->executor->name() : selected_kernel_name();
 }
 
 Status Model::encode(const std::string_view sequence,
@@ -1002,7 +1032,7 @@ Status Context::initialize_shared(const Model &model,
       context_capacity > model.impl_->public_config.max_seqlen ||
       layer_begin > model.impl_->public_config.layers) {
     return {ErrorCode::kInvalidArgument,
-            "CPU context requires a loaded model and valid capacity"};
+            "host context requires a loaded model and valid capacity"};
   }
   impl_->weights = model.impl_;
   impl_->capacity = context_capacity;
@@ -1121,8 +1151,11 @@ const ModelConfig &Context::config() const noexcept {
 }
 const char *Context::kernel_name() const noexcept {
   if (hyena_)
-    return "direct-convolution-f32";
-  return esmc_ ? "scalar-f32-bidirectional" : selected_kernel_name();
+    return hyena_->kernel_name();
+  if (esmc_)
+    return esmc_->kernel_name();
+  return impl_->weights->executor ? impl_->weights->executor->name()
+                                  : selected_kernel_name();
 }
 
 } // namespace evo::cpu

@@ -11,6 +11,8 @@ const char *inference_profile_name(const InferenceProfile profile) noexcept {
     return "fast-q8-kv";
   case InferenceProfile::kCpuF32:
     return "cpu-f32";
+  case InferenceProfile::kMpsF32:
+    return "mps-f32";
   }
   return "unknown";
 }
@@ -31,8 +33,12 @@ Status parse_inference_profile(const std::string_view text,
     *profile = InferenceProfile::kCpuF32;
     return Status::Ok();
   }
+  if (text == "mps-f32") {
+    *profile = InferenceProfile::kMpsF32;
+    return Status::Ok();
+  }
   return {ErrorCode::kInvalidArgument,
-          "profile must be one of exact, fast-q8-kv, or cpu-f32"};
+          "profile must be one of exact, fast-q8-kv, cpu-f32, or mps-f32"};
 }
 
 bool inference_profile_is_exact(const InferenceProfile profile) noexcept {

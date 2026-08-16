@@ -162,25 +162,33 @@ const std::vector<ArchitectureSpec> &architecture_specs() {
   static const std::vector<ArchitectureSpec> specs{
       {"StripedHyena2", "evo2-runtime-v1", "evo2-safetensors-v1",
        ArchitectureTokenizer::kByteIdentity,
-       kArchitectureBackendCpu | kArchitectureBackendCuda, all_capabilities,
+       kArchitectureBackendCpu | kArchitectureBackendCuda |
+           kArchitectureBackendMps,
+       all_capabilities,
        false},
       {"StripedHyena2Test", "evo2-runtime-v1", "evo2-safetensors-v1",
        ArchitectureTokenizer::kByteIdentity,
-       kArchitectureBackendCpu | kArchitectureBackendCuda, all_capabilities,
+       kArchitectureBackendCpu | kArchitectureBackendCuda |
+           kArchitectureBackendMps,
+       all_capabilities,
        true},
       {"HyenaDNA", "hyenadna-runtime-v1", "hyenadna-safetensors-v1",
-       ArchitectureTokenizer::kHyenaDnaCharacter, kArchitectureBackendCpu,
+       ArchitectureTokenizer::kHyenaDnaCharacter,
+       kArchitectureBackendCpu | kArchitectureBackendMps,
        all_capabilities, false},
       {"HyenaDNATest", "hyenadna-runtime-v1", "hyenadna-safetensors-v1",
-       ArchitectureTokenizer::kHyenaDnaCharacter, kArchitectureBackendCpu,
+       ArchitectureTokenizer::kHyenaDnaCharacter,
+       kArchitectureBackendCpu | kArchitectureBackendMps,
        all_capabilities, true},
       {"ESMC", "esmc-runtime-v1", "esmc-safetensors-v1",
        ArchitectureTokenizer::kEsmcProtein,
-       kArchitectureBackendCpu | kArchitectureBackendCuda,
+       kArchitectureBackendCpu | kArchitectureBackendCuda |
+           kArchitectureBackendMps,
        kArchitectureEmbed | kArchitectureLogits, false},
       {"ESMCTest", "esmc-runtime-v1", "esmc-safetensors-v1",
        ArchitectureTokenizer::kEsmcProtein,
-       kArchitectureBackendCpu | kArchitectureBackendCuda,
+       kArchitectureBackendCpu | kArchitectureBackendCuda |
+           kArchitectureBackendMps,
        kArchitectureEmbed | kArchitectureLogits, true},
   };
   return specs;

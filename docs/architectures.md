@@ -7,9 +7,9 @@ unknown or contradictory tuple fails before a context is created.
 
 | Architecture | Artifact profile / ABI | Tokenizer | Backends | Surfaces |
 |---|---|---|---|---|
-| `StripedHyena2` | `evo2-runtime-v1` / `evo2-safetensors-v1` | byte identity, 512 logits | CPU, CUDA | generate, score, embed, variant, serve |
-| `HyenaDNA` | `hyenadna-runtime-v1` / `hyenadna-safetensors-v1` | single-nucleotide IDs, 16 padded logits | CPU | generate, score, embed, variant, serve |
-| `ESMC` | `esmc-runtime-v1` / `esmc-safetensors-v1` | Biohub protein vocabulary, 64 logits | CPU, one CUDA GPU | logits, embed |
+| `StripedHyena2` | `evo2-runtime-v1` / `evo2-safetensors-v1` | byte identity, 512 logits | CPU, MPS, CUDA | generate, score, embed, variant, serve |
+| `HyenaDNA` | `hyenadna-runtime-v1` / `hyenadna-safetensors-v1` | single-nucleotide IDs, 16 padded logits | CPU, MPS | generate, score, embed, variant, serve |
+| `ESMC` | `esmc-runtime-v1` / `esmc-safetensors-v1` | Biohub protein vocabulary, 64 logits | CPU, MPS, one CUDA GPU | logits, embed |
 
 `StripedHyena2Test`, `HyenaDNATest`, and `ESMCTest` mirror these entries for generated
 fixtures and require the explicit test-only model flag. They are never
@@ -30,12 +30,14 @@ LayerNorm, and an untied LM head. It is based on the official HyenaDNA code and
 single-nucleotide causal-model contract. The project does not vendor or load
 remote Python model code at inference time.
 
-The current CPU kernel uses a deterministic direct causal convolution and
-precomputes the implicit filters. It accepts contexts up to 4096 tokens and
-reports `cpu-f32`; larger official configurations fail as unsupported rather
-than entering an unbounded quadratic path. CUDA and hybrid placement are not
-registered for HyenaDNA yet. This is a functional portability profile, not an
-exactness claim against PyTorch FFT arithmetic.
+The CPU and MPS paths use a deterministic direct causal convolution and
+precompute the implicit filters. MPS accelerates runtime linear layers while
+the convolution and nonlinear/state updates stay on the host. Both accept
+contexts up to 4096 tokens and report their distinct `cpu-f32` or `mps-f32`
+profile; larger official configurations fail as unsupported rather than
+entering an unbounded quadratic path. CUDA and hybrid placement are not
+registered for HyenaDNA yet. These are functional portability profiles, not
+exactness claims against PyTorch FFT arithmetic.
 
 Raw sequence mapping is:
 
@@ -54,8 +56,10 @@ array remains authoritative in the server response.
 The checked-in independent full-sequence fixture covers converter manifest
 validation, artifact profile dispatch, tokenization, direct convolution,
 logits, cached decode, embeddings, variant scoring, the C ABI, and native
-serving. Its maximum F32 logit error against the NumPy oracle is
-`2.3841858e-7`.
+serving. Its CPU maximum F32 logit error against the NumPy oracle is
+`2.3841858e-7`; the macOS arm64 MPS gate additionally compares all three model
+families with CPU; the maximum absolute error gate is `1e-5` for HyenaDNA and
+`1e-4` for StripedHyena2 and ESMC.
 
 The converter was also exercised against
 `LongSafari/hyenadna-tiny-1k-seqlen-hf` revision

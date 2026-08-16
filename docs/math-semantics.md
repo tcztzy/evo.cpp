@@ -84,3 +84,9 @@ It consumes the validated mapped tensor views directly, vectorizes BF16 dot
 products where the host ISA permits, and retains F32 block arithmetic. An
 explicit hybrid boundary transfers BF16-rounded CUDA prefix activations to the
 same CPU suffix. Neither CPU path is bit-equivalent to the CUDA exact profile.
+
+The Apple-silicon `mps-f32` profile is also approximate. Dense F32 projections
+use MPS matrix multiplication, while BF16 and E4M3 projections use Metal
+compute kernels with F32 accumulation. Normalization, activation, attention,
+and Hyena state updates retain the host F32 implementation. This split is a
+documented backend boundary, not an exactness claim or a CPU linear fallback.

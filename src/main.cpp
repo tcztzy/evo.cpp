@@ -20,6 +20,10 @@
 #include "evo/cuda/inference_cli.hpp"
 #endif
 
+#if defined(EVO_HAS_MPS)
+#include "mps/inference_cli.hpp"
+#endif
+
 namespace {
 
 void print_help() { std::cout << evo::cli_usage(); }
@@ -85,12 +89,13 @@ evo::Status validate_model_operation(const evo::CliOptions &options) {
             "operation is not supported by architecture " + architecture};
   }
   if (spec->tokenizer == evo::ArchitectureTokenizer::kEsmcProtein &&
-      options.backend != evo::ExecutionBackend::kCpu &&
+      options.backend == evo::ExecutionBackend::kCuda &&
       options.inference_profile != evo::InferenceProfile::kExact) {
     return {evo::ErrorCode::kUnsupported,
             "ESMC CUDA inference supports only --profile exact"};
   }
   if (spec->tokenizer == evo::ArchitectureTokenizer::kEsmcProtein &&
+      options.backend == evo::ExecutionBackend::kCuda &&
       options.gpu_ids.size() > 1) {
     return {evo::ErrorCode::kUnsupported,
             "ESMC CUDA inference currently supports exactly one GPU"};
@@ -166,6 +171,16 @@ int main(const int argc, char **argv) {
     if (options.backend == evo::ExecutionBackend::kCpu) {
       status = evo::cpu::run_inference_cli(options, allow_test_fixture);
       return status.ok() ? 0 : fail(status);
+    }
+    if (options.backend == evo::ExecutionBackend::kMps) {
+#if defined(EVO_HAS_MPS)
+      status = evo::mps::run_inference_cli(options, allow_test_fixture);
+      return status.ok() ? 0 : fail(status);
+#else
+      return fail({evo::ErrorCode::kUnsupported,
+                   "this evo binary was built without MPS support; rebuild "
+                   "on macOS arm64 with -DEVO_MPS=ON"});
+#endif
     }
 #if defined(EVO_HAS_CUDA)
     if (options.gpu_layers.has_value()) {

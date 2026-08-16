@@ -29,6 +29,10 @@
 #include "evo/cuda/model.hpp"
 #endif
 
+#if defined(EVO_HAS_MPS)
+#include "mps/model.hpp"
+#endif
+
 namespace {
 
 thread_local std::string last_error;
@@ -42,6 +46,7 @@ static_assert(static_cast<int>(evo::ErrorCode::kModelFormat) ==
 static_assert(static_cast<int>(evo::ErrorCode::kUnsupported) ==
               EVO_STATUS_UNSUPPORTED);
 static_assert(static_cast<int>(evo::ErrorCode::kCuda) == EVO_STATUS_CUDA);
+static_assert(static_cast<int>(evo::ErrorCode::kMps) == EVO_STATUS_MPS);
 static_assert(static_cast<int>(evo::ErrorCode::kInternal) ==
               EVO_STATUS_INTERNAL);
 
@@ -113,7 +118,7 @@ bool valid_status(const evo_status status) noexcept {
   return status == EVO_STATUS_OK || status == EVO_STATUS_INVALID_ARGUMENT ||
          status == EVO_STATUS_IO || status == EVO_STATUS_MODEL_FORMAT ||
          status == EVO_STATUS_UNSUPPORTED || status == EVO_STATUS_CUDA ||
-         status == EVO_STATUS_INTERNAL;
+         status == EVO_STATUS_MPS || status == EVO_STATUS_INTERNAL;
 }
 
 struct ModelState final {
@@ -188,6 +193,8 @@ const char *evo_backend_name(const evo_backend backend) {
     return "cuda";
   case EVO_BACKEND_CPU:
     return "cpu";
+  case EVO_BACKEND_MPS:
+    return "mps";
   }
   return "unknown";
 }
@@ -224,9 +231,15 @@ evo_status evo_model_load(const char *const path,
         params == nullptr ? evo_model_default_params() : *params;
     if (options.backend != EVO_BACKEND_AUTO &&
         options.backend != EVO_BACKEND_CUDA &&
-        options.backend != EVO_BACKEND_CPU) {
+        options.backend != EVO_BACKEND_CPU &&
+        options.backend != EVO_BACKEND_MPS) {
       return publish(EVO_STATUS_INVALID_ARGUMENT,
                      "invalid_argument: unknown model backend");
+    }
+    if (options.backend == EVO_BACKEND_MPS && options.device_count != 0) {
+      return publish(EVO_STATUS_INVALID_ARGUMENT,
+                     "invalid_argument: MPS uses the system default Metal "
+                     "device and does not accept a device list");
     }
     constexpr std::uint32_t known_flags =
         EVO_MODEL_FLAG_TEST_ONLY_ALLOW_SYNTHETIC;
@@ -286,9 +299,21 @@ evo_status evo_model_load(const char *const path,
       state->backend = EVO_BACKEND_CPU;
 #endif
     }
-    const unsigned backend_flag = state->backend == EVO_BACKEND_CUDA
-                                      ? evo::kArchitectureBackendCuda
-                                      : evo::kArchitectureBackendCpu;
+    unsigned backend_flag = 0;
+    switch (state->backend) {
+    case EVO_BACKEND_CPU:
+      backend_flag = evo::kArchitectureBackendCpu;
+      break;
+    case EVO_BACKEND_CUDA:
+      backend_flag = evo::kArchitectureBackendCuda;
+      break;
+    case EVO_BACKEND_MPS:
+      backend_flag = evo::kArchitectureBackendMps;
+      break;
+    case EVO_BACKEND_AUTO:
+      return publish(EVO_STATUS_INTERNAL,
+                     "internal: automatic backend selection was unresolved");
+    }
     if ((architecture->backends & backend_flag) == 0) {
       return publish(EVO_STATUS_UNSUPPORTED,
                      "unsupported: selected backend is not registered for "
@@ -298,6 +323,12 @@ evo_status evo_model_load(const char *const path,
     if (state->backend == EVO_BACKEND_CUDA) {
       return publish(EVO_STATUS_UNSUPPORTED,
                      "unsupported: this evo library was built without CUDA");
+    }
+#endif
+#if !defined(EVO_HAS_MPS)
+    if (state->backend == EVO_BACKEND_MPS) {
+      return publish(EVO_STATUS_UNSUPPORTED,
+                     "unsupported: this evo library was built without MPS");
     }
 #endif
     state->vocab_size = metadata_size(state->file, "config.vocab_size");
@@ -323,6 +354,15 @@ evo_status evo_model_load(const char *const path,
         status = state->cuda_weights->load(state->file, state->devices, 1,
                                            state->allow_synthetic);
       }
+      if (!status.ok())
+        return publish(status);
+    }
+#endif
+#if defined(EVO_HAS_MPS)
+    if (state->backend == EVO_BACKEND_MPS) {
+      state->cpu_weights = std::make_unique<evo::cpu::Model>();
+      status = evo::mps::ModelLoader::load(
+          state->file, state->allow_synthetic, state->cpu_weights.get());
       if (!status.ok())
         return publish(status);
     }
@@ -447,7 +487,8 @@ evo_status evo_context_create(const evo_model *const model,
         (options.flags & EVO_CONTEXT_FLAG_FAST_Q8_KV) != 0
             ? evo::InferenceProfile::kFastQ8Kv
             : evo::InferenceProfile::kExact;
-    if (model->state->esmc && options.flags != 0) {
+    if (model->state->backend == EVO_BACKEND_CUDA && model->state->esmc &&
+        options.flags != 0) {
       return publish(EVO_STATUS_INVALID_ARGUMENT,
                      "invalid_argument: ESMC supports only the exact CUDA "
                      "profile");
@@ -458,15 +499,22 @@ evo_status evo_context_create(const evo_model *const model,
                      "invalid_argument: requested context exceeds model "
                      "maximum");
     }
-    if (model->state->backend == EVO_BACKEND_CPU) {
+    if (model->state->backend == EVO_BACKEND_CPU ||
+        model->state->backend == EVO_BACKEND_MPS) {
       if (options.flags != 0) {
         return publish(EVO_STATUS_INVALID_ARGUMENT,
-                       "invalid_argument: CPU contexts do not accept CUDA KV "
-                       "profile flags");
+                       "invalid_argument: CPU and MPS contexts do not accept "
+                       "CUDA KV profile flags");
       }
-      profile = evo::InferenceProfile::kCpuF32;
+      profile = model->state->backend == EVO_BACKEND_MPS
+                    ? evo::InferenceProfile::kMpsF32
+                    : evo::InferenceProfile::kCpuF32;
       std::lock_guard<std::mutex> lock{model->state->cpu_mutex};
       if (!model->state->cpu_weights) {
+        if (model->state->backend == EVO_BACKEND_MPS) {
+          return publish(EVO_STATUS_INTERNAL,
+                         "internal: MPS model weights are unavailable");
+        }
         auto weights = std::make_unique<evo::cpu::Model>();
         const auto load_status =
             weights->load(model->state->file, model->state->allow_synthetic);
@@ -613,13 +661,13 @@ evo_status evo_context_prefill(evo_context *const context,
           return publish(status);
         if (logits.size() != rows * columns)
           return publish(EVO_STATUS_INTERNAL,
-                         "internal: CPU backend returned incomplete logits");
+                         "internal: host backend returned incomplete logits");
         const evo_status callback_status =
             callback(logits.data(), rows, columns, offset, user_data);
         if (callback_status != EVO_STATUS_OK) {
           return publish(valid_status(callback_status) ? callback_status
                                                        : EVO_STATUS_INTERNAL,
-                         "callback: logits consumer aborted CPU prefill");
+                         "callback: logits consumer aborted host prefill");
         }
         offset += rows;
         first = false;
@@ -724,13 +772,13 @@ evo_status evo_context_decode(evo_context *const context, const uint32_t token,
       if (logits.size() != columns)
         return publish(
             EVO_STATUS_INTERNAL,
-            "internal: CPU backend returned incomplete decode logits");
+            "internal: host backend returned incomplete decode logits");
       const evo_status callback_status =
           callback(logits.data(), 1, columns, offset, user_data);
       if (callback_status != EVO_STATUS_OK) {
         return publish(valid_status(callback_status) ? callback_status
                                                      : EVO_STATUS_INTERNAL,
-                       "callback: logits consumer aborted CPU decode");
+                       "callback: logits consumer aborted host decode");
       }
       context->failed = false;
       return publish(evo::Status::Ok());
@@ -828,13 +876,13 @@ evo_status evo_context_embed(evo_context *const context,
         if (embedding.size() != rows * columns)
           return publish(
               EVO_STATUS_INTERNAL,
-              "internal: CPU backend returned incomplete embeddings");
+              "internal: host backend returned incomplete embeddings");
         const evo_status callback_status =
             callback(embedding.data(), rows, columns, offset, user_data);
         if (callback_status != EVO_STATUS_OK) {
           return publish(valid_status(callback_status) ? callback_status
                                                        : EVO_STATUS_INTERNAL,
-                         "callback: embedding consumer aborted CPU inference");
+                         "callback: embedding consumer aborted host inference");
         }
         offset += rows;
         first = false;

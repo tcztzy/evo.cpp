@@ -14,10 +14,11 @@ the real official artifact and the environment recorded below.
 | `evo2_7b_base`, `evo2_7b_262k`, `evo2_40b_base`, `evo2_40b_bionemo_bf16` CUDA `exact` | No ID-specific raw-bit record | Typed unsupported before weight upload | None | Not a production exact path |
 | StripedHyena2 CUDA `fast-q8-kv` | Synthetic paired run against `exact` | cosine ≥ 0.9999, logit MAE ≤ 0.01, top-1/rank/variant-sign agreement = 1 | Report separately; never mix with exact | Experimental profile regression |
 | StripedHyena2 CPU `cpu-f32` | Synthetic paired run against CUDA `exact` | cosine ≥ 0.999, logit MAE ≤ 0.1, top-1 ≥ 0.95, rank/variant-sign agreement = 1 | CPU model/context microbench when performance changes | Portable approximate runtime |
+| StripedHyena2 MPS `mps-f32` | Synthetic paired run against CPU `cpu-f32` | maximum absolute logits error ≤ 1e-4; deterministic shared executor | No performance claim yet | macOS arm64, linear/GEMM acceleration with host nonlinear/state ops |
 | StripedHyena2 CUDA-prefix/CPU-suffix hybrid | Synthetic paired run with fixed `--gpu-layers` | Deterministic placement plus the applicable approximate-profile bounds | Report transfer and end-to-end time separately | Generation and scoring only |
-| HyenaDNA CPU `cpu-f32` | Independent synthetic oracle plus real official tiny checkpoint | Synthetic maximum F32 logit error ≤ 2.3841858e-7; real artifact conversion and execution | No upstream-equivalence or speed claim yet | Context ≤ 4096, direct convolution |
-| ESMC CPU `cpu-f32` / one-GPU CUDA `exact` | Deterministic tiny fixture plus all three pinned Biohub checkpoints and official Transformers oracle | Per-token logits and final hidden: max abs ≤ 5e-3, mean abs ≤ 5e-4, cosine ≥ 0.99999 | [A800 batch-one host-logits](esmc.md#a800-performance-boundary): native wins 128-token 300M/600M and all model loads; official wins long sequence and 6B forward | 300M/600M/6B, context ≤ 2048, logits/embed only |
-| FASTA/FASTQ/gzip/stdin/VCF/reference | Synthetic streaming and malformed fixtures | Record order, coordinates, `O(record/window)` memory contract, complete prior JSONL rows | Throughput/RSS only when changing IO | CPU and CUDA frontends |
+| HyenaDNA CPU `cpu-f32` / MPS `mps-f32` | Independent synthetic oracle, CPU/MPS pair, plus real official tiny checkpoint | CPU maximum F32 oracle error ≤ 2.3841858e-7; MPS versus CPU max abs ≤ 1e-5; real artifact conversion and execution | No upstream-equivalence or speed claim yet | Context ≤ 4096, direct convolution |
+| ESMC CPU `cpu-f32` / MPS `mps-f32` / one-GPU CUDA `exact` | Deterministic tiny fixture plus all three pinned Biohub checkpoints and official Transformers oracle | CPU/MPS max abs ≤ 1e-4 on the fixture; official per-token logits and final hidden: max abs ≤ 5e-3, mean abs ≤ 5e-4, cosine ≥ 0.99999 | [A800 batch-one host-logits](esmc.md#a800-performance-boundary): native wins 128-token 300M/600M and all model loads; official wins long sequence and 6B forward | 300M/600M/6B, context ≤ 2048, logits/embed only |
+| FASTA/FASTQ/gzip/stdin/VCF/reference | Synthetic streaming and malformed fixtures | Record order, coordinates, `O(record/window)` memory contract, complete prior JSONL rows | Throughput/RSS only when changing IO | CPU, MPS, and CUDA frontends |
 | C ABI, server, install and release | Contract fixtures | Ownership, isolation/cancellation, symbol allowlist, consumer link, dependency and metadata checks | Scheduler load test when batching changes | Every supported architecture |
 
 “Real checkpoint” means bytes from a pinned official revision whose size and
@@ -30,11 +31,16 @@ status.
 Run all portable functional and contract gates:
 
 ```sh
-cmake -S . -B build -DEVO_CUDA=OFF -DEVO_NPY=OFF \
+cmake -S . -B build -DEVO_CUDA=OFF -DEVO_MPS=OFF -DEVO_NPY=OFF \
   -DEVO_WARNINGS_AS_ERRORS=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
+
+On Apple silicon, run the maintained MPS gate with
+`-DEVO_CUDA=OFF -DEVO_NPY=OFF -DEVO_MPS=ON`; the same CTest invocation then
+includes `v42_mps_linear` and `v42_mps_backend`. A host without a Metal device
+reports only those hardware gates skipped; that skip is not acceptance evidence.
 
 For a self-contained runtime measurement, use the built-in command. It shares
 the ordinary FASTA/FASTQ/gzip/stdin reader and writes one machine-readable row

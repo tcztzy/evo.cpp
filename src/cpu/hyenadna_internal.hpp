@@ -21,8 +21,9 @@ public:
   HyenaDnaModel(const HyenaDnaModel &) = delete;
   HyenaDnaModel &operator=(const HyenaDnaModel &) = delete;
 
-  [[nodiscard]] Status load(const ModelFile &artifact,
-                            bool allow_test_fixture);
+  [[nodiscard]] Status
+  load(const ModelFile &artifact, bool allow_test_fixture,
+       std::shared_ptr<evo::detail::LinearExecutor> executor = {});
   [[nodiscard]] const ModelConfig &config() const noexcept;
   [[nodiscard]] const char *kernel_name() const noexcept;
   [[nodiscard]] Status encode(std::string_view sequence,
@@ -58,6 +59,7 @@ public:
   [[nodiscard]] std::size_t position() const noexcept;
   [[nodiscard]] std::size_t activation_capacity() const noexcept;
   [[nodiscard]] const ModelConfig &config() const noexcept;
+  [[nodiscard]] const char *kernel_name() const noexcept;
 
 private:
   struct Impl;

@@ -7,7 +7,7 @@
 
 namespace evo {
 
-enum class ExecutionBackend { kAuto, kCpu, kCuda };
+enum class ExecutionBackend { kAuto, kCpu, kCuda, kMps };
 
 [[nodiscard]] const char *
 execution_backend_name(ExecutionBackend backend) noexcept;

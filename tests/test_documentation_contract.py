@@ -93,7 +93,7 @@ def main() -> int:
             "Artifact profiles",
             "Execution profiles",
             "linux-x86_64-cuda12.8",
-            "Windows, HIP, Metal, Vulkan, SYCL",
+            "macOS arm64, C++17 CPU + MPS",
         ),
         "compatibility policy",
     )
@@ -105,6 +105,7 @@ def main() -> int:
             "`exact`",
             "`fast-q8-kv`",
             "`cpu-f32`",
+            "`mps-f32`",
             "hybrid",
             "Synthetic",
             "Real checkpoint",

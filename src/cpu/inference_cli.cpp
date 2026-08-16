@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "evo/cpu/inference_cli.hpp"
 
+#include "inference_cli_internal.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -110,7 +112,8 @@ Status log_probability(const float *const logits, const std::size_t columns,
   float maximum = -std::numeric_limits<float>::infinity();
   for (std::size_t index = 0; index < columns; ++index) {
     if (!std::isfinite(logits[index]))
-      return {ErrorCode::kInternal, "CPU backend produced non-finite logits"};
+      return {ErrorCode::kInternal,
+              "inference backend produced non-finite logits"};
     maximum = std::max(maximum, logits[index]);
   }
   double denominator = 0.0;
@@ -125,7 +128,7 @@ Status prefill(Context *const context, const std::vector<TokenId> &tokens,
                const bool retain, std::vector<float> *const output,
                std::vector<double> *const scores = nullptr) {
   if (context == nullptr || output == nullptr || tokens.empty())
-    return {ErrorCode::kInvalidArgument, "CPU chunked prefill is invalid"};
+    return {ErrorCode::kInvalidArgument, "chunked prefill is invalid"};
   const auto columns = context->config().vocab_size;
   output->clear();
   std::size_t offset = 0;
@@ -142,7 +145,8 @@ Status prefill(Context *const context, const std::vector<TokenId> &tokens,
     if (!status.ok())
       return status;
     if (logits.size() != rows * columns)
-      return {ErrorCode::kInternal, "CPU prefill returned incomplete logits"};
+      return {ErrorCode::kInternal,
+              "inference backend returned incomplete logits"};
     if (scores != nullptr) {
       for (std::size_t row = 0; row < rows && offset + row + 1 < tokens.size();
            ++row) {
@@ -166,13 +170,17 @@ Status prefill(Context *const context, const std::vector<TokenId> &tokens,
 }
 
 void print_score(const SequenceRecord &record,
-                 const std::vector<double> &scores, const ModelConfig &config) {
+                 const std::vector<double> &scores, const ModelConfig &config,
+                 const CliOptions &options) {
   const double total = std::accumulate(scores.begin(), scores.end(), 0.0);
   const double mean = total / static_cast<double>(scores.size());
   std::cout << "{\"name\":";
   write_json_string(std::cout, record.name);
   std::cout << ",\"input_format\":\"" << sequence_format_name(record.format)
-            << "\",\"backend\":\"cpu\",\"profile\":\"cpu-f32\",\"model_id\":";
+            << "\",\"backend\":\"" << execution_backend_name(options.backend)
+            << "\",\"profile\":\""
+            << inference_profile_name(options.inference_profile)
+            << "\",\"model_id\":";
   write_json_string(std::cout, config.model_id);
   std::cout << ",\"tokens\":" << record.bytes.size()
             << ",\"scored_tokens\":" << scores.size()
@@ -207,7 +215,7 @@ Status run_generate(const CliOptions &options, const Model &model) {
   std::vector<float> logits;
   status = prefill(&context, initial, false, &logits);
   if (!status.ok())
-    return {status.code(), "CPU prompt prefill: " + status.message()};
+    return {status.code(), "prompt prefill: " + status.message()};
   const auto columns = model.config().vocab_size;
   std::vector<float> current(
       logits.end() - static_cast<std::ptrdiff_t>(columns), logits.end());
@@ -282,7 +290,7 @@ Status run_score(const CliOptions &options, const Model &model) {
           if (!inner.ok())
             return inner;
         }
-        print_score(record, scores, model.config());
+        print_score(record, scores, model.config(), options);
         ++record_count;
         return Status::Ok();
       });
@@ -290,7 +298,7 @@ Status run_score(const CliOptions &options, const Model &model) {
     return status;
   std::cout.flush();
   return std::cout ? Status::Ok()
-                   : Status{ErrorCode::kIo, "failed writing CPU score JSONL"};
+                   : Status{ErrorCode::kIo, "failed writing score JSONL"};
 }
 
 Status run_bench(const CliOptions &options, const Model &model) {
@@ -328,8 +336,9 @@ Status run_bench(const CliOptions &options, const Model &model) {
         report.model_id = model.config().model_id;
         report.architecture = model.config().architecture;
         report.artifact_profile = model.config().artifact_profile;
-        report.execution_profile = "cpu-f32";
-        report.backend = "cpu";
+        report.execution_profile =
+            inference_profile_name(options.inference_profile);
+        report.backend = execution_backend_name(options.backend);
         report.input_path = options.benchmark_path;
         report.input_name = record.name;
         report.input_format = record.format;
@@ -469,7 +478,10 @@ Status run_variant_one(const CliOptions &options, const Model &model,
          << ",\"alternate_tokens\":" << window.alternate.size() << '}'
          << ",\"normalization\":\""
          << variant_normalization_name(options.variant_normalization)
-         << "\",\"backend\":\"cpu\",\"profile\":\"cpu-f32\",\"model_id\":";
+         << "\",\"backend\":\"" << execution_backend_name(options.backend)
+         << "\",\"profile\":\""
+         << inference_profile_name(options.inference_profile)
+         << "\",\"model_id\":";
   write_json_string(output, model.config().model_id);
   output << ",\"strands\":[";
   for (std::size_t index = 0; index < scores.size(); ++index) {
@@ -598,8 +610,11 @@ Status run_logits(const CliOptions &options, const Model &model) {
         manifest << ",\"source_bytes\":" << record.bytes.size()
                  << ",\"tokens\":" << tokens.size() << ",\"shape\":["
                  << tokens.size() << ',' << model.config().vocab_size
-                 << "],\"dtype\":\"float32\",\"backend\":\"cpu\","
-                    "\"profile\":\"cpu-f32\",\"model_id\":";
+                 << "],\"dtype\":\"float32\",\"backend\":\""
+                 << execution_backend_name(options.backend)
+                 << "\",\"profile\":\""
+                 << inference_profile_name(options.inference_profile)
+                 << "\",\"model_id\":";
         write_json_string(manifest, model.config().model_id);
         manifest << "}\n";
         ++record_index;
@@ -627,7 +642,7 @@ Status run_embed(const CliOptions &options, const Model &model) {
   const std::size_t layer_count =
       model.config().layers + static_cast<std::size_t>(esmc);
   if (options.embed_layer >= layer_count)
-    return {ErrorCode::kInvalidArgument, "embedding layer exceeds CPU model"};
+    return {ErrorCode::kInvalidArgument, "embedding layer exceeds model"};
   const std::filesystem::path directory{options.embed_output_dir};
   std::error_code error;
   if (std::filesystem::exists(directory, error)) {
@@ -711,8 +726,11 @@ Status run_embed(const CliOptions &options, const Model &model) {
                  << (esmc ? "official_hidden_state" : "block_output")
                  << "\",\"pooling\":\""
                  << pooling_name(options.embedding_pooling)
-                 << "\",\"dtype\":\"float32\",\"backend\":\"cpu\","
-                    "\"profile\":\"cpu-f32\",\"model_id\":";
+                 << "\",\"dtype\":\"float32\",\"backend\":\""
+                 << execution_backend_name(options.backend)
+                 << "\",\"profile\":\""
+                 << inference_profile_name(options.inference_profile)
+                 << "\",\"model_id\":";
         write_json_string(manifest, model.config().model_id);
         manifest << "}\n";
         ++record_index;
@@ -724,25 +742,11 @@ Status run_embed(const CliOptions &options, const Model &model) {
 
 } // namespace
 
-Status run_inference_cli(const CliOptions &options,
-                         const bool allow_test_fixture) {
-  if (options.inference_profile != InferenceProfile::kCpuF32)
-    return {ErrorCode::kInvalidArgument,
-            "CPU backend requires the cpu-f32 execution profile"};
+Status run_inference_cli_loaded(const CliOptions &options, const Model &model,
+                                const double load_seconds) {
   if (options.dump_layer.has_value())
     return {ErrorCode::kUnsupported,
-            "--dump-layer is not available in the cpu-f32 CLI; use embed"};
-  const auto load_start = Clock::now();
-  ModelFile artifact;
-  auto status = artifact.open(options.model_path);
-  if (!status.ok())
-    return status;
-  Model model;
-  status = model.load(artifact, allow_test_fixture);
-  if (!status.ok())
-    return status;
-  const double load_seconds =
-      std::chrono::duration<double>(Clock::now() - load_start).count();
+            "--dump-layer is not available in this CLI; use embed"};
   const auto *const architecture =
       find_architecture(model.config().architecture);
   unsigned capability = 0;
@@ -758,7 +762,8 @@ Status run_inference_cli(const CliOptions &options,
     capability = kArchitectureVariant;
   if (architecture == nullptr || (architecture->capabilities & capability) == 0)
     return {ErrorCode::kUnsupported,
-            "operation is not supported by the CPU model architecture"};
+            "operation is not supported by the selected model backend"};
+  Status status = Status::Ok();
   if (options.mode == RunMode::kGenerate)
     status = run_generate(options, model);
   else if (options.mode == RunMode::kScore)
@@ -772,13 +777,36 @@ Status run_inference_cli(const CliOptions &options,
   else if (options.mode == RunMode::kBench)
     status = run_bench(options, model);
   else
-    status = {ErrorCode::kUnsupported, "CPU server dispatch is separate"};
-  std::cerr << "evo_metrics {\"backend\":\"cpu\",\"profile\":\"cpu-f32\","
+    status = {ErrorCode::kUnsupported, "server dispatch is separate"};
+  std::cerr << "evo_metrics {\"backend\":\""
+            << execution_backend_name(options.backend) << "\",\"profile\":\""
+            << inference_profile_name(options.inference_profile) << "\","
                "\"kernel\":\""
             << model.kernel_name()
             << "\",\"model_load_seconds\":" << std::setprecision(9)
             << load_seconds << "}\n";
   return status;
+}
+
+Status run_inference_cli(const CliOptions &options,
+                         const bool allow_test_fixture) {
+  if (options.backend != ExecutionBackend::kCpu ||
+      options.inference_profile != InferenceProfile::kCpuF32) {
+    return {ErrorCode::kInvalidArgument,
+            "CPU backend requires --backend cpu and --profile cpu-f32"};
+  }
+  const auto load_start = Clock::now();
+  ModelFile artifact;
+  auto status = artifact.open(options.model_path);
+  if (!status.ok())
+    return status;
+  Model model;
+  status = model.load(artifact, allow_test_fixture);
+  if (!status.ok())
+    return status;
+  const double load_seconds =
+      std::chrono::duration<double>(Clock::now() - load_start).count();
+  return run_inference_cli_loaded(options, model, load_seconds);
 }
 
 } // namespace evo::cpu

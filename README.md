@@ -5,16 +5,17 @@
 **English** | [简体中文](README.zh_CN.md)
 
 `evo.cpp` is a focused C++17 biological-sequence runtime and local server,
-with portable CPU execution and exact or accelerated CUDA profiles. Its exact
-kernels retain batch-one semantics while the server runs isolated request
-contexts against shared immutable weights. Its registered `StripedHyena2`
+with portable CPU execution, explicit Apple MPS acceleration on Apple silicon,
+and exact or accelerated CUDA profiles. Its exact kernels retain batch-one
+semantics while the server runs isolated request contexts against shared
+immutable weights. Its registered `StripedHyena2`
 path runs the official Evo 2 1B, 7B, 20B, and 40B checkpoints on one to four
 NVIDIA GPUs from strictly validated Safetensors—without PyTorch, Vortex,
 Transformer Engine, Python, or Hopper-only FP8 instructions at inference time.
 An architecture registry also runs the official F32 HyenaDNA causal-LM family
-on CPU through the same CLI, C ABI, embedding, variant, and server surfaces.
+on CPU or MPS through the same CLI, C ABI, embedding, variant, and server surfaces.
 It additionally runs Biohub's public ESMC 300M, 600M, and 6B F32 protein
-transformers natively on CPU or one CUDA GPU, exposing masked-LM logits and
+transformers natively on CPU, MPS, or one CUDA GPU, exposing masked-LM logits and
 official hidden-state indices without a Python/PyTorch inference dependency.
 
 ## Why evo.cpp?
@@ -29,9 +30,9 @@ official hidden-state indices without a Python/PyTorch inference dependency.
   behavior. `evo.cpp` reproduces those rounding and accumulation boundaries in
   software, enabling exact inference on A800-class GPUs.
 - **A runtime, not a framework distribution.** The executable is purpose-built
-  C++/CUDA with bounded model loading, scoring, generation, multi-GPU pipeline
-  parallelism, embeddings, variant scoring, a native HTTP server, and white-box
-  tensor dumps.
+  native code with CPU, Metal/MPS, and CUDA paths; bounded model loading,
+  scoring, generation, multi-GPU pipeline parallelism, embeddings, variant
+  scoring, a native HTTP server, and white-box tensor dumps.
 - **Native ESMC without the Python stack.** Pinned Biohub weights produce
   oracle-checked logits and embeddings without Python, PyTorch, Transformers,
   or TE at inference. On A800, batch-one 128-token 300M/600M host-logits are
@@ -137,8 +138,27 @@ build/Release/evo variant-score -m "$MODEL" --vcf variants.vcf.gz \
   --reference reference.fa.gz --window 8192 --ctx 8192 --gpu 0
 ```
 
-For HyenaDNA, convert an official Hugging Face
-Safetensors artifact and select CPU explicitly:
+On Apple-silicon macOS, a native CMake build enables MPS by default. The
+explicit `mps-f32` profile sends dense linear work to the system-default Metal
+device while retaining normalization, activation, attention, and Hyena state
+updates in host F32:
+
+```sh
+cmake -S . -B build-mps \
+  -DEVO_CUDA=OFF -DEVO_NPY=OFF -DEVO_MPS=ON \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build build-mps --parallel
+
+build-mps/evo score -m "$MODEL" --input sequences.fa \
+  --backend mps --profile mps-f32 --ctx 8192
+```
+
+MPS is approximate, is never selected by `--backend auto`, and rejects CUDA
+placement flags instead of silently falling back. It requires macOS on arm64;
+unsupported builds and unavailable Metal devices fail explicitly.
+
+For HyenaDNA, convert an official Hugging Face Safetensors artifact and select
+CPU or MPS explicitly:
 
 ```sh
 PYTHONPATH=tools python3 tools/convert_hyenadna_checkpoint.py \
@@ -146,6 +166,7 @@ PYTHONPATH=tools python3 tools/convert_hyenadna_checkpoint.py \
   --output hyenadna.safetensors
 build/Release/evo -m hyenadna.safetensors --backend cpu \
   --ctx 1026 --score sequences.fa
+# Apple silicon: --backend mps --profile mps-f32
 ```
 
 For Biohub ESMC, the torch-free converter consumes a hash-verified fetch
@@ -172,10 +193,11 @@ mode; it is never selected from context length alone.
 This requires Conan 2. The checked-in `conan.lock` fixes libnpy 1.0.1 and its
 Conan recipe revision. CUDA's pinned FlashAttention and CUTLASS source trees
 remain under CMake `FetchContent`; offline builds can supply all three source
-trees through the documented `EVO_*_SOURCE_DIR` cache variables. A CPU-only
-build (`-DEVO_CUDA=OFF`) leaves the NPY module disabled by default and can
-still be configured directly with CMake. Plain/gzip sequence input links the
-system zlib runtime and does not require zlib headers.
+trees through the documented `EVO_*_SOURCE_DIR` cache variables. A strictly
+CPU-only build uses `-DEVO_CUDA=OFF -DEVO_MPS=OFF`; it leaves the NPY module
+disabled by default and can still be configured directly with CMake.
+Plain/gzip sequence input links the system zlib runtime and does not require
+zlib headers.
 
 For the checked-in gpu01/gpu02 remote entrypoints, `EVO_REMOTE_ROOT` changes the
 root without rewriting remote `HOME`; source, build, dependency, container, Nix,

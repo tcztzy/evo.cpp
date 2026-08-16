@@ -14,6 +14,21 @@ find_package(Threads REQUIRED)
 find_library(EVO_ZLIB_LIBRARY NAMES z zlib zlib1 libz.so.1 REQUIRED)
 
 option(EVO_CUDA "Build the CUDA backend" ON)
+set(EVO_MPS_PLATFORM_SUPPORTED OFF)
+if(APPLE)
+  if(CMAKE_OSX_ARCHITECTURES)
+    if(CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+      set(EVO_MPS_PLATFORM_SUPPORTED ON)
+    endif()
+  elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+    set(EVO_MPS_PLATFORM_SUPPORTED ON)
+  endif()
+endif()
+set(EVO_MPS_DEFAULT OFF)
+if(EVO_MPS_PLATFORM_SUPPORTED)
+  set(EVO_MPS_DEFAULT ON)
+endif()
+option(EVO_MPS "Build the macOS arm64 MPS backend" ${EVO_MPS_DEFAULT})
 option(EVO_NPY "Build the NPY output module" ${EVO_CUDA})
 option(EVO_SANITIZE "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 option(EVO_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
@@ -96,6 +111,45 @@ evo_configure_target(evo_core)
 target_link_libraries(evo_core PRIVATE "${EVO_ZLIB_LIBRARY}")
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
   target_link_libraries(evo_core PUBLIC stdc++fs)
+endif()
+
+if(EVO_MPS)
+  if(NOT EVO_MPS_PLATFORM_SUPPORTED)
+    message(FATAL_ERROR "EVO_MPS requires macOS on arm64")
+  endif()
+  enable_language(OBJCXX)
+  set(CMAKE_OBJCXX_STANDARD 17)
+  set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+  set(CMAKE_OBJCXX_EXTENSIONS OFF)
+  find_library(EVO_FOUNDATION_FRAMEWORK Foundation REQUIRED)
+  find_library(EVO_METAL_FRAMEWORK Metal REQUIRED)
+  find_library(EVO_MPS_FRAMEWORK MetalPerformanceShaders REQUIRED)
+  find_library(EVO_COREGRAPHICS_FRAMEWORK CoreGraphics REQUIRED)
+
+  add_library(evo_mps STATIC src/mps/model.mm src/mps/inference_cli.cpp)
+  add_library(evo::mps ALIAS evo_mps)
+  target_include_directories(
+    evo_mps
+    PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(
+    evo_mps
+    PUBLIC evo_core
+    PRIVATE
+      "${EVO_FOUNDATION_FRAMEWORK}"
+      "${EVO_METAL_FRAMEWORK}"
+      "${EVO_MPS_FRAMEWORK}"
+      "${EVO_COREGRAPHICS_FRAMEWORK}")
+  target_compile_options(
+    evo_mps
+    PRIVATE $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc;-fvisibility=hidden>)
+  set_target_properties(
+    evo_mps
+    PROPERTIES
+      CXX_VISIBILITY_PRESET hidden
+      POSITION_INDEPENDENT_CODE ON
+      VISIBILITY_INLINES_HIDDEN ON)
+  evo_configure_target(evo_mps)
 endif()
 
 add_library(evo_server_core STATIC src/scheduler.cpp)
@@ -193,6 +247,13 @@ add_executable(evo src/main.cpp src/server.cpp)
 target_link_libraries(
   evo PRIVATE evo_core evo_server_core evo_c Threads::Threads)
 evo_configure_target(evo)
+
+if(EVO_MPS)
+  target_link_libraries(evo PRIVATE evo::mps)
+  target_compile_definitions(evo PRIVATE EVO_HAS_MPS=1)
+  target_link_libraries(evo_c PRIVATE evo::mps)
+  target_compile_definitions(evo_c PRIVATE EVO_HAS_MPS=1)
+endif()
 
 add_executable(evo-inspect src/inspect_main.cpp)
 target_link_libraries(evo-inspect PRIVATE evo_core)
@@ -487,8 +548,29 @@ if(BUILD_TESTING)
   evo_configure_target(evo-core-tests)
   add_test(NAME core COMMAND evo-core-tests)
 
+  if(EVO_MPS)
+    add_executable(evo-mps-tests tests/test_mps.cpp)
+    target_include_directories(evo-mps-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(evo-mps-tests PRIVATE evo::mps Threads::Threads)
+    evo_configure_target(evo-mps-tests)
+    add_test(NAME v42_mps_linear COMMAND evo-mps-tests)
+    set_tests_properties(v42_mps_linear PROPERTIES SKIP_RETURN_CODE 77)
+    add_executable(evo-mps-c-api-tests tests/test_mps_c_api.c)
+    target_link_libraries(evo-mps-c-api-tests PRIVATE evo::evo)
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+      target_compile_options(
+        evo-mps-c-api-tests PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
+      if(EVO_WARNINGS_AS_ERRORS)
+        target_compile_options(evo-mps-c-api-tests PRIVATE -Werror)
+      endif()
+    endif()
+  endif()
+
   add_executable(evo-c-api-tests tests/test_c_api.c)
   target_link_libraries(evo-c-api-tests PRIVATE evo::evo)
+  if(EVO_MPS)
+    target_compile_definitions(evo-c-api-tests PRIVATE EVO_TEST_HAS_MPS=1)
+  endif()
   if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(
       evo-c-api-tests PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
@@ -500,7 +582,7 @@ if(BUILD_TESTING)
   endif()
   add_test(NAME c_api COMMAND evo-c-api-tests)
   add_test(
-    NAME c_api_symbols
+    NAME v41_c_api_symbols
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_c_api_symbols.py
       --library $<TARGET_FILE:evo_c>)
@@ -571,6 +653,10 @@ if(BUILD_TESTING)
     PRIVATE evo_core evo_server_core evo_c Threads::Threads)
   target_compile_definitions(
     evo-cpu-cli-test-bin PRIVATE EVO_ALLOW_TEST_FIXTURE=1)
+  if(EVO_MPS)
+    target_link_libraries(evo-cpu-cli-test-bin PRIVATE evo::mps)
+    target_compile_definitions(evo-cpu-cli-test-bin PRIVATE EVO_HAS_MPS=1)
+  endif()
   evo_configure_target(evo-cpu-cli-test-bin)
   add_executable(evo-cpu-c-api-tests tests/test_cpu_c_api.c)
   target_link_libraries(evo-cpu-c-api-tests PRIVATE evo::evo)
@@ -618,6 +704,24 @@ if(BUILD_TESTING)
   set_tests_properties(
     hyenadna_backend
     PROPERTIES ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools")
+
+  if(EVO_MPS)
+    add_test(
+      NAME v42_mps_backend
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_mps_backend.py
+        --cli-binary $<TARGET_FILE:evo-cpu-cli-test-bin>
+        --c-api-binary $<TARGET_FILE:evo-mps-c-api-tests>
+        --tiny-generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_tiny_model.py
+        --hyenadna-generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_tiny_hyenadna.py
+        --esmc-generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_tiny_esmc.py
+        --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/mps-backend)
+    set_tests_properties(
+      v42_mps_backend
+      PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools"
+        SKIP_RETURN_CODE 77)
+  endif()
 
   add_executable(evo-fp8-tests tests/test_fp8.cpp)
   target_link_libraries(evo-fp8-tests PRIVATE evo_core)

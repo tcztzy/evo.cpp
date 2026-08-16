@@ -13,6 +13,14 @@
 #include "evo/status.hpp"
 #include "evo/tokenizer.hpp"
 
+namespace evo::detail {
+class LinearExecutor;
+}
+
+namespace evo::mps {
+class ModelLoader;
+}
+
 namespace evo::cpu {
 
 namespace detail {
@@ -52,11 +60,17 @@ public:
   [[nodiscard]] Status decode_token(TokenId token, std::uint8_t *byte) const;
 
 private:
+  [[nodiscard]] Status
+  load_with_executor(const ModelFile &model,
+                     std::shared_ptr<evo::detail::LinearExecutor> executor,
+                     bool allow_test_fixture);
+
   struct Impl;
   std::shared_ptr<Impl> impl_;
   std::shared_ptr<detail::HyenaDnaModel> hyena_;
   std::shared_ptr<detail::EsmcModel> esmc_;
   friend class Context;
+  friend class evo::mps::ModelLoader;
 };
 
 class Context final {

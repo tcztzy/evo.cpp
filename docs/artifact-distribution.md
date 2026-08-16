@@ -109,8 +109,8 @@ fetch helper, but never model weights.
 | Asset | Backend and architecture | Intended host | Status |
 |---|---|---|---|
 | `evo-VERSION-linux-x86_64-cuda12.8.tar.gz` | CUDA exact/fast, CPU, hybrid; StripedHyena2, HyenaDNA, and ESMC | Linux x86-64, CUDA 12.8, sm80 for gated exact execution | Produced by tagged release workflow |
-| Source tag | CPU portable build | Linux and macOS C++17 environments in CI | Supported build path |
-| macOS, Windows, other CUDA, HIP, Metal, Vulkan, SYCL archive | — | — | Not published |
+| Source tag | CPU portable build; MPS on macOS arm64 | Linux and macOS C++17 environments in CI | Supported build path |
+| macOS, Windows, other CUDA, HIP, Vulkan, SYCL archive | — | — | Not published |
 
 The archive name describes binary compatibility, not a numerical claim for all
 paths it contains. Exact and approximate support boundaries remain those in

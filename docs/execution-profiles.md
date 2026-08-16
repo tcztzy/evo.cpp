@@ -31,6 +31,33 @@ ESMC uses `cpu-f32` for its portable F32 reference and `exact` on one CUDA GPU;
 both preserve the source F32 weights. ESMC does not support causal cache or
 hybrid-placement profiles.
 
+## `mps-f32` (macOS arm64, approximate)
+
+```sh
+evo -m /models/evo2-7b.safetensors.index.json \
+  --backend mps --ctx 8192 --score sequences.fa
+```
+
+`mps-f32` is an explicit macOS arm64 backend. F32 linear layers use
+Metal Performance Shaders matrix multiplication; BF16 and software-E4M3
+weights use Metal compute kernels with F32 accumulation. Immutable weight
+buffers are cached on the selected system-default Metal device and shared by
+isolated contexts. Normalization, activation, attention/Hyena state updates,
+and other nonlinear operations retain the existing host F32 implementation.
+
+The backend accepts neither `--gpu` nor `--gpu-layers`, is never selected by
+`auto`, and never falls back to a CPU linear layer after MPS selection. Device,
+pipeline, allocation, and command failures return the typed `mps` status. CLI,
+JSONL/manifests, server health, benchmark records, and the C ABI report
+`mps`/`mps-f32` and kernel `mps-f32-gemm+host-ops`.
+
+The maintained Apple-silicon fixture covers F32, BF16, and E4M3 linear kernels,
+shared-context determinism, StripedHyena2, HyenaDNA, ESMC, CLI, C ABI, and
+server surfaces. HyenaDNA must remain within `1e-5` maximum absolute error of
+the CPU F32 path; StripedHyena2 and ESMC use `1e-4`. This is a synthetic
+regression envelope, not an exactness, real-checkpoint accuracy, or performance
+claim.
+
 CPU+GPU placement is also explicit:
 
 ```sh

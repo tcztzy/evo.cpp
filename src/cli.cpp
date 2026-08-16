@@ -148,9 +148,9 @@ std::string_view cli_usage() noexcept {
          "  --max-embedding-values N    Embedding response value limit "
          "(default: 1048576)\n\n"
          "Execution profile:\n"
-         "  --backend auto|cpu|cuda     Runtime backend (default: auto)\n"
+         "  --backend auto|cpu|cuda|mps Runtime backend (default: auto)\n"
          "  --gpu-layers N              Explicit CUDA prefix + CPU suffix\n"
-         "  --profile exact|fast-q8-kv|cpu-f32\n"
+         "  --profile exact|fast-q8-kv|cpu-f32|mps-f32\n"
          "                 Explicit arithmetic/cache semantics\n\n"
          "Sampling:\n"
          "  --temp F       Temperature > 0 (default: 1)\n"
@@ -764,6 +764,15 @@ Status parse_cli(const int argc, char *const argv[],
           ErrorCode::kInvalidArgument,
           "--backend cpu requires --profile cpu-f32 when profile is explicit"};
     options->inference_profile = InferenceProfile::kCpuF32;
+  } else if (options->backend == ExecutionBackend::kMps) {
+    if (seen_gpu || seen_gpu_layers)
+      return {ErrorCode::kInvalidArgument,
+              "MPS backend cannot be combined with CUDA GPU options"};
+    if (seen_profile && options->inference_profile != InferenceProfile::kMpsF32)
+      return {
+          ErrorCode::kInvalidArgument,
+          "--backend mps requires --profile mps-f32 when profile is explicit"};
+    options->inference_profile = InferenceProfile::kMpsF32;
   } else if (seen_gpu_layers) {
     if (!seen_gpu)
       return {ErrorCode::kInvalidArgument,
@@ -776,8 +785,12 @@ Status parse_cli(const int argc, char *const argv[],
   } else if (options->inference_profile == InferenceProfile::kCpuF32) {
     return {ErrorCode::kInvalidArgument,
             "--profile cpu-f32 requires --backend cpu"};
+  } else if (options->inference_profile == InferenceProfile::kMpsF32) {
+    return {ErrorCode::kInvalidArgument,
+            "--profile mps-f32 requires --backend mps"};
   }
-  const bool requires_gpu = options->backend != ExecutionBackend::kCpu;
+  const bool requires_gpu = options->backend != ExecutionBackend::kCpu &&
+                            options->backend != ExecutionBackend::kMps;
   const bool seen_server_option =
       seen_server_host || seen_server_port || seen_server_max_queue ||
       seen_server_max_batch || seen_server_batch_window ||

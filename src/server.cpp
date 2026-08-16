@@ -68,6 +68,7 @@ int http_status_for(const evo_status status) noexcept {
   case EVO_STATUS_UNSUPPORTED:
     return 501;
   case EVO_STATUS_CUDA:
+  case EVO_STATUS_MPS:
     return 503;
   case EVO_STATUS_INTERNAL:
   case EVO_STATUS_OK:
@@ -1313,9 +1314,18 @@ Status run_server(const CliOptions &options, const bool allow_test_fixture) {
   for (const int device : options.gpu_ids)
     devices.push_back(static_cast<std::int32_t>(device));
   evo_model_params model_params = evo_model_default_params();
-  model_params.backend = options.backend == ExecutionBackend::kCpu
-                             ? EVO_BACKEND_CPU
-                             : EVO_BACKEND_CUDA;
+  switch (options.backend) {
+  case ExecutionBackend::kCpu:
+    model_params.backend = EVO_BACKEND_CPU;
+    break;
+  case ExecutionBackend::kMps:
+    model_params.backend = EVO_BACKEND_MPS;
+    break;
+  case ExecutionBackend::kAuto:
+  case ExecutionBackend::kCuda:
+    model_params.backend = EVO_BACKEND_CUDA;
+    break;
+  }
   if (model_params.backend == EVO_BACKEND_CUDA) {
     model_params.devices = devices.data();
     model_params.device_count = devices.size();

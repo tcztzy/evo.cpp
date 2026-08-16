@@ -4,16 +4,16 @@
 
 [English](README.md) | **简体中文**
 
-`evo.cpp` 是面向生物序列模型的 C++17 runtime 与本地服务，既支持可移植 CPU
-执行，也支持 exact 或加速 CUDA profile。exact kernel 保持 batch-1 数值语义，
-服务端则让多个隔离 request context 共享只读模型权重。
+`evo.cpp` 是面向生物序列模型的 C++17 runtime 与本地服务，支持可移植 CPU、
+Apple silicon 上显式选择的 MPS 加速，以及 exact 或加速 CUDA profile。exact
+kernel 保持 batch-1 数值语义，服务端则让多个隔离 request context 共享只读模型权重。
 注册的 `StripedHyena2` 路径从严格验证的 Safetensors 运行官方 Evo 2 1B、7B、
 20B 和 40B checkpoint，支持 1–4 张 NVIDIA GPU；
 推理过程不依赖 PyTorch、Vortex、Transformer Engine、Python，也不要求 Hopper
 专属 FP8 指令。architecture registry 还通过相同 CLI、C ABI、embedding、
-variant 与 server surface 在 CPU 上运行官方 F32 HyenaDNA causal-LM family。
+variant 与 server surface 在 CPU 或 MPS 上运行官方 F32 HyenaDNA causal-LM family。
 此外，runtime 原生支持 Biohub ESMC 300M、600M 与 6B F32 蛋白质 masked
-encoder，在 CPU 或单张 CUDA GPU 上输出逐 token logits 与官方 hidden-state
+encoder，在 CPU、MPS 或单张 CUDA GPU 上输出逐 token logits 与官方 hidden-state
 索引下的 embedding；产品推理路径同样不依赖 Python、PyTorch 或 Transformers。
 
 ## 为什么选择 evo.cpp？
@@ -25,9 +25,9 @@ encoder，在 CPU 或单张 CUDA GPU 上输出逐 token logits 与官方 hidden-
 - **Ampere 也能保留原版 FP8 模型语义。**Arc 1B/20B/40B checkpoint 依赖
   Transformer Engine 的固定 E4M3 与 Hopper QGMMA 行为。`evo.cpp` 在软件中复现
   这些舍入和累加边界，因此可在 A800 级 GPU 上进行精确推理。
-- **它是 runtime，不是 framework 发行包。**核心是专用 C++/CUDA executable，
-  提供有界模型加载、scoring、generation、embedding、variant scoring、原生 HTTP
-  服务、多 GPU pipeline parallelism 和白盒 tensor dump。
+- **它是 runtime，不是 framework 发行包。**核心是带 CPU、Metal/MPS 与 CUDA
+  路径的专用原生 executable，提供有界模型加载、scoring、generation、embedding、
+  variant scoring、原生 HTTP 服务、多 GPU pipeline parallelism 和白盒 tensor dump。
 - **原生 ESMC，不带 Python 技术栈。**固定 Biohub 权重的 logits/embedding 已通过
   官方 oracle 校验，推理不依赖 Python、PyTorch、Transformers 或 TE。单张 A800
   上，batch-1、128-token 的 300M/600M host-logits 快 1.47×/1.32×，三个模型加载
@@ -124,7 +124,25 @@ build/Release/evo variant-score -m "$MODEL" --vcf variants.vcf.gz \
   --reference reference.fa.gz --window 8192 --ctx 8192 --gpu 0
 ```
 
-HyenaDNA 可直接从官方 Hugging Face Safetensors 离线转换：
+在 Apple-silicon macOS 上，原生 CMake 构建默认启用 MPS。显式的 `mps-f32`
+profile 会把 dense linear 计算交给系统默认 Metal device，而 normalization、
+activation、attention 与 Hyena state update 仍使用 host F32：
+
+```sh
+cmake -S . -B build-mps \
+  -DEVO_CUDA=OFF -DEVO_NPY=OFF -DEVO_MPS=ON \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build build-mps --parallel
+
+build-mps/evo score -m "$MODEL" --input sequences.fa \
+  --backend mps --profile mps-f32 --ctx 8192
+```
+
+MPS 是 approximate profile，`--backend auto` 不会自动选择它；CUDA placement
+参数会被明确拒绝，而不是静默回退。该后端只支持 macOS arm64；构建平台不支持或
+Metal device 不可用时会明确失败。
+
+HyenaDNA 可直接从官方 Hugging Face Safetensors 离线转换，并显式选择 CPU 或 MPS：
 
 ```sh
 PYTHONPATH=tools python3 tools/convert_hyenadna_checkpoint.py \
@@ -132,6 +150,7 @@ PYTHONPATH=tools python3 tools/convert_hyenadna_checkpoint.py \
   --output hyenadna.safetensors
 build/Release/evo -m hyenadna.safetensors --backend cpu \
   --ctx 1026 --score sequences.fa
+# Apple silicon：--backend mps --profile mps-f32
 ```
 
 Biohub ESMC 使用固定 revision/hash receipt 与独立的 torch-free 转换器：
@@ -162,9 +181,9 @@ unsupported。三个尺寸的固定上游身份、tokenizer、许可证、artifa
 构建依赖 Conan 2。仓库内的 `conan.lock` 固定了 libnpy 1.0.1 及其 Conan
 recipe revision。CUDA 使用的 FlashAttention 与 CUTLASS 仍由 CMake
 `FetchContent` 固定源码；离线环境可通过对应的 `EVO_*_SOURCE_DIR` cache
-变量提供三份本地源码。CPU-only 构建（`-DEVO_CUDA=OFF`）默认不会启用 NPY
-模块，仍可直接用 CMake 配置。普通/gzip 序列输入只链接系统 zlib runtime，
-不要求 zlib header。
+变量提供三份本地源码。严格 CPU-only 构建使用
+`-DEVO_CUDA=OFF -DEVO_MPS=OFF`；它默认不会启用 NPY 模块，仍可直接用 CMake
+配置。普通/gzip 序列输入只链接系统 zlib runtime，不要求 zlib header。
 
 仓库内 gpu01/gpu02 远程入口统一使用 `EVO_REMOTE_ROOT` 切换远端根目录，不会
 改写远端 `HOME`；源码、build、依赖、容器、Nix 和 cache 也都有优先级更高的

@@ -1,6 +1,6 @@
 # Compatibility policy
 
-Current project version: **0.1.0**. Current C ABI: **1.3.0** with shared-library
+Current project version: **0.1.0**. Current C ABI: **1.4.0** with shared-library
 SONAME major **1**.
 
 The project is pre-1.0, so architecture coverage and experimental profiles can
@@ -42,9 +42,10 @@ rules:
   and implementation types never cross the boundary.
 
 The current ABI history is: 1.0 core model/context/batch/sampler ownership,
-1.2 explicit execution profiles, and 1.3 architecture-aware token encoding and
-decoding. ABI documentation and contract tests must change in the same commit
-as the header.
+1.2 explicit execution profiles, 1.3 architecture-aware token encoding and
+decoding, and 1.4 the additive `EVO_BACKEND_MPS` / `EVO_STATUS_MPS` enum
+values. ABI documentation and contract tests must change in the same commit as
+the header.
 
 ## CLI and data compatibility
 
@@ -76,18 +77,19 @@ unsupported dtype or shape, and hash mismatch. Converters may evolve, but a
 changed tensor or arithmetic interpretation requires a new profile name.
 
 Exact claims apply only to the registered artifact, profile, backend, hardware
-boundary, and oracle revision in the acceptance record. `cpu-f32`, hybrid, and
-`fast-q8-kv` remain visibly approximate even when their regression gates pass.
+boundary, and oracle revision in the acceptance record. `cpu-f32`, `mps-f32`,
+hybrid, and `fast-q8-kv` remain visibly approximate even when their regression
+gates pass.
 The runtime exact allowlist is also `model.id`-specific: one variant cannot
 inherit another variant's evidence merely because width, layer count, or most
 operators match. Exact-unsupported IDs remain convertible registry entries and
 fail with `unsupported` before CUDA weights are uploaded.
 
 ESMC has an architecture-specific capability boundary: masked-LM logits and
-official hidden states are supported on portable CPU F32 and one exact CUDA
-device. Causal score, generation/decode, variant score, server, hybrid or
-multi-GPU placement, and approximate KV profiles are typed unsupported. Its
-2048-token maximum includes CLS and EOS. Full details are in
+official hidden states are supported on portable CPU F32, macOS arm64 MPS, and
+one exact CUDA device. Causal score, generation/decode, variant score, server,
+hybrid or multi-GPU placement, and approximate KV profiles are typed
+unsupported. Its 2048-token maximum includes CLS and EOS. Full details are in
 [native ESMC inference](esmc.md).
 
 ## Supported build and release matrix
@@ -95,12 +97,13 @@ multi-GPU placement, and approximate KV profiles are typed unsupported. Its
 | Environment | Source/CI status | Prebuilt release status |
 |---|---|---|
 | Linux x86-64, C++17 CPU | CI contract | Included in the Linux CUDA archive |
-| macOS arm64/x86-64, C++17 CPU | CI contract | Build from source; no archive yet |
+| macOS arm64, C++17 CPU + MPS | CI build/dispatch contract; numerical gate on a Metal host | Build from source; no archive yet |
+| macOS x86-64, C++17 CPU | Source contract | Build from source; no archive yet |
 | Linux x86-64, CUDA 12.8, sm80 | gpu02 exact/functional gates | `linux-x86_64-cuda12.8` archive |
 | Other CUDA architectures or versions | Unsupported until separately gated | None |
-| Windows, HIP, Metal, Vulkan, SYCL | Not implemented | None |
+| Windows, HIP, Vulkan, SYCL | Not implemented | None |
 
-CPU compilation does not imply numerical equivalence to CUDA exact. See
+CPU or MPS compilation does not imply numerical equivalence to CUDA exact. See
 [the benchmark matrix](benchmark-matrix.md) and
 [release artifacts](artifact-distribution.md) for the evidence attached to
 each claim.

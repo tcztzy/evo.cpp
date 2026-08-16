@@ -20,6 +20,18 @@ static void test_model_fixture(const char *path) {
   evo_model *model = NULL;
   evo_context *context = NULL;
   evo_context_params context_params = evo_context_default_params();
+#if !defined(EVO_TEST_HAS_MPS)
+  {
+    evo_model_params mps_params = evo_model_default_params();
+    evo_model *mps_model = NULL;
+    mps_params.backend = EVO_BACKEND_MPS;
+    check(evo_model_load(path, &mps_params, &mps_model) ==
+              EVO_STATUS_UNSUPPORTED,
+          "MPS-disabled C library rejects the explicit MPS backend");
+    check(mps_model == NULL && strstr(evo_last_error(), "without MPS") != NULL,
+          "MPS-disabled C library returns an actionable diagnostic");
+  }
+#endif
   params.backend = EVO_BACKEND_CPU;
   check(evo_model_load(path, &params, &model) == EVO_STATUS_OK,
         "strict model artifact loads through C API");
@@ -58,8 +70,14 @@ int main(int argc, char **argv) {
         "C API exposes the runtime version");
   check(strcmp(evo_status_name(EVO_STATUS_MODEL_FORMAT), "model_format") == 0,
         "C status names are stable");
+  check(strcmp(evo_status_name(EVO_STATUS_MPS), "mps") == 0,
+        "C MPS status name is stable");
   check(strcmp(evo_backend_name(EVO_BACKEND_CUDA), "cuda") == 0,
         "C backend names are stable");
+  check(strcmp(evo_backend_name(EVO_BACKEND_MPS), "mps") == 0,
+        "C MPS backend name is stable");
+  check(EVO_ABI_VERSION_MINOR == 4u,
+        "MPS enum extension increments the ABI feature version");
   check(model_params.struct_size == sizeof(model_params) &&
             context_params.struct_size == sizeof(context_params) &&
             sampler_params.struct_size == sizeof(sampler_params),

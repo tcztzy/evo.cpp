@@ -21,6 +21,8 @@ and other languages with a C foreign-function interface.
 - ABI 1.3 adds architecture-aware `evo_model_encode()` and
   `evo_model_decode_token()`. Existing batch ownership/layout is unchanged;
   raw sequences are tokenized by the context's registered architecture.
+- ABI 1.4 adds `EVO_BACKEND_MPS` and the typed runtime failure
+  `EVO_STATUS_MPS`. Existing enum values and parameter layouts are unchanged.
 - A CUDA model handle owns one uploaded copy of the read-only weights plus the
   mapped artifact. Contexts share those immutable device allocations while
   owning independent streams, activation arenas, and recurrent/KV caches. A
@@ -29,6 +31,10 @@ and other languages with a C foreign-function interface.
 - A CPU model handle shares the mmap-backed artifact directly. CPU contexts
   allocate only mutable caches and report `cpu-f32`; AVX2/FMA, NEON, and scalar
   kernels have the same public callback and ownership contract.
+- An MPS model handle also retains the mmap-backed artifact, lazily caches
+  immutable weight buffers on the system-default Metal device, and reports
+  `mps-f32`. Contexts keep independent recurrent/attention state while sharing
+  the serialized MPS executor and read-only weight cache.
 
 ## Minimal use
 
@@ -60,8 +66,9 @@ evo_context_free(ctx);
 regardless of `context_size`; insufficient memory is an error rather than an
 implicit profile change. `evo_context_profile()` returns the selected execution
 profile. A model loaded with `EVO_BACKEND_CPU` accepts zero context flags and
-reports `cpu-f32`. By contrast, `evo_model_profile()` returns artifact
-metadata.
+reports `cpu-f32`; `EVO_BACKEND_MPS` likewise accepts zero context flags and
+reports `mps-f32`. MPS model parameters must not provide a CUDA device list.
+By contrast, `evo_model_profile()` returns artifact metadata.
 
 Call `evo_model_encode()` first with a null output buffer to query token count,
 then with caller-owned `uint32_t` storage. `evo_model_decode_token()` converts
@@ -87,7 +94,7 @@ indices `1..n-1` are preceding block outputs, and index `n` is the final
 layer-normalized representation. Incremental `evo_context_decode()` is typed
 unsupported. Context capacity includes ESMC's automatically added CLS/EOS.
 
-Current CPU and CUDA backends accept one sequence per batch. Larger batch
+Current CPU, MPS, and CUDA backends accept one sequence per batch. Larger batch
 objects are ABI-valid but return `EVO_STATUS_UNSUPPORTED` at execution time,
 rather than silently changing semantics. CPU inference is available in
 CPU-only builds and shares mmap-backed weights across isolated contexts.
@@ -97,7 +104,7 @@ the caller to choose one backend per model handle.
 ## Installation
 
 ```sh
-cmake -S . -B build -DEVO_CUDA=OFF -DEVO_NPY=OFF
+cmake -S . -B build -DEVO_CUDA=OFF -DEVO_MPS=OFF -DEVO_NPY=OFF
 cmake --build build
 cmake --install build --prefix /your/prefix
 ```
@@ -105,3 +112,6 @@ cmake --install build --prefix /your/prefix
 Consumers can then use `find_package(evo CONFIG REQUIRED)` and link
 `evo::evo`. The install tree includes `libevo`, the public headers, `evo`,
 `evo-inspect`, and versioned CMake package metadata.
+
+On Apple silicon, use `-DEVO_CUDA=OFF -DEVO_NPY=OFF -DEVO_MPS=ON` to embed the
+MPS backend in the shared C library and installed CLI.

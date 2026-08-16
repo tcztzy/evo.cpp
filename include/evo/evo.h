@@ -22,7 +22,7 @@ extern "C" {
 #endif
 
 #define EVO_ABI_VERSION_MAJOR 1u
-#define EVO_ABI_VERSION_MINOR 3u
+#define EVO_ABI_VERSION_MINOR 4u
 #define EVO_ABI_VERSION_PATCH 0u
 #define EVO_ABI_VERSION_ENCODE(major, minor, patch)                            \
   ((((uint32_t)(major) & 0xffu) << 24u) |                                      \
@@ -38,13 +38,15 @@ typedef enum evo_status {
   EVO_STATUS_MODEL_FORMAT = 4,
   EVO_STATUS_UNSUPPORTED = 5,
   EVO_STATUS_CUDA = 6,
+  EVO_STATUS_MPS = 7,
   EVO_STATUS_INTERNAL = 70
 } evo_status;
 
 typedef enum evo_backend {
   EVO_BACKEND_AUTO = 0,
   EVO_BACKEND_CUDA = 1,
-  EVO_BACKEND_CPU = 2
+  EVO_BACKEND_CPU = 2,
+  EVO_BACKEND_MPS = 3
 } evo_backend;
 
 enum {

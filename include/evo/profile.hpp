@@ -7,7 +7,7 @@
 
 namespace evo {
 
-enum class InferenceProfile { kExact, kFastQ8Kv, kCpuF32 };
+enum class InferenceProfile { kExact, kFastQ8Kv, kCpuF32, kMpsF32 };
 
 [[nodiscard]] const char *
 inference_profile_name(InferenceProfile profile) noexcept;

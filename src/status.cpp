@@ -17,6 +17,8 @@ const char* error_code_name(const ErrorCode code) noexcept {
       return "unsupported";
     case ErrorCode::kCuda:
       return "cuda";
+    case ErrorCode::kMps:
+      return "mps";
     case ErrorCode::kInternal:
       return "internal";
   }
@@ -28,4 +30,3 @@ int exit_code(const ErrorCode code) noexcept {
 }
 
 }  // namespace evo
-

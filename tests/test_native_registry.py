@@ -116,7 +116,7 @@ def main() -> int:
         "evo2-runtime-v1",
         "evo2-safetensors-v1",
         "byte",
-        "3",
+        "7",
         "31",
         "0",
     ]
@@ -124,7 +124,7 @@ def main() -> int:
         "hyenadna-runtime-v1",
         "hyenadna-safetensors-v1",
         "hyenadna-character",
-        "1",
+        "5",
         "31",
         "0",
     ]
@@ -132,7 +132,7 @@ def main() -> int:
         "esmc-runtime-v1",
         "esmc-safetensors-v1",
         "esmc-protein",
-        "3",
+        "7",
         "36",
         "0",
     ]

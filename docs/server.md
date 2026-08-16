@@ -28,6 +28,15 @@ evo serve -m /models/evo2-7b.safetensors.index.json \
   --max-queue 64 --max-batch 4
 ```
 
+Apple-silicon MPS serving uses the same request/isolation contract:
+
+```sh
+evo serve -m /models/evo2-7b.safetensors.index.json \
+  --backend mps --ctx 8192 \
+  --host 127.0.0.1 --port 8080 \
+  --max-queue 64 --max-batch 4
+```
+
 The default bind address is loopback. Binding `0.0.0.0` is an explicit
 operator choice; the native server does not provide TLS or authentication, so
 put it behind an authenticated reverse proxy before exposing it outside a
@@ -35,12 +44,14 @@ trusted host. Only numeric IPv4 bind addresses are accepted.
 
 The CUDA backend uses `exact` by default. `fast-q8-kv` explicitly selects the
 experimental approximate paged-Q8 cache; context length never changes the
-profile. The CPU backend always reports `cpu-f32`. Every inference response
-reports its execution `profile`, and `/health` reports both `backend` and
-`execution_profile`. See [execution profiles](execution-profiles.md) for the
-numerical and biological acceptance gates. Hybrid `--gpu-layers` serving is
-currently rejected because request-level GPU-prefix/CPU-suffix isolation is
-not yet part of the server contract.
+profile. The CPU backend always reports `cpu-f32`; the explicit MPS backend
+reports `mps-f32` and does not accept CUDA device or layer-placement flags.
+Every inference response reports its execution `profile`, and `/health`
+reports both `backend` and `execution_profile`. See
+[execution profiles](execution-profiles.md) for the numerical and biological
+acceptance gates. Hybrid `--gpu-layers` serving is currently rejected because
+request-level GPU-prefix/CPU-suffix isolation is not yet part of the server
+contract.
 
 `--max-queue` bounds pending inference work. `--max-batch` is the maximum
 number of isolated request contexts launched together after the
@@ -121,8 +132,8 @@ cancellations.
 Closing a client connection cancels its scheduled request. A client can also
 send `X-Evo-Timeout-Ms: N` (`0..3600000`); expiry returns HTTP 408. Cancellation
 is checked before execution and at every prefill chunk/decode/embedding
-callback boundary. An in-flight CUDA kernel completes before the next boundary
-can observe cancellation.
+callback boundary. An in-flight CUDA or MPS kernel completes before the next
+boundary can observe cancellation.
 
 The HTTP body, sequence, context, embedding output, pending queue, simultaneous
 connection, and JSON nesting sizes are independently bounded. Over-limit input

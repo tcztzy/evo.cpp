@@ -13,6 +13,7 @@ enum class ErrorCode : int {
   kModelFormat = 4,
   kUnsupported = 5,
   kCuda = 6,
+  kMps = 7,
   kInternal = 70,
 };
 
@@ -39,4 +40,3 @@ class Status final {
 [[nodiscard]] int exit_code(ErrorCode code) noexcept;
 
 }  // namespace evo
-

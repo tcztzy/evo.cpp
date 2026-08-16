@@ -20,7 +20,9 @@ public:
   EsmcModel(const EsmcModel &) = delete;
   EsmcModel &operator=(const EsmcModel &) = delete;
 
-  [[nodiscard]] Status load(const ModelFile &artifact, bool allow_test_fixture);
+  [[nodiscard]] Status
+  load(const ModelFile &artifact, bool allow_test_fixture,
+       std::shared_ptr<evo::detail::LinearExecutor> executor = {});
   [[nodiscard]] const ModelConfig &config() const noexcept;
   [[nodiscard]] const char *kernel_name() const noexcept;
 
@@ -47,6 +49,7 @@ public:
   [[nodiscard]] std::size_t position() const noexcept;
   [[nodiscard]] std::size_t activation_capacity() const noexcept;
   [[nodiscard]] const ModelConfig &config() const noexcept;
+  [[nodiscard]] const char *kernel_name() const noexcept;
 
 private:
   struct Impl;

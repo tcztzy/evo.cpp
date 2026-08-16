@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "esmc_internal.hpp"
 
+#include "../linear_executor.hpp"
+
 #include "evo/model_registry.hpp"
 
 #include <algorithm>
@@ -124,12 +126,24 @@ Status tensor_view(const ModelFile &artifact, const std::string &name,
 Status linear(const std::vector<float> &input, const std::size_t rows,
               const std::size_t input_width, const TensorView &weight,
               const std::size_t output_width, const TensorView *const bias,
+              evo::detail::LinearExecutor *const executor,
               std::vector<float> *const output) {
   if (output == nullptr || input.size() != rows * input_width ||
       weight.elements != output_width * input_width ||
       (bias != nullptr && bias->elements != output_width))
-    return {ErrorCode::kInternal,
-            "ESMC CPU linear dimensions are inconsistent"};
+    return {ErrorCode::kInternal, "ESMC linear dimensions are inconsistent"};
+  if (executor != nullptr) {
+    const evo::detail::LinearTensorView weight_view{
+        weight.data, TensorDType::kF32, weight.elements};
+    evo::detail::LinearTensorView bias_view;
+    const evo::detail::LinearTensorView *bias_pointer = nullptr;
+    if (bias != nullptr) {
+      bias_view = {bias->data, TensorDType::kF32, bias->elements};
+      bias_pointer = &bias_view;
+    }
+    return executor->linear(input.data(), rows, input_width, weight_view,
+                            output_width, bias_pointer, output);
+  }
   output->resize(rows * output_width);
   for (std::size_t row = 0; row < rows; ++row) {
     for (std::size_t target = 0; target < output_width; ++target) {
@@ -209,6 +223,7 @@ struct EsmcModel::Impl final {
   TensorView head_output_weight;
   TensorView head_output_bias;
   std::vector<Layer> layer;
+  std::shared_ptr<evo::detail::LinearExecutor> executor;
 
   [[nodiscard]] std::size_t head_width() const noexcept {
     return heads == 0 ? 0 : public_config.width / heads;
@@ -230,7 +245,7 @@ struct EsmcContext::Impl final {
                weights->epsilon, &qkv_normalized);
     std::vector<float> qkv;
     auto status = linear(qkv_normalized, rows, width, layer.qkv_weight,
-                         width * 3, nullptr, &qkv);
+                         width * 3, nullptr, weights->executor.get(), &qkv);
     if (!status.ok())
       return status;
     std::vector<float> query(rows * width);
@@ -306,7 +321,7 @@ struct EsmcContext::Impl final {
       }
     }
     return linear(context, rows, width, layer.attention_output_weight, width,
-                  nullptr, output);
+                  nullptr, weights->executor.get(), output);
   }
 
   Status forward(const std::vector<TokenId> &tokens,
@@ -319,7 +334,7 @@ struct EsmcContext::Impl final {
         (embedding_output != nullptr &&
          capture_layer > weights->public_config.layers)) {
       return {ErrorCode::kInvalidArgument,
-              "ESMC CPU forward requires one fresh full-sequence context"};
+              "ESMC host forward requires one fresh full-sequence context"};
     }
     const std::size_t rows = tokens.size();
     const std::size_t width = weights->public_config.width;
@@ -348,7 +363,8 @@ struct EsmcContext::Impl final {
       layer_norm(hidden, rows, width, layer.ffn_norm_weight,
                  &layer.ffn_norm_bias, weights->epsilon, &normalized);
       status = linear(normalized, rows, width, layer.ffn_input_weight,
-                      weights->inner_width * 2, nullptr, &projected);
+                      weights->inner_width * 2, nullptr,
+                      weights->executor.get(), &projected);
       if (!status.ok())
         return status;
       gated.resize(rows * weights->inner_width);
@@ -363,7 +379,8 @@ struct EsmcContext::Impl final {
         }
       }
       status = linear(gated, rows, weights->inner_width,
-                      layer.ffn_output_weight, width, nullptr, &update);
+                      layer.ffn_output_weight, width, nullptr,
+                      weights->executor.get(), &update);
       if (!status.ok())
         return status;
       add_scaled(&hidden, update, weights->residue_scale);
@@ -382,7 +399,8 @@ struct EsmcContext::Impl final {
     if (logits != nullptr) {
       auto status =
           linear(final_hidden, rows, width, weights->head_input_weight, width,
-                 &weights->head_input_bias, &projected);
+                 &weights->head_input_bias, weights->executor.get(),
+                 &projected);
       if (!status.ok())
         return status;
       for (float &value : projected) {
@@ -393,7 +411,8 @@ struct EsmcContext::Impl final {
                  &weights->head_norm_bias, weights->epsilon, &normalized);
       status = linear(normalized, rows, width, weights->head_output_weight,
                       weights->public_config.vocab_size,
-                      &weights->head_output_bias, logits);
+                      &weights->head_output_bias, weights->executor.get(),
+                      logits);
       if (!status.ok())
         return status;
     }
@@ -406,10 +425,12 @@ EsmcModel::EsmcModel() : impl_(std::make_shared<Impl>()) {}
 EsmcModel::~EsmcModel() = default;
 
 Status EsmcModel::load(const ModelFile &artifact,
-                       const bool allow_test_fixture) {
+                       const bool allow_test_fixture,
+                       std::shared_ptr<evo::detail::LinearExecutor> executor) {
   if (!impl_ || impl_->file != nullptr)
     return {ErrorCode::kInvalidArgument, "ESMC model is already loaded"};
   auto candidate = std::make_shared<Impl>();
+  candidate->executor = std::move(executor);
   std::string architecture;
   std::string runtime_abi;
   auto status = metadata_string(artifact, "model.architecture", &architecture);
@@ -423,7 +444,7 @@ Status EsmcModel::load(const ModelFile &artifact,
       registered->artifact_profile != artifact.profile() ||
       registered->runtime_abi != runtime_abi) {
     return {ErrorCode::kUnsupported,
-            "artifact is not a registered ESMC CPU architecture"};
+            "artifact is not a registered ESMC host architecture"};
   }
   candidate->public_config.architecture = architecture;
   candidate->public_config.artifact_profile = std::string{artifact.profile()};
@@ -480,7 +501,7 @@ Status EsmcModel::load(const ModelFile &artifact,
       !std::isfinite(candidate->rope_base) || candidate->rope_base <= 1.0F ||
       !std::isfinite(candidate->residue_scale) ||
       candidate->residue_scale <= 0.0F) {
-    return {ErrorCode::kUnsupported, "ESMC CPU dimensions are unsupported"};
+    return {ErrorCode::kUnsupported, "ESMC host dimensions are unsupported"};
   }
   if (!registered->synthetic_fixture) {
     const auto *const official =
@@ -582,7 +603,8 @@ const ModelConfig &EsmcModel::config() const noexcept {
 }
 
 const char *EsmcModel::kernel_name() const noexcept {
-  return "scalar-f32-bidirectional";
+  return impl_->executor ? impl_->executor->name()
+                         : "scalar-f32-bidirectional";
 }
 
 EsmcContext::EsmcContext() : impl_(std::make_unique<Impl>()) {}
@@ -594,7 +616,7 @@ Status EsmcContext::initialize_shared(const EsmcModel &model,
       model.impl_->file == nullptr || capacity == 0 ||
       capacity > model.impl_->public_config.max_seqlen) {
     return {ErrorCode::kInvalidArgument,
-            "ESMC CPU context requires a loaded model and valid capacity"};
+            "ESMC host context requires a loaded model and valid capacity"};
   }
   impl_->weights = model.impl_;
   impl_->capacity = capacity;
@@ -621,6 +643,11 @@ std::size_t EsmcContext::activation_capacity() const noexcept {
 
 const ModelConfig &EsmcContext::config() const noexcept {
   return impl_->weights->public_config;
+}
+
+const char *EsmcContext::kernel_name() const noexcept {
+  return impl_->weights->executor ? impl_->weights->executor->name()
+                                  : "scalar-f32-bidirectional";
 }
 
 } // namespace evo::cpu::detail

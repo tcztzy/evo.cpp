@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "hyenadna_internal.hpp"
 
+#include "../linear_executor.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -142,6 +144,35 @@ void linear(const std::vector<float> &input, const TensorView &weight,
   }
 }
 
+Status runtime_linear(const std::vector<float> &input,
+                      const TensorView &weight, const std::size_t outputs,
+                      const TensorView *const bias,
+                      evo::detail::LinearExecutor *const executor,
+                      std::vector<float> *const result) {
+  if (result == nullptr || input.empty() ||
+      weight.count != outputs * input.size() ||
+      (bias != nullptr && bias->count != outputs)) {
+    return {ErrorCode::kInternal,
+            "HyenaDNA linear dimensions are inconsistent"};
+  }
+  if (executor != nullptr) {
+    const evo::detail::LinearTensorView weight_view{
+        reinterpret_cast<const std::uint8_t *>(weight.data),
+        TensorDType::kF32, weight.count};
+    evo::detail::LinearTensorView bias_view;
+    const evo::detail::LinearTensorView *bias_pointer = nullptr;
+    if (bias != nullptr) {
+      bias_view = {reinterpret_cast<const std::uint8_t *>(bias->data),
+                   TensorDType::kF32, bias->count};
+      bias_pointer = &bias_view;
+    }
+    return executor->linear(input.data(), 1, input.size(), weight_view, outputs,
+                            bias_pointer, result);
+  }
+  linear(input, weight, outputs, bias, result);
+  return Status::Ok();
+}
+
 void layer_norm(const std::vector<float> &input, const TensorView &weight,
                 const TensorView &bias, const float epsilon,
                 std::vector<float> *const output) {
@@ -212,6 +243,7 @@ struct HyenaDnaModel::Impl final {
   TensorView final_norm_bias;
   TensorView head;
   std::vector<Layer> layer;
+  std::shared_ptr<evo::detail::LinearExecutor> executor;
 
   Status build_kernel(Layer *const target) const {
     const std::size_t width = public_config.width;
@@ -291,8 +323,11 @@ struct HyenaDnaContext::Impl final {
       const std::vector<float> residual = hidden;
       layer_norm(hidden, layer.norm1_weight, layer.norm1_bias,
                  weights->epsilon, &normalized);
-      linear(normalized, layer.in_weight, projected_width, &layer.in_bias,
-             &projected);
+      auto status = runtime_linear(normalized, layer.in_weight,
+                                   projected_width, &layer.in_bias,
+                                   weights->executor.get(), &projected);
+      if (!status.ok())
+        return status;
       for (std::size_t channel = 0; channel < projected_width; ++channel) {
         float value = layer.short_bias.at(channel) +
                       projected[channel] *
@@ -328,17 +363,27 @@ struct HyenaDnaContext::Impl final {
         }
         mixed[channel] = value * filtered[channel];
       }
-      linear(mixed, layer.out_weight, width, &layer.out_bias, &output);
+      status = runtime_linear(mixed, layer.out_weight, width, &layer.out_bias,
+                              weights->executor.get(), &output);
+      if (!status.ok())
+        return status;
       for (std::size_t index = 0; index < width; ++index)
         hidden[index] = output[index] + residual[index];
       const std::vector<float> second_residual = hidden;
       layer_norm(hidden, layer.norm2_weight, layer.norm2_bias,
                  weights->epsilon, &normalized);
-      linear(normalized, layer.mlp_up_weight, weights->inner_width,
-             &layer.mlp_up_bias, &mlp);
+      status = runtime_linear(normalized, layer.mlp_up_weight,
+                              weights->inner_width, &layer.mlp_up_bias,
+                              weights->executor.get(), &mlp);
+      if (!status.ok())
+        return status;
       for (float &value : mlp)
         value = gelu(value);
-      linear(mlp, layer.mlp_down_weight, width, &layer.mlp_down_bias, &output);
+      status = runtime_linear(mlp, layer.mlp_down_weight, width,
+                              &layer.mlp_down_bias, weights->executor.get(),
+                              &output);
+      if (!status.ok())
+        return status;
       for (std::size_t index = 0; index < width; ++index)
         hidden[index] = output[index] + second_residual[index];
       if (capture != nullptr && capture_layer == layer_index)
@@ -348,14 +393,13 @@ struct HyenaDnaContext::Impl final {
       layer_norm(hidden, weights->final_norm_weight, weights->final_norm_bias,
                  weights->epsilon, &normalized);
       const std::size_t vocabulary = weights->public_config.vocab_size;
-      for (std::size_t target = 0; target < vocabulary; ++target) {
-        float value = 0.0F;
-        for (std::size_t source = 0; source < width; ++source) {
-          value += normalized[source] *
-                   weights->head.at(target * width + source);
-        }
-        logits[target] = value;
-      }
+      std::vector<float> head_output;
+      const auto status = runtime_linear(normalized, weights->head, vocabulary,
+                                         nullptr, weights->executor.get(),
+                                         &head_output);
+      if (!status.ok())
+        return status;
+      std::copy(head_output.begin(), head_output.end(), logits);
     }
     ++position;
     return Status::Ok();
@@ -395,10 +439,12 @@ HyenaDnaModel::HyenaDnaModel() : impl_(std::make_shared<Impl>()) {}
 HyenaDnaModel::~HyenaDnaModel() = default;
 
 Status HyenaDnaModel::load(const ModelFile &artifact,
-                           const bool allow_test_fixture) {
+                           const bool allow_test_fixture,
+                           std::shared_ptr<evo::detail::LinearExecutor> executor) {
   if (!impl_ || impl_->file != nullptr)
     return {ErrorCode::kInvalidArgument, "HyenaDNA model is already loaded"};
   auto candidate = std::make_shared<Impl>();
+  candidate->executor = std::move(executor);
   std::string architecture;
   std::string runtime_abi;
   auto status = metadata_string(artifact, "model.architecture", &architecture);
@@ -412,7 +458,7 @@ Status HyenaDnaModel::load(const ModelFile &artifact,
       registered->artifact_profile != artifact.profile() ||
       registered->runtime_abi != runtime_abi) {
     return {ErrorCode::kUnsupported,
-            "artifact is not a registered HyenaDNA CPU architecture"};
+            "artifact is not a registered HyenaDNA host architecture"};
   }
   candidate->public_config.architecture = architecture;
   candidate->public_config.artifact_profile = std::string{artifact.profile()};
@@ -470,7 +516,7 @@ Status HyenaDnaModel::load(const ModelFile &artifact,
       candidate->public_config.max_seqlen > kMaximumDirectContext ||
       !std::isfinite(candidate->epsilon) || candidate->epsilon <= 0.0F) {
     return {ErrorCode::kUnsupported,
-            "HyenaDNA CPU direct-convolution dimensions are unsupported"};
+            "HyenaDNA host direct-convolution dimensions are unsupported"};
   }
   const std::size_t width = candidate->public_config.width;
   const std::size_t vocabulary = candidate->public_config.vocab_size;
@@ -610,7 +656,7 @@ const ModelConfig &HyenaDnaModel::config() const noexcept {
 }
 
 const char *HyenaDnaModel::kernel_name() const noexcept {
-  return "direct-convolution-f32";
+  return impl_->executor ? impl_->executor->name() : "direct-convolution-f32";
 }
 
 Status HyenaDnaModel::encode(const std::string_view sequence,
@@ -719,6 +765,11 @@ std::size_t HyenaDnaContext::activation_capacity() const noexcept {
 
 const ModelConfig &HyenaDnaContext::config() const noexcept {
   return impl_->weights->public_config;
+}
+
+const char *HyenaDnaContext::kernel_name() const noexcept {
+  return impl_->weights->executor ? impl_->weights->executor->name()
+                                  : "direct-convolution-f32";
 }
 
 } // namespace evo::cpu::detail

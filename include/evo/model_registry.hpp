@@ -18,6 +18,7 @@ enum class ArchitectureTokenizer {
 enum ArchitectureBackend : unsigned {
   kArchitectureBackendCpu = 1U << 0U,
   kArchitectureBackendCuda = 1U << 1U,
+  kArchitectureBackendMps = 1U << 2U,
 };
 
 enum ArchitectureCapability : unsigned {
