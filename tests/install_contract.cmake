@@ -55,6 +55,8 @@ if(NOT EXISTS "${EVO_INSTALL_PREFIX}/include/evo/evo.h" OR
    NOT EXISTS "${EVO_INSTALL_PREFIX}/bin/evo-inspect" OR
    NOT EXISTS "${EVO_INSTALL_PREFIX}/bin/evo-fetch" OR
    NOT EXISTS "${EVO_INSTALL_PREFIX}/share/evo/configs/model-registry.json" OR
+   NOT EXISTS "${EVO_INSTALL_PREFIX}/share/evo/configs/geneb-models.json" OR
+   NOT EXISTS "${EVO_INSTALL_PREFIX}/share/evo/configs/geneb-reference-patches/enformer-seq-length.patch" OR
    NOT EXISTS "${EVO_INSTALL_PREFIX}/share/evo/requirements-fetch.txt")
   message(FATAL_ERROR "install tree is missing public headers or CLI binaries")
 endif()

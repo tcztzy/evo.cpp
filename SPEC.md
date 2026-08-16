@@ -2,7 +2,7 @@
 
 ## §G GOAL
 
-evo.cpp !成为本地、可嵌入、可移植的生物序列基础模型推理平台；Evo 2 exact inference 为首个且不可回退的参考实现，并原生覆盖 Biohub ESMC 300M/600M/6B 蛋白质 encoder inference。
+evo.cpp !成为本地、可嵌入、可移植的生物序列基础模型推理平台；Evo 2 exact inference 为首个且不可回退的参考实现，原生覆盖 Biohub ESMC 300M/600M/6B，并完整支持 GENEB v4 Table 4 全部 40 checkpoint 的 frozen embedding 推理与可复现评测。
 
 ## §C CONSTRAINTS
 
@@ -22,6 +22,13 @@ evo.cpp !成为本地、可嵌入、可移植的生物序列基础模型推理�
 - C14: ESMC 接入 !保持 Evo 2/HyenaDNA artifact、tokenization、CLI、C ABI 与数值 gate 行为不变。
 - C15: gpu02 Hugging Face 工作 !统一 `HF_HOME=/build/grp_icg/users/tang/.cache/huggingface`；repo cache !位于 `$HF_HOME/hub`，⊥在低配额 `$HOME` 重建 checkpoint cache。
 - C16: MPS v1 !macOS arm64；C++17 core + 最小 Objective-C++ bridge；MPS/Metal 执行 GEMM，host 执行 state/nonlinear ops；⊥MLX/PyTorch runtime，⊥exact claim，⊥silent CPU fallback。
+- C17: GENEB scope != 领域调研全集；! 精确覆盖 arXiv:2606.04525v4 Table 4 的 40 个 evaluated checkpoint；Table 5 的 13 个 excluded model 不得冒充已支持。
+- C18: “supported” !表示 canonical checkpoint 可完成 pinned fetch/receipt、strict conversion/load、模型一致 tokenization/context/hidden-state/pooling 与真实权重 oracle gate；仅 registry/catalog 行 ≠ support。
+- C19: GENEB production inference !遵守 C2；Python/PyTorch/JAX/官方自定义代码仅限隔离 converter/oracle/benchmark probe，⊥进入 `libevo` 依赖或推理调用链。
+- C20: 权重/license 不同构；项目只分发 Apache-2.0 自有代码/元数据/转换器；第三方 checkpoint 按原 license/AUP 由用户获取，⊥重新打包非商业或授权不明权重。
+- C21: GENEB 参考语义 !固定 `darlednik/GENEB@b465d2d6a11efbbc9a22c105e34832725ce50e05` + 已审计 patch/decision manifest；`geneb-v4-reference` 仅修复不可执行缺陷并保留 upstream 有效行为，`geneb-v4-normalized` 按记录独立消除 padding/batch 污染，二者结果不得混报。
+- C22: 每个 GENEB checkpoint !至少有 portable C++ CPU F32/BF16 correctness path；CUDA/MPS capability 按真实 kernel/设备证据声明，缺少则 typed unsupported，⊥以隐式截断或 CPU fallback 冒充加速支持。
+- C23: GENEB `runtime_support` 与 `benchmark_provenance` !独立；评测的“论文可复现”与“协议兼容” !分开声明；缺少可执行 reference extractor/官方 submission/digest 的模型可达 runtime supported 但只能产出 normalized protocol-compatible 结果，⊥声称重现论文榜单。
 
 ## §I INTERFACES
 
@@ -38,6 +45,12 @@ evo.cpp !成为本地、可嵌入、可移植的生物序列基础模型推理�
 - I11 esmc-artifact: metadata 至少含 architecture/profile/model-id/revision、layers/width/heads/vocab/context、tokenizer identity、tensor manifest 与 source receipt hash。
 - I12 esmc-c-api: `evo_context_prefill` callback 返回全部 encoded positions logits；`evo_context_embed` layer `0` 为 token embedding、`1..n-1` 为前一 block 输出、`n` 为官方 post-final-LayerNorm embedding；`decode/generate/causal score` → typed unsupported。
 - I13 mps-cli-c-api: `--backend mps [--profile mps-f32]`；`--gpu|--gpu-layers` → invalid_argument；C ABI append `EVO_BACKEND_MPS=3`,`EVO_STATUS_MPS=7`；ABI minor `1.4`。
+- I14 geneb-catalog: `configs/geneb-models.json` → 精确 40 条；`geneb_model_id`(pinned model_meta key)、`paper_name`(Table 4)、`runtime_id` 三者双射；alias 另表且不计数；family/architecture/params/tokenizer/context/embedding/input_transform/source files、extractor commit+patch hash、oracle env/input digest、weight/code/tokenizer/dataset license+AUP+redistribution、`runtime_support`、`benchmark_provenance` 与 backend/promotion state !分项可查询；reference batching 固定 `{batch_size,order,split_boundary,final_batch,pad_to_batch_max,padding_side}`。
+- I15 geneb-cli: `evo models --suite geneb [--json]`；`evo embed -m MODEL --input INPUT --output DIR --preset geneb-v4-{reference,normalized}` → 按 pinned preset 有界缓冲、保持输入顺序输出 per-record NPY + metadata，禁止同时传 `--layer|--pooling`；`geneb` alias 固定指向 normalized 且在 metadata 展开。
+- I16 geneb-fetch: `evo_fetch.py source MODEL --catalog configs/geneb-models.json` → pinned HF/HTTP/Dataverse/Drive receipt；无法自动获取的授权 checkpoint → typed manual-source 指引。
+- I17 geneb-artifact: strict family-specific Safetensors profile + typed tokenizer assets/forward config/embedding preset/source receipt；`input_transform` !声明 case/U→T/invalid/frame trim/crop side+offset/fixed pad/special-token/token-truncation policy；reference batch !按 I14 以输入顺序每 8 条分组、train/test 边界处 flush、末批保持实际大小、仅 pad 到当批最长（方向按模型 preset）；不兼容族 !独立 architecture/ABI，⊥伪装 `evo2-runtime-v1`。
+- I18 geneb-oracle: `tools/validate_geneb_models.py` → 40-model catalog/converter/load/token/hidden/pool gate summary JSON，每条证据含 `extractor_commit`、`normalization_patch_sha256`、`oracle_env`、`oracle_input_digest`；`tools/run_geneb.py` 使用 dataset revision `4edd705be573e48c585c2cf79dc320f9f43c7b04` 与 exact Python/NumPy/scikit-learn lock、完整 LogisticRegression kwargs/solver、thread env、submission schema 执行 100-task×`full|10shot|1shot` frozen probe，reference/normalized 输出分 namespace。
+- I19 geneb-embed-abi: C ABI minor `1.5` append `evo_context_embed_ex`、size/versioned options `{preset,layer,pooling}` 与 callback-scoped `evo_embedding_result_info` metadata（resolved preset/hidden tap/pooling/original+effective length/crop+pad/token count/rows/columns），旧 `evo_context_embed` 保持；server `/v1/embeddings` 接受 `preset:"geneb-v4-reference|geneb-v4-normalized"` 且与 `layer|pooling` 互斥。
 
 ## §R RESEARCH
 
@@ -58,6 +71,12 @@ R13|MPS GEMM|`MPSMatrixMultiplication` 执行 `C=alpha*op(A)*op(B)+beta*C`；mat
 R14|MPS matrix storage|`MPSMatrix` row-major，底层使用 `MTLBuffer`；CPU/GPU coherency 遵守 Metal buffer 规则|https://developer.apple.com/documentation/metalperformanceshaders/mpsmatrix
 R15|Metal CLI device|`MTLCreateSystemDefaultDevice()` 返回系统默认 GPU；macOS 非图形 CLI !显式链接 CoreGraphics|https://developer.apple.com/documentation/metal/mtlcreatesystemdefaultdevice%28%29?language=objc
 R16|GitHub macOS GPU|标准 arm64 macOS runner ⊥GPU acceleration contract；8-core GPU hardware acceleration 仅由 macOS xlarge runner 明示|https://docs.github.com/en/actions/reference/runners/larger-runners#available-macos-larger-runners-and-labels
+R17|GENEB model scope|v4 Table 4 定义 40 evaluated models：13 decoder、15 encoder + DeepGene、3 Hyena/StripedHyena、4 Mamba/Caduceus、2 JanusDNA、2 CNN-Transformer|https://arxiv.org/abs/2606.04525v4
+R18|GENEB protocol|GENEB 对 frozen sequence representations 使用统一 probing protocol；官方 main 说明 40-model reference extractors 位于 dev branch|https://github.com/darlednik/GENEB/tree/b465d2d6a11efbbc9a22c105e34832725ce50e05/embedding_pipeline/extractors
+R19|GENEB dataset|100 tasks/13 categories；task dataset immutable revision `4edd705be573e48c585c2cf79dc320f9f43c7b04`；probe=logistic regression，seeds=`13,17,42,123,997`|https://github.com/darlednik/GENEB/blob/b54d018903e7f6b874ee45b74e275936deff4cd3/benchmark/benchmark_spec.json
+R20|GENEB exclusions|13 surveyed models 因 private/broken/missing code/计算或 wrapper 原因排除；Evo2 不在 evaluated 40 中|https://arxiv.org/abs/2606.04525v4
+R21|GENEB source heterogeneity|official extractors 混用 HF AutoModel、自定义 PyTorch/JAX、Google Drive、Harvard Dataverse 与本地 checkpoint；转换层 !分离 source acquisition 与 runtime artifact|https://github.com/darlednik/GENEB/tree/b465d2d6a11efbbc9a22c105e34832725ce50e05/embedding_pipeline/extractors
+R22|GENEB harness reproducibility|official requirements 仅给 NumPy/scikit-learn 开放下界，harness 继承 LogisticRegression 多个版本默认值，validator 不重算 metrics；可复现 runner !额外锁定环境/参数/输出|https://github.com/darlednik/GENEB/blob/b54d018903e7f6b874ee45b74e275936deff4cd3/harness/run_GENEB.py
 
 ## §V INVARIANTS
 
@@ -103,6 +122,22 @@ R16|GitHub macOS GPU|标准 arm64 macOS runner ⊥GPU acceleration contract；8-
 - V40: backend dispatch !exhaustive；新 enum ⊥被既有 non-CUDA branch 当 CPU；MPS 与 `--gpu|--gpu-layers|device_count>0` 互斥。
 - V41: `libevo` 链入的 ∀ CXX/CUDA/OBJCXX backend object !编译期 hidden visibility；`v41_c_api_symbols` !严格匹配 C ABI allowlist，⊥导出内部 C++/backend symbol。
 - V42: MPS CI !始终编译 backend + 跑 portable contracts；`MTLCreateSystemDefaultDevice()==nil` 时仅 `v42_mps_*` hardware gates → CTest skip 77；skip ⊥作为 runtime 数值通过证据，真实 Metal host !全绿。
+- V43: GENEB catalog ∀ release → `paper_name` set bit-exact = v4 Table 4 40 显示名，`geneb_model_id` set bit-exact = pinned model_meta 40 key，两集各无重复/遗漏/多余且与 40 个 `runtime_id` 双射；alias ⊥计数。
+- V44: ∀ GENEB `runtime_support=supported` → canonical real checkpoint conversion+load+embed gate 存在且对 pinned input 通过独立 model oracle；只有 `benchmark_provenance=reference-eligible` 才额外要求 commit+patch official reference 在 clean locked env 产出已校验向量；catalog-only/tiny-only/source-unavailable → experimental|manual-source|unsupported，upstream-broken 可 runtime supported 但⊥ reference-eligible。
+- V45: ∀ GENEB embedding → token IDs、有效 token mask、hidden tap、pooling 与所选 C21 preset 一致；oracle dtype/backend/env/`max_abs|mean_abs|cosine` 阈值 !按 model+profile 在 catalog 校准并固定，⊥将 F32 通用阈值套给 BioFM BF16 等路径。
+- V46: architecture dispatch !由 artifact architecture + factory 决定；tokenizer/pooling/backend 是独立属性；⊥`tokenizer == architecture`、`bool esmc`或 unknown 默认 StripedHyena 分支。
+- V47: tokenizer ∀ runtime → vocab/merges/k-mer/special IDs/normalization/padding/RC 资产在 artifact 中 strict hash+schema 校验；⊥网络、locale、Python tokenizer 或未登记 fallback。
+- V48: ∀ third-party model → source revision/file hash、weight/code/tokenizer/dataset license、AUP、redistribution 状态在 receipt/catalog 分项可查；非商业/授权不明权重 ⊥进入 Git/release artifact/cache mirror。
+- V49: ∀ GENEB record → 先在分配前校验 raw safety cap，再执行 I17 显式 transform；仅 `length_policy=reject` 超限才拒绝，crop/trim/pad !可重现；原序列只 materialize 1 record；输出含 model/revision/profile/preset/layer/pooling/original+effective length/crop+pad/token_count/input identity。
+- V50: ∀ HyenaDNA/Mamba/StripedHyena 长上下文 checkpoint → 按模型声明上限执行且使用渐近算法；⊥静默 crop/硬限 4096/为规避实现而降低 context metadata。
+- V51: ∀ model/context → immutable weights 可共享；attention/cache/SSM/conv/MoE state 隔离；同 artifact/profile/input/preset → deterministic embedding bytes。
+- V52: ∀ backend capability → registry、CLI、C ABI、server/help/release metadata 一致；缺 kernel/device/memory → typed unsupported/OOM，⊥ partial output/silent CPU fallback。
+- V53: ∀ GENEB runtime family → tiny deterministic converter/tokenizer/CPU/backend fixture + corruption gates；∀ 40 canonical checkpoint → pinned short-sequence independent model oracle evidence；∀ `reference-eligible` checkpoint → commit+patch official reference 在 fresh locked env 产出并通过追加 evidence。
+- V54: GENEB probe → R19 dataset revision/tasks/splits/seeds/logreg 固定；`reference` 仅使用 hashed unblock patch，按 I14/I17 固定 input order、batch=8、split flush、末批不补齐与 batch-max padding，保留可执行 upstream 语义；`normalized` 逐记录消除 padding contamination/只取 batch[0] 等缺陷且只标 protocol-compatible；undefined `seq_length` 等 decision !在 T25 固定后才开工。
+- V55: GENEB change 后 ∀ existing Evo2/HyenaDNA/ESMC CPU/CUDA/MPS/C ABI/CLI/server/format/fetch/release gate !green；⊥改写已验证 artifact/token/logit/embedding semantics。
+- V56: ∀ promoted GENEB preset → CLI/C ABI `embed_ex`/server 的输出向量、transform/preset/shape/result-info metadata bitwise 或按 catalog tolerance parity；旧 C ABI 行为不变，互斥参数 typed fail。
+- V57: GENEB full run → 每个已支持模型完整 100 tasks×`full|10shot|1shot`×`MCC|Acc|F1`，lock/submission/env digest 齐全；仅 `benchmark_provenance=reference-eligible` + reference preset + pinned official submission 可比较 per-task metric `abs≤1e-6`，normalized-only 结果只标 protocol-compatible，⊥补数/混 namespace/声称榜单复现。
+- V58: ∀ embedding preset → hidden tap、CLS/mean/last/spatial pooling、special-token inclusion、mask domain 与 output width !显式固定；⊥用现有 `none|mean|last` 近似不同语义。
 
 ## §T TASKS
 
@@ -131,6 +166,21 @@ T21|x|接入 C API/CLI/HF offline artifact validation；补 logits/embedding met
 T22|x|生成 pinned 官方 oracle；gpu02 验证三尺寸；跑 full regression、记录证据并清理非制品文件|C8,C10,C14,C15,V16,V26,V28,V30,V31,V34
 T23|x|审计全仓 scope；修复 platform-level Evo 2-only 表述与 release metadata；增加 registry-driven contract|C7,V10,V16,V35,I8
 T24|x|实现 macOS arm64 MPS backend、CLI/C ABI/server、数值与构建契约|C2,C6,C10,C14,C16,R13,R14,R15,R16,V1,V2,V7,V8,V9,V10,V14,V15,V16,V21,V26,V31,V35,V36,V37,V38,V39,V40,V41,V42,I2,I3,I6,I7,I8,I10,I12,I13
+T25|x|冻结 GENEB 40-model 三 ID 双射、canonical source/file receipt、分项 license/AUP、reference/normalized extractor patch+input-transform+preset decision、oracle/env lock 与完整性 contract|C17,C18,C20,C21,C23,R17,R18,R19,R20,R21,R22,V43,V44,V45,V48,V54,V57,V58,I14,I16,I18
+T26|.|重构通用 model/architecture/backend factory、registry-driven artifact profile 与 capability dispatch|C2,C3,C7,C14,C19,V1,V2,V8,V10,V14,V15,V46,V51,V52,V55,I2,I3,I4,I7,I8,I17
+T27|.|实现 artifact-driven BPE/k-mer/SN/mixed/BioToken tokenizer、strict asset converter 与 catalog input-transform engine|C2,C18,C19,C21,V5,V10,V17,V25,V43,V45,V47,V49,V53,V55,V58,I4,I5,I17
+T28|.|实现 METAGENE、GenomeOcean×2、GENERator×2、BioFM、OmniNA 的 Llama/Mistral-derived CPU embedding/converter/oracle|C18,C19,C20,C21,C22,C23,R17,R18,V8,V10,V11,V44,V45,V48,V49,V51,V53,V55,V58,I15,I16,I17,I18
+T29|.|实现 OmniDNA×2、GPT2-Gene×2、DNA-GPT×2 的 OLMo/GPT2/custom-decoder CPU embedding/converter/oracle|C18,C19,C20,C21,C22,C23,R17,R18,V8,V10,V11,V44,V45,V48,V49,V51,V53,V55,V58,I15,I16,I17,I18
+T30|.|实现 NT×5 + Agro-NT 的 ESM-derived encoder CPU embedding/converter/oracle|C18,C19,C20,C21,C22,C23,R17,R18,V8,V10,V11,V44,V45,V48,V49,V51,V53,V55,V58,I15,I16,I17,I18
+T31|.|实现 GENA×3、DNABERT-S/2、GROVER、MutBERT 的 BERT/Mosaic/soft-input encoder CPU embedding/converter/oracle|C18,C19,C20,C21,C22,C23,R17,R18,V8,V10,V11,V44,V45,V48,V49,V51,V53,V55,V58,I15,I16,I17,I18
+T32|.|实现 LucaOne 与 Genomics-FM custom encoder CPU embedding/converter/oracle|C18,C19,C20,C21,C22,C23,R17,R18,V8,V10,V11,V44,V45,V48,V49,V51,V53,V55,V58,I15,I16,I17,I18
+T33|.|实现 Evo-1-131k + HyenaDNA Medium-160k/Large-1M 长上下文原生 CPU embedding/converter/oracle|C18,C19,C20,C21,C22,C23,V1,V8,V10,V11,V44,V45,V48,V49,V50,V51,V53,V55,V58,I15,I16,I17,I18
+T34|.|实现 eccDNAMamba、PlantCaduceus、Caduceus PS/PH 双向/RC Mamba 原生 CPU embedding/converter/oracle|C18,C19,C20,C21,C22,C23,V8,V10,V11,V44,V45,V48,V49,V50,V51,V53,V55,V58,I15,I16,I17,I18
+T35|.|实现 JanusDNA w/wo attention 的 Mamba+attention+MoE 原生 CPU embedding/converter/oracle|C18,C19,C20,C21,C22,C23,V8,V10,V11,V44,V45,V48,V49,V50,V51,V53,V55,V58,I15,I16,I17,I18
+T36|.|实现 Enformer、SPACE 与 DeepGene pinned RoFormer-only GENEB embedding path 的原生 CPU converter/oracle；DeepGene graph stage 非 GENEB profile 不在本任务内|C18,C19,C20,C21,C22,C23,V8,V10,V11,V44,V45,V48,V49,V51,V53,V54,V55,V58,I15,I16,I17,I18
+T37|.|为有实作 kernel 与证据的 GENEB family 接入 CUDA/MPS promotion matrix、backend factory、C ABI `embed_ex`/CLI/server；其余固定 typed unsupported|C2,C6,C14,C16,C19,C22,V2,V7,V8,V9,V10,V14,V16,V36,V37,V38,V39,V40,V41,V42,V45,V51,V52,V53,V55,V56,I2,I3,I7,I8,I13,I15,I19
+T38|.|实现 `models --suite geneb`、两个 embedding preset、pinned multi-source fetch/receipt 与 locked GENEB 100-task×3-regime probe runner|C8,C17,C18,C19,C20,C21,C23,V3,V5,V10,V11,V16,V17,V18,V20,V43,V44,V47,V48,V49,V52,V54,V55,V57,V58,I2,I4,I5,I6,I14,I15,I16,I18
+T39|.|在真实 checkpoint 上验证 CPU 40/40 conversion/load/token/embedding；验证 promoted CUDA/MPS matrix 与其余 typed unsupported；跑 full regression 并完成 docs/release evidence|C8,C15,C17,C18,C20,C22,C23,V16,V19,V22,V34,V35,V41,V42,V43,V44,V45,V48,V49,V52,V53,V54,V55,V56,V57,V58,I8,I14,I18,I19
 
 ## §B BUGS
 

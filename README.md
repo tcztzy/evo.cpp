@@ -213,6 +213,7 @@ then see the [7B first-divergence audit](docs/vortex-7b-bit-exactness.md),
 [execution profiles and acceptance gates](docs/execution-profiles.md),
 [architecture registry and HyenaDNA boundary](docs/architectures.md),
 [native Biohub ESMC inference](docs/esmc.md),
+[GENEB v4 model and evidence contract](docs/geneb.md),
 [sequence, gzip, stdin, VCF, and reference input](docs/sequence-inputs.md),
 [checkpoint conversion](docs/checkpoint-conversion.md), and
 [artifact acquisition and releases](docs/artifact-distribution.md),

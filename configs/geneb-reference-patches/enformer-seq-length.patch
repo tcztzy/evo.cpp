@@ -1,0 +1,5 @@
+--- a/embedding_pipeline/extractors/enformer.py
++++ b/embedding_pipeline/extractors/enformer.py
+@@ -15,1 +15,1 @@ class EnformerPyTorchExtractor(BaseEmbeddingExtractor):
+-        self.seq_length = int(seq_length)
++        self.seq_length = 196608

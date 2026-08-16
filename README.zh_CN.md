@@ -199,6 +199,7 @@ recipe revision。CUDA 使用的 FlashAttention 与 CUTLASS 仍由 CMake
 [执行 profile 与验收 gate](docs/execution-profiles.md)、
 [architecture registry 与 HyenaDNA 边界](docs/architectures.md)、
 [原生 Biohub ESMC 推理](docs/esmc.md)、
+[GENEB v4 模型与证据契约](docs/geneb.md)、
 [sequence、gzip、stdin、VCF 与 reference 输入](docs/sequence-inputs.md)、
 [artifact 获取与 release](docs/artifact-distribution.md)、
 [embedding 输出契约](docs/embeddings.md)、

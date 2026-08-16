@@ -517,8 +517,11 @@ install(
   PATTERN "json.hpp" EXCLUDE
   PATTERN "server.hpp" EXCLUDE)
 install(
-  FILES configs/model-registry.json
+  FILES configs/model-registry.json configs/geneb-models.json
   DESTINATION "${CMAKE_INSTALL_DATADIR}/evo/configs")
+install(
+  DIRECTORY configs/geneb-reference-patches/
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/evo/configs/geneb-reference-patches")
 install(
   FILES requirements-fetch.txt
   DESTINATION "${CMAKE_INSTALL_DATADIR}/evo")
@@ -834,6 +837,14 @@ if(BUILD_TESTING)
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_hf_fetch.py
       --tool ${CMAKE_CURRENT_SOURCE_DIR}/tools/evo_fetch.py
       --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/hf-fetch)
+  add_test(
+    NAME geneb_catalog_contract
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geneb_catalog.py
+      --validator ${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_geneb_models.py
+      --catalog ${CMAKE_CURRENT_SOURCE_DIR}/configs/geneb-models.json
+      --source-dir ${CMAKE_CURRENT_SOURCE_DIR}
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/geneb-catalog)
   add_test(
     NAME release_pipeline_contract
     COMMAND ${Python3_EXECUTABLE}
