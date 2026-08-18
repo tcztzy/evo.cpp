@@ -1,0 +1,574 @@
+{
+  "schema_version": "1.0",
+  "name": "GENEB \u2014 Genomic Embedding Benchmark",
+  "harness_version": "GENEB-0.1.0",
+  "regimes": [
+    "full",
+    "10shot",
+    "1shot"
+  ],
+  "metrics": [
+    "MCC",
+    "Acc",
+    "F1"
+  ],
+  "primary_metric": "MCC",
+  "protocol": {
+    "probe": "logistic_regression",
+    "logreg": {
+      "max_iter": 1000,
+      "n_jobs": 32
+    },
+    "seeds": [
+      13,
+      17,
+      42,
+      123,
+      997
+    ],
+    "pooling": "mean over tokens (model-specific, see extractors/)",
+    "few_shot_k": [
+      1,
+      10
+    ],
+    "note": "Linear probe on precomputed embeddings. Identical train/test splits for every model; see dataset revision below."
+  },
+  "dataset": {
+    "repo_id": "darlednik/geneb-tasks",
+    "source": "https://huggingface.co/datasets/darlednik/geneb-tasks",
+    "revision": "4edd705be573e48c585c2cf79dc320f9f43c7b04",
+    "layout": "HF: tasks/<task_id>/{train,test}.csv + README configs (subset=task label); harness: flat <task_id>.csv with text,label,split (built by download)"
+  },
+  "categories": {
+    "Histone Mod.": 30,
+    "Promoters": 22,
+    "Enhancers": 8,
+    "DNA Methyl.": 8,
+    "Splice Sites": 7,
+    "lncRNA": 6,
+    "Mouse Enh.": 5,
+    "TF Binding": 5,
+    "Species Clf.": 3,
+    "Regulatory": 2,
+    "Virus/Phage": 2,
+    "Coding/NC": 1,
+    "Chromatin Acc.": 1
+  },
+  "category_order": [
+    "Histone Mod.",
+    "Promoters",
+    "Enhancers",
+    "DNA Methyl.",
+    "Splice Sites",
+    "lncRNA",
+    "Mouse Enh.",
+    "TF Binding",
+    "Species Clf.",
+    "Regulatory",
+    "Virus/Phage",
+    "Coding/NC",
+    "Chromatin Acc."
+  ],
+  "tasks": [
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_H3",
+      "label": "NT H3",
+      "category": "Histone Mod."
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_H3K14ac",
+      "label": "NT H3K14ac",
+      "category": "Histone Mod."
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_H3K36me3",
+      "label": "NT H3K36me3",
+      "category": "Histone Mod."
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_H3K4me1",
+      "label": "NT H3K4me1",
+      "category": "Histone Mod."
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_H3K4me2",
+      "label": "NT H3K4me2",
+      "category": "Histone Mod."
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_H3K4me3",
+      "label": "NT H3K4me3",
+      "category": "Histone Mod."
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_H3K79me3",
+      "label": "NT H3K79me3",
+      "category": "Histone Mod."
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_H3K9ac",
+      "label": "NT H3K9ac",
+      "category": "Histone Mod."
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_H4",
+      "label": "NT H4",
+      "category": "Histone Mod."
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_H4ac",
+      "label": "NT H4ac",
+      "category": "Histone Mod."
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_revised_H2AFZ",
+      "label": "NT-rev H2AFZ",
+      "category": "Histone Mod."
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_revised_H3K27ac",
+      "label": "NT-rev H3K27ac",
+      "category": "Histone Mod."
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_revised_H3K27me3",
+      "label": "NT-rev H3K27me3",
+      "category": "Histone Mod."
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_revised_H3K36me3",
+      "label": "NT-rev H3K36me3",
+      "category": "Histone Mod."
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_revised_H3K4me1",
+      "label": "NT-rev H3K4me1",
+      "category": "Histone Mod."
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_revised_H3K4me2",
+      "label": "NT-rev H3K4me2",
+      "category": "Histone Mod."
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_revised_H3K4me3",
+      "label": "NT-rev H3K4me3",
+      "category": "Histone Mod."
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_revised_H3K9ac",
+      "label": "NT-rev H3K9ac",
+      "category": "Histone Mod."
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_revised_H3K9me3",
+      "label": "NT-rev H3K9me3",
+      "category": "Histone Mod."
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_revised_H4K20me1",
+      "label": "NT-rev H4K20me1",
+      "category": "Histone Mod."
+    },
+    {
+      "id": "leannmlindsey_GUE_emp_H3",
+      "label": "GUE-emp H3",
+      "category": "Histone Mod."
+    },
+    {
+      "id": "leannmlindsey_GUE_emp_H3K14ac",
+      "label": "GUE-emp H3K14ac",
+      "category": "Histone Mod."
+    },
+    {
+      "id": "leannmlindsey_GUE_emp_H3K36me3",
+      "label": "GUE-emp H3K36me3",
+      "category": "Histone Mod."
+    },
+    {
+      "id": "leannmlindsey_GUE_emp_H3K4me1",
+      "label": "GUE-emp H3K4me1",
+      "category": "Histone Mod."
+    },
+    {
+      "id": "leannmlindsey_GUE_emp_H3K4me2",
+      "label": "GUE-emp H3K4me2",
+      "category": "Histone Mod."
+    },
+    {
+      "id": "leannmlindsey_GUE_emp_H3K4me3",
+      "label": "GUE-emp H3K4me3",
+      "category": "Histone Mod."
+    },
+    {
+      "id": "leannmlindsey_GUE_emp_H3K79me3",
+      "label": "GUE-emp H3K79me3",
+      "category": "Histone Mod."
+    },
+    {
+      "id": "leannmlindsey_GUE_emp_H3K9ac",
+      "label": "GUE-emp H3K9ac",
+      "category": "Histone Mod."
+    },
+    {
+      "id": "leannmlindsey_GUE_emp_H4",
+      "label": "GUE-emp H4",
+      "category": "Histone Mod."
+    },
+    {
+      "id": "leannmlindsey_GUE_emp_H4ac",
+      "label": "GUE-emp H4ac",
+      "category": "Histone Mod."
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_promoter_all",
+      "label": "NT promoter all",
+      "category": "Promoters"
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_promoter_no_tata",
+      "label": "NT promoter no tata",
+      "category": "Promoters"
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_promoter_tata",
+      "label": "NT promoter tata",
+      "category": "Promoters"
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_revised_promoter_all",
+      "label": "NT-rev promoter all",
+      "category": "Promoters"
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_revised_promoter_no_tata",
+      "label": "NT-rev promoter no tata",
+      "category": "Promoters"
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_revised_promoter_tata",
+      "label": "NT-rev promoter tata",
+      "category": "Promoters"
+    },
+    {
+      "id": "InstaDeepAI_plant-genomic-benchmark_pro_seq.m_esculenta",
+      "label": "PGB pro seq.m esculenta",
+      "category": "Promoters"
+    },
+    {
+      "id": "iPro-WAEL_Promoter_Arabidopsis_NonTATA",
+      "label": "iPro Arabidopsis NonTATA",
+      "category": "Promoters"
+    },
+    {
+      "id": "iPro-WAEL_Promoter_Arabidopsis_TATA",
+      "label": "iPro Arabidopsis TATA",
+      "category": "Promoters"
+    },
+    {
+      "id": "iPro-WAEL_Promoter_B_amyloliquefaciens",
+      "label": "iPro B amyloliquefaciens",
+      "category": "Promoters"
+    },
+    {
+      "id": "iPro-WAEL_Promoter_GM12878",
+      "label": "iPro GM12878",
+      "category": "Promoters"
+    },
+    {
+      "id": "iPro-WAEL_Promoter_HUVEC",
+      "label": "iPro HUVEC",
+      "category": "Promoters"
+    },
+    {
+      "id": "iPro-WAEL_Promoter_Hela-S3",
+      "label": "iPro Hela-S3",
+      "category": "Promoters"
+    },
+    {
+      "id": "iPro-WAEL_Promoter_NHEK",
+      "label": "iPro NHEK",
+      "category": "Promoters"
+    },
+    {
+      "id": "iPro-WAEL_Promoter_R_capsulatus",
+      "label": "iPro R capsulatus",
+      "category": "Promoters"
+    },
+    {
+      "id": "katarinagresova_Genomic_Benchmarks_human_nontata_promoters",
+      "label": "GB human nontata promoters",
+      "category": "Promoters"
+    },
+    {
+      "id": "leannmlindsey_GUE_prom_300_all",
+      "label": "GUE prom 300 all",
+      "category": "Promoters"
+    },
+    {
+      "id": "leannmlindsey_GUE_prom_300_notata",
+      "label": "GUE prom 300 notata",
+      "category": "Promoters"
+    },
+    {
+      "id": "leannmlindsey_GUE_prom_300_tata",
+      "label": "GUE prom 300 tata",
+      "category": "Promoters"
+    },
+    {
+      "id": "leannmlindsey_GUE_prom_core_all",
+      "label": "GUE prom core all",
+      "category": "Promoters"
+    },
+    {
+      "id": "leannmlindsey_GUE_prom_core_notata",
+      "label": "GUE prom core notata",
+      "category": "Promoters"
+    },
+    {
+      "id": "leannmlindsey_GUE_prom_core_tata",
+      "label": "GUE prom core tata",
+      "category": "Promoters"
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_enhancers",
+      "label": "NT enhancers",
+      "category": "Enhancers"
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_enhancers_types",
+      "label": "NT enhancers types",
+      "category": "Enhancers"
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_revised_enhancers",
+      "label": "NT-rev enhancers",
+      "category": "Enhancers"
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_revised_enhancers_types",
+      "label": "NT-rev enhancers types",
+      "category": "Enhancers"
+    },
+    {
+      "id": "katarinagresova_Genomic_Benchmarks_drosophila_enhancers_stark",
+      "label": "GB drosophila enhancers stark",
+      "category": "Enhancers"
+    },
+    {
+      "id": "katarinagresova_Genomic_Benchmarks_dummy_mouse_enhancers_ensembl",
+      "label": "GB dummy mouse enhancers ensembl",
+      "category": "Enhancers"
+    },
+    {
+      "id": "katarinagresova_Genomic_Benchmarks_human_enhancers_cohn",
+      "label": "GB human enhancers cohn",
+      "category": "Enhancers"
+    },
+    {
+      "id": "katarinagresova_Genomic_Benchmarks_human_enhancers_ensembl",
+      "label": "GB human enhancers ensembl",
+      "category": "Enhancers"
+    },
+    {
+      "id": "deep4mc_A.thaliana_4mC",
+      "label": "4mC A.thaliana 4mC",
+      "category": "DNA Methyl."
+    },
+    {
+      "id": "deep4mc_C.elegans_4mC",
+      "label": "4mC C.elegans 4mC",
+      "category": "DNA Methyl."
+    },
+    {
+      "id": "deep4mc_D.melanogaster_4mC",
+      "label": "4mC D.melanogaster 4mC",
+      "category": "DNA Methyl."
+    },
+    {
+      "id": "deep4mc_E.coli_4mC",
+      "label": "4mC E.coli 4mC",
+      "category": "DNA Methyl."
+    },
+    {
+      "id": "deep4mc_G.pickeringii_4mC",
+      "label": "4mC G.pickeringii 4mC",
+      "category": "DNA Methyl."
+    },
+    {
+      "id": "deep4mc_G.subterraneus_4mC",
+      "label": "4mC G.subterraneus 4mC",
+      "category": "DNA Methyl."
+    },
+    {
+      "id": "iDNA_ABF_5mC",
+      "label": "iDNA 5mC",
+      "category": "DNA Methyl."
+    },
+    {
+      "id": "iDNA_ABF_6mA",
+      "label": "iDNA 6mA",
+      "category": "DNA Methyl."
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_revised_splice_sites_acceptors",
+      "label": "NT-rev splice sites acceptors",
+      "category": "Splice Sites"
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_revised_splice_sites_all",
+      "label": "NT-rev splice sites all",
+      "category": "Splice Sites"
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_revised_splice_sites_donors",
+      "label": "NT-rev splice sites donors",
+      "category": "Splice Sites"
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_splice_sites_acceptors",
+      "label": "NT splice sites acceptors",
+      "category": "Splice Sites"
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_splice_sites_all",
+      "label": "NT splice sites all",
+      "category": "Splice Sites"
+    },
+    {
+      "id": "InstaDeepAI_nucleotide_transformer_downstream_tasks_splice_sites_donors",
+      "label": "NT splice sites donors",
+      "category": "Splice Sites"
+    },
+    {
+      "id": "leannmlindsey_GUE_splice_reconstructed",
+      "label": "GUE splice reconstructed",
+      "category": "Splice Sites"
+    },
+    {
+      "id": "InstaDeepAI_plant-genomic-benchmark_lncrna.g_max",
+      "label": "PGB lncrna.g max",
+      "category": "lncRNA"
+    },
+    {
+      "id": "InstaDeepAI_plant-genomic-benchmark_lncrna.m_esculenta",
+      "label": "PGB lncrna.m esculenta",
+      "category": "lncRNA"
+    },
+    {
+      "id": "InstaDeepAI_plant-genomic-benchmark_lncrna.s_bicolor",
+      "label": "PGB lncrna.s bicolor",
+      "category": "lncRNA"
+    },
+    {
+      "id": "InstaDeepAI_plant-genomic-benchmark_lncrna.s_lycopersicum",
+      "label": "PGB lncrna.s lycopersicum",
+      "category": "lncRNA"
+    },
+    {
+      "id": "InstaDeepAI_plant-genomic-benchmark_lncrna.t_aestivum",
+      "label": "PGB lncrna.t aestivum",
+      "category": "lncRNA"
+    },
+    {
+      "id": "InstaDeepAI_plant-genomic-benchmark_lncrna.z_mays",
+      "label": "PGB lncrna.z mays",
+      "category": "lncRNA"
+    },
+    {
+      "id": "leannmlindsey_GUE_mouse_0",
+      "label": "GUE mouse 0",
+      "category": "Mouse Enh."
+    },
+    {
+      "id": "leannmlindsey_GUE_mouse_1",
+      "label": "GUE mouse 1",
+      "category": "Mouse Enh."
+    },
+    {
+      "id": "leannmlindsey_GUE_mouse_2",
+      "label": "GUE mouse 2",
+      "category": "Mouse Enh."
+    },
+    {
+      "id": "leannmlindsey_GUE_mouse_3",
+      "label": "GUE mouse 3",
+      "category": "Mouse Enh."
+    },
+    {
+      "id": "leannmlindsey_GUE_mouse_4",
+      "label": "GUE mouse 4",
+      "category": "Mouse Enh."
+    },
+    {
+      "id": "leannmlindsey_GUE_human_tf_0",
+      "label": "GUE human tf 0",
+      "category": "TF Binding"
+    },
+    {
+      "id": "leannmlindsey_GUE_human_tf_1",
+      "label": "GUE human tf 1",
+      "category": "TF Binding"
+    },
+    {
+      "id": "leannmlindsey_GUE_human_tf_2",
+      "label": "GUE human tf 2",
+      "category": "TF Binding"
+    },
+    {
+      "id": "leannmlindsey_GUE_human_tf_3",
+      "label": "GUE human tf 3",
+      "category": "TF Binding"
+    },
+    {
+      "id": "leannmlindsey_GUE_human_tf_4",
+      "label": "GUE human tf 4",
+      "category": "TF Binding"
+    },
+    {
+      "id": "katarinagresova_Genomic_Benchmarks_demo_human_or_worm",
+      "label": "GB demo human or worm",
+      "category": "Species Clf."
+    },
+    {
+      "id": "leannmlindsey_GUE_fungi_species_20",
+      "label": "GUE fungi species 20",
+      "category": "Species Clf."
+    },
+    {
+      "id": "leannmlindsey_GUE_virus_species_40",
+      "label": "GUE virus species 40",
+      "category": "Species Clf."
+    },
+    {
+      "id": "katarinagresova_Genomic_Benchmarks_human_ensembl_regulatory",
+      "label": "GB human ensembl regulatory",
+      "category": "Regulatory"
+    },
+    {
+      "id": "katarinagresova_Genomic_Benchmarks_human_ocr_ensembl",
+      "label": "GB human ocr ensembl",
+      "category": "Regulatory"
+    },
+    {
+      "id": "leannmlindsey_GUE_phage_fragments",
+      "label": "GUE phage fragments",
+      "category": "Virus/Phage"
+    },
+    {
+      "id": "leannmlindsey_GUE_virus_covid",
+      "label": "GUE virus covid",
+      "category": "Virus/Phage"
+    },
+    {
+      "id": "katarinagresova_Genomic_Benchmarks_demo_coding_vs_intergenomic_seqs",
+      "label": "GB demo coding vs intergenomic seqs",
+      "category": "Coding/NC"
+    },
+    {
+      "id": "iDHS-EL_DNase_I",
+      "label": "iDHS DNase I",
+      "category": "Chromatin Acc."
+    }
+  ]
+}

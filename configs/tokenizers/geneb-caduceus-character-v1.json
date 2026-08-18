@@ -1,0 +1,14 @@
+{
+  "format": "evo-tokenizer-compiler-v1",
+  "source": "custom",
+  "kind": "single-nucleotide",
+  "files": [
+    {
+      "role": "spec",
+      "name": "geneb-caduceus-character-source-v1.json",
+      "size": 1158,
+      "sha256": "40559900aabf0b788294fb2d72ec28528d392090a101d01a685f5e02f79af12c"
+    }
+  ],
+  "options": {}
+}

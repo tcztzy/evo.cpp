@@ -1,0 +1,14 @@
+{
+  "format": "evo-tokenizer-compiler-v1",
+  "source": "custom",
+  "kind": "single-nucleotide",
+  "files": [
+    {
+      "role": "spec",
+      "name": "geneb-hyenadna-character-source-v1.json",
+      "size": 1100,
+      "sha256": "5d44d9a7580d72eaf2f62f2c79218ac14b426bfbc8582ae1543fbd2ac96f5bfa"
+    }
+  ],
+  "options": {}
+}

@@ -17,6 +17,38 @@ on CPU or MPS through the same CLI, C ABI, embedding, variant, and server surfac
 It additionally runs Biohub's public ESMC 300M, 600M, and 6B F32 protein
 transformers natively on CPU, MPS, or one CUDA GPU, exposing masked-LM logits and
 official hidden-state indices without a Python/PyTorch inference dependency.
+The CPU-only `GenebTransformerDecoder` adapter consumes verified artifact
+tokenizers and the `geneb-decoder-runtime-v1` profile for the seven
+Llama/Mistral-derived GENEB checkpoints; all 40 GENEB v4 checkpoints have now
+passed their pinned real-checkpoint CPU oracle and are runtime-supported as
+documented in [GENEB support](docs/geneb.md).
+The separate CPU-only `GenebOlmoDecoder` / `geneb-olmo-runtime-v1` path
+preserves the two Omni-DNA checkpoints' OLMo-specific fused projections and
+distinct normalization topologies.
+The CPU-only `GenebEsmEncoder` / `geneb-esm-runtime-v1` path preserves the
+six Nucleotide Transformer and Agro-NT ESM-derived bidirectional encoders.
+The CPU-only `GenebBertEncoder` / `geneb-bert-runtime-v1` path covers the
+seven GENA, DNABERT, GROVER, and MutBERT encoder checkpoints.
+The CPU-only `GenebGpt2Decoder` / `geneb-gpt2-runtime-v1` and
+`GenebDnaGptDecoder` / `geneb-dna-gpt-runtime-v1` paths preserve the two
+GPT2-Gene and two DNA-GPT embedding contracts. The complete 40-checkpoint
+GENEB catalog is CPU runtime-supported; CUDA and MPS remain typed unsupported.
+The CPU-only `GenebCustomEncoder` / `geneb-custom-encoder-runtime-v1` path
+preserves the pinned LucaOne and Genomics-FM encoder variants, including their
+different tokenizer-vocabulary, position, normalization, and pooling rules.
+The CPU-only `GenebMambaEncoder` / `geneb-mamba-runtime-v1` path preserves
+eccDNAMamba plus PlantCaduceus and Caduceus PS/PH bidirectional Mamba variants,
+including RC parameter sharing and model/tokenizer vocabulary separation.
+The CPU-only `GenebHyenaDnaDecoder` / `geneb-hyenadna-runtime-v1` and
+`GenebStripedHyenaV1` / `geneb-evo1-runtime-v1` paths preserve the two pinned
+long-context HyenaDNA checkpoints and the distinct Evo-1 StripedHyena graph.
+The CPU-only `GenebJanusDnaEncoder` / `geneb-janusdna-runtime-v1` path keeps
+the two pinned Mamba+MoE variants, including the optional middle attention
+block and their final doubled hidden-state contract.
+The CPU-only `GenebSequenceCnnEncoder` / `geneb-sequence-cnn-runtime-v1` path
+keeps the pinned Enformer and SPACE sequence-CNN trunks, while
+`GenebRoformerEncoder` / `geneb-roformer-runtime-v1` admits only DeepGene's
+GENEB-used RoFormer embedding path and excludes its graph stage.
 
 ## Why evo.cpp?
 
@@ -212,6 +244,7 @@ then see the [7B first-divergence audit](docs/vortex-7b-bit-exactness.md),
 [numerical contracts](docs/math-semantics.md),
 [execution profiles and acceptance gates](docs/execution-profiles.md),
 [architecture registry and HyenaDNA boundary](docs/architectures.md),
+[offline tokenizer assets](docs/tokenizer-assets.md),
 [native Biohub ESMC inference](docs/esmc.md),
 [GENEB v4 model and evidence contract](docs/geneb.md),
 [sequence, gzip, stdin, VCF, and reference input](docs/sequence-inputs.md),

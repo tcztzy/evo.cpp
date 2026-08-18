@@ -2,7 +2,18 @@
 
 `evo.cpp` 使用标准 Safetensors 作为生产模型容器。Evo 2 保持严格、确定性的
 `evo2-runtime-v1` profile；HyenaDNA 使用独立的
-`hyenadna-runtime-v1` profile；ESMC 使用 `esmc-runtime-v1`。单文件使用
+`hyenadna-runtime-v1` profile；ESMC 使用 `esmc-runtime-v1`；GENEB 的
+Llama/Mistral 派生 decoder 使用 `geneb-decoder-runtime-v1`；Omni-DNA 使用
+独立的 `geneb-olmo-runtime-v1`；NT/Agro-NT encoder 使用
+`geneb-esm-runtime-v1`；GENA/DNABERT/GROVER/MutBERT 使用
+`geneb-bert-runtime-v1`；GPT2-Gene 使用 `geneb-gpt2-runtime-v1`；DNA-GPT
+使用 `geneb-dna-gpt-runtime-v1`；LucaOne/Genomics-FM 使用
+`geneb-custom-encoder-runtime-v1`；Mamba/Caduceus 使用
+`geneb-mamba-runtime-v1`；长 HyenaDNA 与 Evo-1 分别使用
+`geneb-hyenadna-runtime-v1` 与 `geneb-evo1-runtime-v1`；JanusDNA 使用
+`geneb-janusdna-runtime-v1`；Enformer/SPACE 使用
+`geneb-sequence-cnn-runtime-v1`；DeepGene RoFormer-only 使用
+`geneb-roformer-runtime-v1`。单文件使用
 `.safetensors` 后缀；大模型使用
 标准 Safetensors 分片名与 `model.safetensors.index.json`。
 
@@ -128,6 +139,25 @@ ESMC 同样使用独立键值：
 runtime.profile = s:esmc-runtime-v1
 runtime.abi     = s:esmc-safetensors-v1
 ```
+
+需要非内建 tokenizer 的 artifact 可声明一个同目录 sidecar。四个字段必须同时
+出现，且任何其他 `tokenizer.*` 字段都会被拒绝：
+
+```text
+tokenizer.profile = s:evo-tokenizer-v1
+tokenizer.path    = s:assets/tokenizer.evo.json
+tokenizer.sha256  = s:<64 位 lowercase SHA-256>
+tokenizer.size    = u:<positive byte count, at most 64 MiB>
+```
+
+`tokenizer.path` 必须是 canonical relative path；不得包含空组件、`.`、`..`、
+absolute/root name 或 symlink component。runtime 在解析 JSON 前校验 regular-file、
+size 与 SHA-256，并以 fail-closed schema 读取 vocab、merge、normalization、special
+token、template 与 padding。descriptor 一旦存在，runtime 不会回退到 architecture
+内建 tokenizer，也不会访问网络。
+
+完整 closed schema、kind matrix 与 typed-unsupported 边界见
+[`tokenizer-assets.md`](tokenizer-assets.md)。
 
 ESMC runtime tensors 保持官方 F32 names/shapes，按 embedding、每层 attention/
 FFN、final norm、LM head 的确定顺序写出；唯一不写入 runtime 的 source entries

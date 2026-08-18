@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "kind": "geneb-dual-root-promotion-audit-v1",
+  "runtime_id": "geneb-lucaone",
+  "frozen_contract": {
+    "catalog_contract_sha256": "0dd2d9b95f1fb5cd53f5dbb48cea9a1a05da8214b3818ae710de03744f34b7b4",
+    "converter_profile_contract_sha256": "d7288fb627dcd2bf39168d76053d352b03470d3a38f670e4330c7bff631c7aa1",
+    "converter_sha256": "28dda3fcf7a49658c59a00b4a3ae71b00e3dfb3671d8d3705999b09467c1a38f",
+    "final_native_sha256": "bbad40732ef35c11b63ccbddab6ee6d50e42269aec96dbaf4925ea9f2a8e67ab",
+    "profiles_sha256": "4ca5a51aea939a4f6a34628ffd8db1536020212cb5aef9d4677623e9a5505471",
+    "source_receipt_sha256": "e9cd81d50a0aac7e897bd1f9598b71cacee2c4797ae0fc45b3e876d61b8105c7",
+    "tokenizer": {
+      "asset_sha256": "5660fa7f423d56563066931e93351869e0c10483bdd2a2552230a91e7dca9ac3",
+      "asset_size": 1560,
+      "compiler_manifest_sha256": "ab157c44faddcf675bca7a28b16d2c7d4e73bb245415f583c4cccae193aa0eb9",
+      "descriptor_sha256": "badb16aa5667fdc6ec4cc590e70196ba00de259ccb411c5db625496430954c2d",
+      "source_receipt_contract_sha256": "b15eedddde020d8666cadb0b8231affa95ec9804c73e43ab6a0ed965541a9284"
+    },
+    "tolerances": {
+      "cosine": 0.999999,
+      "max_abs": 0.0001,
+      "mean_abs": 0.00001
+    }
+  },
+  "backprop_closures": {
+    "B113": {
+      "description": "The second checkpoint shard and the catalog/profile allowlists use the exact pinned source hash.",
+      "shard_sha256": "1b2b9ec5fa2159a09c671e5d0dde6c1ea9537219f5ceab51a53e189cb79c5fb5"
+    },
+    "B122": {
+      "description": "All 20 F32 RoPE buffers are the exact FP16-rounded then F32-upcast sequence and remain present in the runtime artifact.",
+      "layer_count": 20,
+      "payload_sha256": "fbd34497ae14419f5376f818eb15303dcc48b5496124bf8acddb564310260879"
+    },
+    "B126": {
+      "description": "The production public-adapter gate performs bit-equal typed/public hidden and pooling checks only at 7 and 9 rows; 4096-row padding and truncation are metadata-only.",
+      "adapter_test_source_sha256": "03d79dc336c4f9f7f111ef02319098b989a94d89bed2fcb8e9a74c32bfd60481",
+      "maximum_forward_rows": 9
+    }
+  },
+  "artifact": {
+    "absolute_root_count": 2,
+    "byte_identical": true,
+    "header_sha256": "f6def400d39ef62793aef2fb26519c5c648067b9eab9d05b3ba12b1bc0e448dd",
+    "sha256": "91a8808287e8f65c5e31a89d0a4903ad51c682757f3d01444da336ff4ae92077",
+    "size": 6294606752,
+    "tensor_count": 344
+  },
+  "oracle": {
+    "generator_sha256": "d9f5e5e4d5a1a4dbadd52e608211647dbae5d109c31942fe93e06959a6172e41",
+    "report_path": "evidence/oracles/geneb-lucaone/oracle-report.json",
+    "report_sha256": "c6bda895e5ea66a8096ab96266bbe20f7956d541ade59834c5580f6e77b008f3",
+    "inputs": [
+      {
+        "label": "input-0",
+        "npy_sha256": "4c92640f7e76ec8805686095792151da4868675ff7f5f4fcb7d32b280ca7c82c",
+        "vector_sha256": "1bb53aff8378fb089b71ff297ea94fbcb1e23aa19f01b5c15e07aba72d8c935a"
+      },
+      {
+        "label": "input-1",
+        "npy_sha256": "a4c21b94f70c56f1c6adff7e3b846499bf44e7f6cb4d699601ebc950d6ad7fed",
+        "vector_sha256": "2a462c2a99c65ea512bf2b044bb7c9da9f9e5bdbd56142fd152e5a010bbb5699"
+      }
+    ]
+  },
+  "public_adapter": {
+    "maximum_forward_rows": 9,
+    "model_vocab": 39,
+    "pooling": "attention-mask-mean",
+    "release_and_asan_targeted_tests": "3/3 passed in each build",
+    "rows": 7,
+    "status": "passed",
+    "tokenizer_vocab": 39,
+    "width": 2560
+  },
+  "runs": [
+    {
+      "absolute_root_count": 2,
+      "byte_identical": {
+        "evidence": true,
+        "npy": true,
+        "raw_manifest": true
+      },
+      "evidence_path": "evidence/geneb-lucaone.json",
+      "evidence_sha256": "e2e6a0278fc5de96a6b55bf61ae3781024b5a73a5c7fdbcbb541442aefdda0a9",
+      "label": "input-0",
+      "metrics": {
+        "cosine": 0.9999999999999393,
+        "max_abs": 0.0000019073486328125,
+        "mean_abs": 0.00000003993330639495696
+      },
+      "native_npy_sha256": "f1d3a8973d641407b26183bf5c12744f3310c20a15c08ffbc1a5a6462a60a208",
+      "raw_manifest_sha256": "a9df69d08c2a8ee940a2c092edb7b39611f1b8143d980a42e52e7949762a015d"
+    },
+    {
+      "absolute_root_count": 2,
+      "byte_identical": {
+        "evidence": true,
+        "npy": true,
+        "raw_manifest": true
+      },
+      "evidence_path": "evidence/audits/geneb-lucaone-input1.json",
+      "evidence_sha256": "cda58232b1586d8ca67932fafdb3000dad797ab5fb74239caff69c92e739994d",
+      "label": "input-1",
+      "metrics": {
+        "cosine": 0.9999999999999483,
+        "max_abs": 0.00000286102294921875,
+        "mean_abs": 0.00000003382576529986636
+      },
+      "native_npy_sha256": "da5cd3c48912ab3aaf3f3335e60520def1e6099a97abe56f9af23987c9346051",
+      "raw_manifest_sha256": "9c8b8452f8ea5b3b954a561e939c919fdb1c37f148cf72793bf33aac9d8b5d05"
+    }
+  ]
+}

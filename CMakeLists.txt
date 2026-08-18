@@ -74,13 +74,30 @@ add_library(
   src/cli.cpp
   src/cpu_reference.cpp
   src/cpu/esmc.cpp
+  src/cpu/geneb_bert.cpp
+  src/cpu/geneb_custom_encoder.cpp
+  src/cpu/geneb_decoder.cpp
+  src/cpu/geneb_decoder_omnina_apple.cpp
+  src/cpu/geneb_esm.cpp
+  src/cpu/fft_convolution.cpp
+  src/cpu/geneb_evo1.cpp
+  src/cpu/geneb_gpt.cpp
+  src/cpu/geneb_hyenadna.cpp
+  src/cpu/geneb_janusdna.cpp
+  src/cpu/geneb_mamba.cpp
+  src/cpu/geneb_olmo.cpp
+  src/cpu/geneb_roformer.cpp
+  src/cpu/geneb_sequence_cnn.cpp
   src/cpu/hyenadna.cpp
+  src/cpu/mamba_primitives.cpp
   src/cpu/model.cpp
   src/cpu/inference_cli.cpp
   src/artifact_cache.cpp
   src/backend.cpp
   src/benchmark.cpp
   src/fp8.cpp
+  src/geneb_input_transform.cpp
+  src/geneb_embedding.cpp
   src/generation_io.cpp
   src/json.cpp
   src/input_stream.cpp
@@ -108,7 +125,16 @@ set_target_properties(
     POSITION_INDEPENDENT_CODE ON
     VISIBILITY_INLINES_HIDDEN ON)
 evo_configure_target(evo_core)
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+  set_source_files_properties(
+    src/cpu/geneb_decoder_omnina_apple.cpp
+    PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+endif()
 target_link_libraries(evo_core PRIVATE "${EVO_ZLIB_LIBRARY}")
+if(APPLE)
+  find_library(EVO_ACCELERATE_FRAMEWORK Accelerate REQUIRED)
+  target_link_libraries(evo_core PRIVATE "${EVO_ACCELERATE_FRAMEWORK}")
+endif()
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
   target_link_libraries(evo_core PUBLIC stdc++fs)
 endif()
@@ -508,7 +534,86 @@ install(
   DESTINATION "${CMAKE_INSTALL_BINDIR}"
   RENAME evo-fetch)
 install(
-  FILES tools/evo/__init__.py tools/evo/artifact_profiles.py
+  PROGRAMS tools/convert_tokenizer_asset.py
+  DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  RENAME evo-convert-tokenizer)
+install(
+  PROGRAMS tools/convert_geneb_decoder_checkpoint.py
+  DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  RENAME evo-convert-geneb-decoder)
+install(
+  PROGRAMS tools/convert_geneb_bert_checkpoint.py
+  DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  RENAME evo-convert-geneb-bert)
+install(
+  PROGRAMS tools/convert_geneb_custom_encoder_checkpoint.py
+  DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  RENAME evo-convert-geneb-custom-encoder)
+install(
+  PROGRAMS tools/convert_geneb_esm_checkpoint.py
+  DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  RENAME evo-convert-geneb-esm)
+install(
+  PROGRAMS tools/convert_geneb_olmo_checkpoint.py
+  DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  RENAME evo-convert-geneb-olmo)
+install(
+  PROGRAMS tools/convert_geneb_mamba_checkpoint.py
+  DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  RENAME evo-convert-geneb-mamba)
+install(
+  PROGRAMS tools/convert_geneb_janusdna_checkpoint.py
+  DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  RENAME evo-convert-geneb-janusdna)
+install(
+  PROGRAMS tools/convert_geneb_sequence_cnn_checkpoint.py
+  DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  RENAME evo-convert-geneb-sequence-cnn)
+install(
+  PROGRAMS tools/convert_geneb_roformer_checkpoint.py
+  DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  RENAME evo-convert-geneb-roformer)
+install(
+  PROGRAMS tools/convert_geneb_deepgene_tokenizer.py
+  DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  RENAME evo-convert-geneb-deepgene-tokenizer)
+install(
+  PROGRAMS tools/convert_geneb_gpt2_checkpoint.py
+  DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  RENAME evo-convert-geneb-gpt2)
+install(
+  PROGRAMS tools/convert_geneb_dna_gpt_checkpoint.py
+  DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  RENAME evo-convert-geneb-dna-gpt)
+install(
+  PROGRAMS tools/convert_geneb_hyenadna_checkpoint.py
+  DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  RENAME evo-convert-geneb-hyenadna)
+install(
+  PROGRAMS tools/convert_geneb_evo1_checkpoint.py
+  DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  RENAME evo-convert-geneb-evo1)
+install(
+  PROGRAMS tools/generate_dna_gpt_tokenizer_source.py
+  DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  RENAME evo-generate-dna-gpt-tokenizer)
+install(
+  PROGRAMS tools/run_geneb.py
+  DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  RENAME evo-run-geneb)
+install(
+  PROGRAMS tools/run_geneb_checkpoint_evidence.py
+  DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  RENAME evo-geneb-checkpoint-evidence)
+install(
+  FILES
+    tools/evo/__init__.py
+    tools/evo/artifact_profiles.py
+    tools/evo/geneb_artifact.py
+    tools/evo/geneb_gpt_artifact.py
+    tools/evo/geneb_long_hyena_artifact.py
+    tools/evo/geneb_t36_artifact.py
+    tools/evo/hf_checkpoint.py
   DESTINATION "${CMAKE_INSTALL_DATADIR}/evo/python/evo")
 install(
   PROGRAMS tools/evo_profile_gate.py
@@ -520,13 +625,33 @@ install(
   PATTERN "json.hpp" EXCLUDE
   PATTERN "server.hpp" EXCLUDE)
 install(
-  FILES configs/model-registry.json configs/geneb-models.json
+  FILES
+    configs/model-registry.json
+    configs/geneb-models.json
+    configs/geneb-benchmark-spec.json
+    configs/geneb-probe-lock.json
+    configs/geneb-bert-models.json
+    configs/geneb-custom-encoder-models.json
+    configs/geneb-decoder-models.json
+    configs/geneb-esm-models.json
+    configs/geneb-gpt2-models.json
+    configs/geneb-dna-gpt-models.json
+    configs/geneb-olmo-models.json
+    configs/geneb-mamba-models.json
+    configs/geneb-janusdna-models.json
+    configs/geneb-hyenadna-models.json
+    configs/geneb-evo1-models.json
+    configs/geneb-sequence-cnn-models.json
+    configs/geneb-roformer-models.json
   DESTINATION "${CMAKE_INSTALL_DATADIR}/evo/configs")
+install(
+  DIRECTORY configs/tokenizers/
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/evo/configs/tokenizers")
 install(
   DIRECTORY configs/geneb-reference-patches/
   DESTINATION "${CMAKE_INSTALL_DATADIR}/evo/configs/geneb-reference-patches")
 install(
-  FILES requirements-fetch.txt
+  FILES requirements-fetch.txt requirements-convert.txt requirements-geneb.txt
   DESTINATION "${CMAKE_INSTALL_DATADIR}/evo")
 install(
   EXPORT evoTargets
@@ -553,6 +678,221 @@ if(BUILD_TESTING)
   target_link_libraries(evo-core-tests PRIVATE evo_core)
   evo_configure_target(evo-core-tests)
   add_test(NAME core COMMAND evo-core-tests)
+
+  add_executable(evo-geneb-input-transform-tests
+                 tests/test_geneb_input_transform.cpp)
+  target_link_libraries(evo-geneb-input-transform-tests PRIVATE evo_core)
+  evo_configure_target(evo-geneb-input-transform-tests)
+  add_test(
+    NAME geneb_input_transform
+    COMMAND evo-geneb-input-transform-tests
+            ${CMAKE_CURRENT_SOURCE_DIR}/configs/geneb-models.json)
+
+  add_executable(evo-geneb-decoder-tests tests/test_geneb_decoder.cpp)
+  target_link_libraries(evo-geneb-decoder-tests PRIVATE evo_core)
+  evo_configure_target(evo-geneb-decoder-tests)
+  add_test(NAME geneb_decoder COMMAND evo-geneb-decoder-tests)
+  add_executable(evo-geneb-omnina-operator-audit
+                 tests/geneb_omnina_operator_audit.cpp)
+  target_link_libraries(evo-geneb-omnina-operator-audit PRIVATE evo_core)
+  evo_configure_target(evo-geneb-omnina-operator-audit)
+  add_test(
+    NAME geneb_decoder_vectors
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geneb_decoder_vectors.py
+      --binary $<TARGET_FILE:evo-geneb-decoder-tests>
+      --fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/geneb_decoder_oracle.json
+      --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_geneb_decoder_vectors.py)
+  set_tests_properties(geneb_decoder_vectors PROPERTIES SKIP_RETURN_CODE 77)
+
+  add_executable(evo-geneb-bert-tests tests/test_geneb_bert.cpp)
+  target_link_libraries(evo-geneb-bert-tests PRIVATE evo_core)
+  evo_configure_target(evo-geneb-bert-tests)
+  add_test(NAME geneb_bert COMMAND evo-geneb-bert-tests)
+  add_test(
+    NAME geneb_bert_vectors
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geneb_bert_vectors.py
+      --binary $<TARGET_FILE:evo-geneb-bert-tests>
+      --fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/geneb_bert_oracle.json
+      --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_geneb_bert_vectors.py)
+  set_tests_properties(geneb_bert_vectors PROPERTIES SKIP_RETURN_CODE 77)
+
+  add_executable(evo-geneb-custom-encoder-tests
+                 tests/test_geneb_custom_encoder.cpp)
+  target_link_libraries(evo-geneb-custom-encoder-tests PRIVATE evo_core)
+  evo_configure_target(evo-geneb-custom-encoder-tests)
+  add_test(NAME geneb_custom_encoder COMMAND evo-geneb-custom-encoder-tests)
+  add_test(
+    NAME geneb_custom_encoder_vectors
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geneb_custom_encoder_vectors.py
+      --binary $<TARGET_FILE:evo-geneb-custom-encoder-tests>
+      --fixture
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/geneb_custom_encoder_oracle.json
+      --generator
+      ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_geneb_custom_encoder_vectors.py)
+  set_tests_properties(geneb_custom_encoder_vectors PROPERTIES
+                       SKIP_RETURN_CODE 77)
+
+  add_executable(evo-geneb-esm-tests tests/test_geneb_esm.cpp)
+  target_link_libraries(evo-geneb-esm-tests PRIVATE evo_core)
+  evo_configure_target(evo-geneb-esm-tests)
+  add_test(NAME geneb_esm COMMAND evo-geneb-esm-tests)
+  add_test(
+    NAME geneb_esm_vectors
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geneb_esm_vectors.py
+      --binary $<TARGET_FILE:evo-geneb-esm-tests>
+      --fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/geneb_esm_oracle.json
+      --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_geneb_esm_vectors.py)
+  set_tests_properties(geneb_esm_vectors PROPERTIES SKIP_RETURN_CODE 77)
+  add_test(
+    NAME geneb_esm_torch_vectors
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geneb_esm_vectors.py
+      --binary $<TARGET_FILE:evo-geneb-esm-tests>
+      --fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/geneb_esm_oracle.json
+      --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_geneb_esm_vectors.py
+      --require-torch)
+  set_tests_properties(geneb_esm_torch_vectors PROPERTIES SKIP_RETURN_CODE 77)
+
+  add_executable(evo-geneb-olmo-tests tests/test_geneb_olmo.cpp)
+  target_link_libraries(evo-geneb-olmo-tests PRIVATE evo_core)
+  evo_configure_target(evo-geneb-olmo-tests)
+  add_test(NAME geneb_olmo COMMAND evo-geneb-olmo-tests)
+  add_test(
+    NAME geneb_olmo_vectors
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geneb_olmo_vectors.py
+      --binary $<TARGET_FILE:evo-geneb-olmo-tests>)
+  set_tests_properties(geneb_olmo_vectors PROPERTIES SKIP_RETURN_CODE 77)
+  add_test(
+    NAME geneb_olmo_torch_vectors
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geneb_olmo_vectors.py
+      --binary $<TARGET_FILE:evo-geneb-olmo-tests> --require-torch)
+  set_tests_properties(geneb_olmo_torch_vectors PROPERTIES SKIP_RETURN_CODE 77)
+
+  add_executable(evo-geneb-long-hyena-tests
+                 tests/test_geneb_long_hyena.cpp)
+  target_link_libraries(evo-geneb-long-hyena-tests PRIVATE evo_core)
+  evo_configure_target(evo-geneb-long-hyena-tests)
+  add_test(NAME geneb_long_hyena COMMAND evo-geneb-long-hyena-tests)
+  add_test(
+    NAME geneb_long_hyena_vectors
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geneb_long_hyena_vectors.py
+      --binary $<TARGET_FILE:evo-geneb-long-hyena-tests>
+      --fixture
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/geneb_long_hyena_oracle.json
+      --generator
+      ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_geneb_long_hyena_vectors.py)
+  set_tests_properties(geneb_long_hyena_vectors PROPERTIES SKIP_RETURN_CODE 77)
+  add_test(NAME geneb_long_hyena_complexity
+           COMMAND evo-geneb-long-hyena-tests --complexity)
+
+  add_executable(evo-geneb-mamba-tests tests/test_geneb_mamba.cpp)
+  target_link_libraries(evo-geneb-mamba-tests PRIVATE evo_core)
+  evo_configure_target(evo-geneb-mamba-tests)
+  add_test(NAME geneb_mamba COMMAND evo-geneb-mamba-tests)
+  add_test(
+    NAME geneb_mamba_vectors
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geneb_mamba_vectors.py
+      --binary $<TARGET_FILE:evo-geneb-mamba-tests>
+      --fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/geneb_mamba_oracle.json
+      --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_geneb_mamba_vectors.py)
+  set_tests_properties(geneb_mamba_vectors PROPERTIES SKIP_RETURN_CODE 77)
+  add_test(
+    NAME geneb_mamba_torch_vectors
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_geneb_mamba_vectors.py
+      --torch-check)
+  set_tests_properties(geneb_mamba_torch_vectors PROPERTIES SKIP_RETURN_CODE 77)
+
+  add_executable(evo-geneb-janusdna-tests tests/test_geneb_janusdna.cpp)
+  target_link_libraries(evo-geneb-janusdna-tests PRIVATE evo_core)
+  evo_configure_target(evo-geneb-janusdna-tests)
+  add_test(NAME geneb_janusdna COMMAND evo-geneb-janusdna-tests)
+  add_test(
+    NAME geneb_janusdna_vectors
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geneb_janusdna_vectors.py
+      --binary $<TARGET_FILE:evo-geneb-janusdna-tests>
+      --fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/geneb_janusdna_oracle.json
+      --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_geneb_janusdna_vectors.py)
+  set_tests_properties(geneb_janusdna_vectors PROPERTIES SKIP_RETURN_CODE 77)
+  add_test(
+    NAME geneb_janusdna_converter_contract
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geneb_janusdna_converter.py
+      --converter
+      ${CMAKE_CURRENT_SOURCE_DIR}/tools/convert_geneb_janusdna_checkpoint.py
+      --profiles ${CMAKE_CURRENT_SOURCE_DIR}/configs/geneb-janusdna-models.json
+      --catalog ${CMAKE_CURRENT_SOURCE_DIR}/configs/geneb-models.json
+      --native-loader $<TARGET_FILE:evo-geneb-janusdna-tests>)
+
+  add_executable(evo-geneb-sequence-cnn-tests
+                 tests/test_geneb_sequence_cnn.cpp)
+  target_link_libraries(evo-geneb-sequence-cnn-tests PRIVATE evo_core)
+  evo_configure_target(evo-geneb-sequence-cnn-tests)
+  add_test(NAME geneb_sequence_cnn COMMAND evo-geneb-sequence-cnn-tests)
+  add_test(NAME geneb_sequence_cnn_complexity
+           COMMAND evo-geneb-sequence-cnn-tests --complexity)
+  add_test(
+    NAME geneb_sequence_cnn_vectors
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geneb_sequence_cnn_vectors.py
+      --binary $<TARGET_FILE:evo-geneb-sequence-cnn-tests>
+      --fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/geneb_sequence_cnn_oracle.json
+      --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_geneb_sequence_cnn_vectors.py)
+  set_tests_properties(geneb_sequence_cnn_vectors PROPERTIES SKIP_RETURN_CODE 77)
+  add_test(
+    NAME geneb_sequence_cnn_converter_contract
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geneb_sequence_cnn_converter.py
+      --converter ${CMAKE_CURRENT_SOURCE_DIR}/tools/convert_geneb_sequence_cnn_checkpoint.py
+      --profiles ${CMAKE_CURRENT_SOURCE_DIR}/configs/geneb-sequence-cnn-models.json)
+
+  add_executable(evo-geneb-roformer-tests tests/test_geneb_roformer.cpp)
+  target_link_libraries(evo-geneb-roformer-tests PRIVATE evo_core)
+  evo_configure_target(evo-geneb-roformer-tests)
+  add_test(NAME geneb_roformer COMMAND evo-geneb-roformer-tests)
+  add_test(NAME geneb_roformer_complexity
+           COMMAND evo-geneb-roformer-tests --complexity)
+  add_test(
+    NAME geneb_roformer_vectors
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geneb_roformer_vectors.py
+      --binary $<TARGET_FILE:evo-geneb-roformer-tests>
+      --fixture ${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/geneb_roformer_oracle.json
+      --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_geneb_roformer_vectors.py)
+  set_tests_properties(geneb_roformer_vectors PROPERTIES SKIP_RETURN_CODE 77)
+  add_test(
+    NAME geneb_roformer_converter_contract
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geneb_roformer_converter.py
+      --converter ${CMAKE_CURRENT_SOURCE_DIR}/tools/convert_geneb_roformer_checkpoint.py
+      --tokenizer-converter ${CMAKE_CURRENT_SOURCE_DIR}/tools/convert_geneb_deepgene_tokenizer.py
+      --profiles ${CMAKE_CURRENT_SOURCE_DIR}/configs/geneb-roformer-models.json)
+
+  add_executable(evo-geneb-gpt-tests tests/test_geneb_gpt.cpp)
+  target_link_libraries(evo-geneb-gpt-tests PRIVATE evo_core)
+  evo_configure_target(evo-geneb-gpt-tests)
+  add_test(NAME geneb_gpt COMMAND evo-geneb-gpt-tests)
+  add_test(
+    NAME geneb_gpt_vectors
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geneb_gpt_vectors.py
+      --binary $<TARGET_FILE:evo-geneb-gpt-tests>)
+  set_tests_properties(geneb_gpt_vectors PROPERTIES SKIP_RETURN_CODE 77)
+  add_test(
+    NAME geneb_gpt_torch_vectors
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geneb_gpt_vectors.py
+      --binary $<TARGET_FILE:evo-geneb-gpt-tests> --require-torch)
+  set_tests_properties(geneb_gpt_torch_vectors PROPERTIES SKIP_RETURN_CODE 77)
 
   if(EVO_MPS)
     add_executable(evo-mps-tests tests/test_mps.cpp)
@@ -602,11 +942,27 @@ if(BUILD_TESTING)
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_native_registry.py
       --binary $<TARGET_FILE:evo-registry-dump>
       --registry ${CMAKE_CURRENT_SOURCE_DIR}/configs/model-registry.json)
+  add_test(
+    NAME geneb_surface_contract
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geneb_surface_contract.py
+      --registry ${CMAKE_CURRENT_SOURCE_DIR}/configs/model-registry.json
+      --c-api $<TARGET_FILE:evo-c-api-tests>
+      --cli $<TARGET_FILE:evo>
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/geneb-surface)
+  set_tests_properties(
+    geneb_surface_contract
+    PROPERTIES ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools")
 
   add_executable(evo-model-format-tests tests/test_model_format.cpp)
   target_link_libraries(evo-model-format-tests PRIVATE evo_core)
   evo_configure_target(evo-model-format-tests)
   add_test(NAME model_format COMMAND evo-model-format-tests)
+
+  add_executable(evo-tokenizer-asset-tests tests/test_tokenizer_assets.cpp)
+  target_link_libraries(evo-tokenizer-asset-tests PRIVATE evo_core)
+  evo_configure_target(evo-tokenizer-asset-tests)
+  add_test(NAME tokenizer_assets COMMAND evo-tokenizer-asset-tests)
 
   add_executable(evo-frontend-tests tests/test_frontend.cpp)
   target_link_libraries(evo-frontend-tests PRIVATE evo_core)
@@ -698,6 +1054,17 @@ if(BUILD_TESTING)
   set_tests_properties(
     cpu_backend PROPERTIES ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools")
   add_test(
+    NAME tokenizer_cpu_binding
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_tokenizer_cpu_binding.py
+      --generator ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_tiny_model.py
+      --binary $<TARGET_FILE:evo-cpu-model-tests>
+      --c-api-binary $<TARGET_FILE:evo-c-api-tests>
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/tokenizer-cpu-binding)
+  set_tests_properties(
+    tokenizer_cpu_binding
+    PROPERTIES ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/tools")
+  add_test(
     NAME hyenadna_backend
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_hyenadna_backend.py
@@ -779,6 +1146,7 @@ if(BUILD_TESTING)
     COMMAND ${CMAKE_COMMAND}
       -DEVO_BINARY=$<TARGET_FILE:evo>
       -DEVO_INSPECT_BINARY=$<TARGET_FILE:evo-inspect>
+      -DEVO_GENEB_CATALOG=${CMAKE_CURRENT_SOURCE_DIR}/configs/geneb-models.json
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_contract.cmake)
 
   add_test(
@@ -850,6 +1218,151 @@ if(BUILD_TESTING)
       --catalog ${CMAKE_CURRENT_SOURCE_DIR}/configs/geneb-models.json
       --source-dir ${CMAKE_CURRENT_SOURCE_DIR}
       --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/geneb-catalog)
+  add_test(
+    NAME geneb_runner_contract
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geneb_runner.py
+      --runner ${CMAKE_CURRENT_SOURCE_DIR}/tools/run_geneb.py
+      --catalog ${CMAKE_CURRENT_SOURCE_DIR}/configs/geneb-models.json
+      --benchmark-spec
+      ${CMAKE_CURRENT_SOURCE_DIR}/configs/geneb-benchmark-spec.json
+      --lock ${CMAKE_CURRENT_SOURCE_DIR}/configs/geneb-probe-lock.json
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/geneb-runner)
+  add_test(
+    NAME geneb_checkpoint_evidence_contract
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geneb_checkpoint_evidence.py
+      --tool
+      ${CMAKE_CURRENT_SOURCE_DIR}/tools/run_geneb_checkpoint_evidence.py
+      --work-dir
+      ${CMAKE_CURRENT_BINARY_DIR}/Testing/geneb-checkpoint-evidence)
+  add_test(
+    NAME tokenizer_asset_converter_contract
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_tokenizer_asset_converter.py
+      --converter ${CMAKE_CURRENT_SOURCE_DIR}/tools/convert_tokenizer_asset.py
+      --runtime $<TARGET_FILE:evo-tokenizer-asset-tests>
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/tokenizer-asset-converter)
+  add_test(
+    NAME geneb_decoder_converter_contract
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geneb_decoder_converter.py
+      --converter
+      ${CMAKE_CURRENT_SOURCE_DIR}/tools/convert_geneb_decoder_checkpoint.py
+      --profiles ${CMAKE_CURRENT_SOURCE_DIR}/configs/geneb-decoder-models.json
+      --native-loader $<TARGET_FILE:evo-geneb-decoder-tests>
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/geneb-decoder-converter)
+  add_test(
+    NAME geneb_bert_converter_contract
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geneb_bert_converter.py
+      --converter
+      ${CMAKE_CURRENT_SOURCE_DIR}/tools/convert_geneb_bert_checkpoint.py
+      --profiles ${CMAKE_CURRENT_SOURCE_DIR}/configs/geneb-bert-models.json
+      --native-loader $<TARGET_FILE:evo-geneb-bert-tests>
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/geneb-bert-converter)
+  add_test(
+    NAME geneb_custom_encoder_converter_contract
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geneb_custom_encoder_converter.py
+      --converter
+      ${CMAKE_CURRENT_SOURCE_DIR}/tools/convert_geneb_custom_encoder_checkpoint.py
+      --profiles
+      ${CMAKE_CURRENT_SOURCE_DIR}/configs/geneb-custom-encoder-models.json
+      --catalog ${CMAKE_CURRENT_SOURCE_DIR}/configs/geneb-models.json
+      --native-loader $<TARGET_FILE:evo-geneb-custom-encoder-tests>
+      --work-dir
+      ${CMAKE_CURRENT_BINARY_DIR}/Testing/geneb-custom-encoder-converter)
+  add_test(
+    NAME geneb_esm_converter_contract
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geneb_esm_converter.py
+      --converter
+      ${CMAKE_CURRENT_SOURCE_DIR}/tools/convert_geneb_esm_checkpoint.py
+      --profiles ${CMAKE_CURRENT_SOURCE_DIR}/configs/geneb-esm-models.json
+      --catalog ${CMAKE_CURRENT_SOURCE_DIR}/configs/geneb-models.json
+      --native-loader $<TARGET_FILE:evo-geneb-esm-tests>
+      --c-api $<TARGET_FILE:evo-c-api-tests>
+      --cli $<TARGET_FILE:evo-cpu-cli-test-bin>
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/geneb-esm-converter)
+  add_test(
+    NAME geneb_olmo_converter_contract
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geneb_olmo_converter.py
+      --converter
+      ${CMAKE_CURRENT_SOURCE_DIR}/tools/convert_geneb_olmo_checkpoint.py
+      --profiles ${CMAKE_CURRENT_SOURCE_DIR}/configs/geneb-olmo-models.json
+      --native-loader $<TARGET_FILE:evo-geneb-olmo-tests>
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/geneb-olmo-converter)
+  add_test(
+    NAME geneb_mamba_converter_contract
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geneb_mamba_converter.py
+      --converter
+      ${CMAKE_CURRENT_SOURCE_DIR}/tools/convert_geneb_mamba_checkpoint.py
+      --profiles ${CMAKE_CURRENT_SOURCE_DIR}/configs/geneb-mamba-models.json
+      --catalog ${CMAKE_CURRENT_SOURCE_DIR}/configs/geneb-models.json
+      --native-loader $<TARGET_FILE:evo-geneb-mamba-tests>
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/geneb-mamba-converter)
+  add_test(
+    NAME geneb_long_hyena_converter_contract
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geneb_long_hyena_converter.py
+      --hyena-converter
+      ${CMAKE_CURRENT_SOURCE_DIR}/tools/convert_geneb_hyenadna_checkpoint.py
+      --evo-converter
+      ${CMAKE_CURRENT_SOURCE_DIR}/tools/convert_geneb_evo1_checkpoint.py
+      --hyena-profiles
+      ${CMAKE_CURRENT_SOURCE_DIR}/configs/geneb-hyenadna-models.json
+      --evo-profiles ${CMAKE_CURRENT_SOURCE_DIR}/configs/geneb-evo1-models.json
+      --catalog ${CMAKE_CURRENT_SOURCE_DIR}/configs/geneb-models.json
+      --native-loader $<TARGET_FILE:evo-geneb-long-hyena-tests>
+      --tokenizer-compiler
+      ${CMAKE_CURRENT_SOURCE_DIR}/tools/convert_tokenizer_asset.py
+      --tokenizer-runtime $<TARGET_FILE:evo-tokenizer-asset-tests>
+      --oracle
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/geneb_long_hyena_oracle.json
+      --work-dir
+      ${CMAKE_CURRENT_BINARY_DIR}/Testing/geneb-long-hyena-converter)
+  add_test(
+    NAME geneb_gpt_converter_contract
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geneb_gpt_converter.py
+      --gpt2-converter
+      ${CMAKE_CURRENT_SOURCE_DIR}/tools/convert_geneb_gpt2_checkpoint.py
+      --dna-converter
+      ${CMAKE_CURRENT_SOURCE_DIR}/tools/convert_geneb_dna_gpt_checkpoint.py
+      --gpt2-profiles ${CMAKE_CURRENT_SOURCE_DIR}/configs/geneb-gpt2-models.json
+      --dna-profiles ${CMAKE_CURRENT_SOURCE_DIR}/configs/geneb-dna-gpt-models.json
+      --catalog ${CMAKE_CURRENT_SOURCE_DIR}/configs/geneb-models.json
+      --native-loader $<TARGET_FILE:evo-geneb-gpt-tests>
+      --cli $<TARGET_FILE:evo>
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/geneb-gpt-converter)
+  add_test(
+    NAME dna_gpt_tokenizer_contract
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dna_gpt_tokenizer.py
+      --python ${Python3_EXECUTABLE}
+      --generator
+      ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_dna_gpt_tokenizer_source.py
+      --compiler ${CMAKE_CURRENT_SOURCE_DIR}/tools/convert_tokenizer_asset.py
+      --runtime $<TARGET_FILE:evo-tokenizer-asset-tests>
+      --profiles ${CMAKE_CURRENT_SOURCE_DIR}/configs/geneb-dna-gpt-models.json
+      --work-dir ${CMAKE_CURRENT_BINARY_DIR}/Testing/dna-gpt-tokenizer)
+  add_test(
+    NAME geneb_generator_tokenizer_contract
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_geneb_generator_tokenizer.py
+      --generator
+      ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_geneb_generator_tokenizer_source.py
+      --oracle-3b
+      ${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_geneb_generator_3b_upstream_oracle.py
+      --manifest-1-2b
+      ${CMAKE_CURRENT_SOURCE_DIR}/configs/tokenizers/geneb-generator-eukaryote-1-2b-kmer-v1.json
+      --manifest-3b
+      ${CMAKE_CURRENT_SOURCE_DIR}/configs/tokenizers/geneb-generator-eukaryote-3b-kmer-v1.json
+      --work-dir
+      ${CMAKE_CURRENT_BINARY_DIR}/Testing/geneb-generator-tokenizer)
   add_test(
     NAME release_pipeline_contract
     COMMAND ${Python3_EXECUTABLE}

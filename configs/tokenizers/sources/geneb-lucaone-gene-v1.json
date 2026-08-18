@@ -1,0 +1,68 @@
+{
+  "format": "evo-tokenizer-source-v1",
+  "kind": "character",
+  "normalization": [
+    {"op": "ascii-uppercase"},
+    {"op": "u-to-t"}
+  ],
+  "pre_tokenizer": {"kind": "none"},
+  "model": {
+    "unknown_policy": "unk",
+    "match_special_literals": false
+  },
+  "post_processor": {
+    "prefix_ids": [2],
+    "suffix_ids": [3],
+    "padding": {"side": "right", "pad_id": 0}
+  },
+  "special_tokens": {
+    "unk": 9,
+    "pad": 0,
+    "bos": null,
+    "eos": null,
+    "cls": 2,
+    "sep": 3,
+    "mask": 4
+  },
+  "vocab": [
+    {"id": 0, "piece": "[PAD]"},
+    {"id": 1, "piece": "[UNUSED-1]"},
+    {"id": 2, "piece": "[CLS]"},
+    {"id": 3, "piece": "[SEP]"},
+    {"id": 4, "piece": "[MASK]"},
+    {"id": 5, "piece": "A"},
+    {"id": 6, "piece": "T"},
+    {"id": 7, "piece": "C"},
+    {"id": 8, "piece": "G"},
+    {"id": 9, "piece": "[GENE-UNK]"},
+    {"id": 10, "piece": "[UNUSED-10]"},
+    {"id": 11, "piece": "[UNUSED-11]"},
+    {"id": 12, "piece": "[UNUSED-12]"},
+    {"id": 13, "piece": "[UNUSED-13]"},
+    {"id": 14, "piece": "[UNUSED-14]"},
+    {"id": 15, "piece": "[UNUSED-15]"},
+    {"id": 16, "piece": "[UNUSED-16]"},
+    {"id": 17, "piece": "[UNUSED-17]"},
+    {"id": 18, "piece": "[UNUSED-18]"},
+    {"id": 19, "piece": "[UNUSED-19]"},
+    {"id": 20, "piece": "[UNUSED-20]"},
+    {"id": 21, "piece": "[UNUSED-21]"},
+    {"id": 22, "piece": "[UNUSED-22]"},
+    {"id": 23, "piece": "[UNUSED-23]"},
+    {"id": 24, "piece": "[UNUSED-24]"},
+    {"id": 25, "piece": "[UNUSED-25]"},
+    {"id": 26, "piece": "[UNUSED-26]"},
+    {"id": 27, "piece": "[UNUSED-27]"},
+    {"id": 28, "piece": "[UNUSED-28]"},
+    {"id": 29, "piece": "[UNUSED-29]"},
+    {"id": 30, "piece": "[UNUSED-30]"},
+    {"id": 31, "piece": "[UNUSED-31]"},
+    {"id": 32, "piece": "[UNUSED-32]"},
+    {"id": 33, "piece": "[UNUSED-33]"},
+    {"id": 34, "piece": "[UNUSED-34]"},
+    {"id": 35, "piece": "[UNUSED-35]"},
+    {"id": 36, "piece": "[UNUSED-36]"},
+    {"id": 37, "piece": "[UNUSED-37]"},
+    {"id": 38, "piece": "[UNUSED-38]"}
+  ]
+}

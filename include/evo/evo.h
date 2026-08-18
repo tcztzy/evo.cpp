@@ -22,7 +22,7 @@ extern "C" {
 #endif
 
 #define EVO_ABI_VERSION_MAJOR 1u
-#define EVO_ABI_VERSION_MINOR 4u
+#define EVO_ABI_VERSION_MINOR 5u
 #define EVO_ABI_VERSION_PATCH 0u
 #define EVO_ABI_VERSION_ENCODE(major, minor, patch)                            \
   ((((uint32_t)(major) & 0xffu) << 24u) |                                      \
@@ -88,6 +88,35 @@ typedef struct evo_sampler_params {
   uint64_t seed;
 } evo_sampler_params;
 
+// A null/empty preset selects the explicit layer/pooling fields. A GENEB
+// preset requires layer=SIZE_MAX and pooling=null so model-pinned semantics
+// cannot be accidentally combined with legacy controls.
+typedef struct evo_embedding_options {
+  size_t struct_size;
+  const char *preset;
+  size_t layer;
+  const char *pooling;
+} evo_embedding_options;
+
+// String pointers and the complete structure remain valid only for the
+// duration of the callback.
+typedef struct evo_embedding_result_info {
+  size_t struct_size;
+  const char *resolved_preset;
+  const char *hidden_tap;
+  const char *pooling;
+  size_t layer;
+  size_t original_length;
+  size_t effective_length;
+  size_t crop_left;
+  size_t crop_right;
+  size_t pad_left;
+  size_t pad_right;
+  size_t token_count;
+  size_t rows;
+  size_t columns;
+} evo_embedding_result_info;
+
 // The view remains valid only for the duration of the callback. Returning a
 // non-OK status aborts the operation and permanently invalidates that context.
 typedef evo_status (*evo_logits_callback)(const float *logits, size_t rows,
@@ -97,6 +126,9 @@ typedef evo_status (*evo_embedding_callback)(const float *embedding,
                                              size_t rows, size_t columns,
                                              size_t token_offset,
                                              void *user_data);
+typedef evo_status (*evo_embedding_ex_callback)(
+    const float *embedding, size_t rows, size_t columns, size_t token_offset,
+    const evo_embedding_result_info *info, void *user_data);
 
 EVO_API uint32_t evo_abi_version(void);
 EVO_API const char *evo_version_string(void);
@@ -110,6 +142,7 @@ EVO_API const char *evo_last_error(void);
 EVO_API evo_model_params evo_model_default_params(void);
 EVO_API evo_context_params evo_context_default_params(void);
 EVO_API evo_sampler_params evo_sampler_default_params(void);
+EVO_API evo_embedding_options evo_embedding_default_options(void);
 
 EVO_API evo_status evo_model_load(const char *path,
                                   const evo_model_params *params,
@@ -154,6 +187,11 @@ EVO_API evo_status evo_context_embed(evo_context *context,
                                      const evo_batch *batch, size_t layer,
                                      evo_embedding_callback callback,
                                      void *user_data);
+EVO_API evo_status evo_context_embed_ex(evo_context *context,
+                                        const evo_batch *batch,
+                                        const evo_embedding_options *options,
+                                        evo_embedding_ex_callback callback,
+                                        void *user_data);
 
 EVO_API evo_status evo_batch_create(size_t sequence_capacity,
                                     evo_batch **batch_out);

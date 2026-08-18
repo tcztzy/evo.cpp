@@ -9,13 +9,34 @@ import copy
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+_TOOLS_DIRECTORY = Path(__file__).resolve().parents[1] / "tools"
+if str(_TOOLS_DIRECTORY) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_DIRECTORY))
+
+from evo.geneb_artifact import catalog_contract_sha256  # noqa: E402
+
 
 def digest(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
+
+
+def prepare_work_dir(path: Path) -> Path:
+    resolved = path.expanduser().resolve()
+    if resolved.name != "hf-fetch" and not resolved.name.startswith(
+        "evo-hf-fetch-contract-"
+    ):
+        raise AssertionError("refusing to clean an unexpected fetch test directory")
+    if path.is_symlink():
+        raise AssertionError("fetch test work directory must not be a symlink")
+    if resolved.exists():
+        shutil.rmtree(resolved)
+    resolved.mkdir(parents=True)
+    return resolved
 
 
 def write_fake_hub(root: Path) -> Path:
@@ -31,11 +52,41 @@ class HfApi:
     def __init__(self, **kwargs):
         pass
 
-    def model_info(self, *, repo_id, revision):
+    def model_info(self, *, repo_id, revision, files_metadata=False):
         log = Path(os.environ[\"FAKE_HF_LOG\"])
         with log.open(\"a\") as output:
             output.write(f\"resolve {repo_id} {revision}\\n\")
-        return SimpleNamespace(sha=os.environ[\"FAKE_HF_RESOLVED\"])
+        siblings = None
+        if files_metadata:
+            root = Path(os.environ[\"FAKE_HF_REMOTE\"]) / repo_id / revision
+            override_name = os.environ.get(\"FAKE_HF_LARGE_METADATA_NAME\")
+            override_size = int(os.environ.get(\"FAKE_HF_LARGE_METADATA_SIZE\", \"0\"))
+            siblings = [
+                SimpleNamespace(
+                    rfilename=str(path.relative_to(root)),
+                    size=(
+                        override_size
+                        if str(path.relative_to(root)) == override_name
+                        else path.stat().st_size
+                    ),
+                )
+                for path in sorted(root.rglob(\"*\"))
+                if path.is_file()
+            ]
+        return SimpleNamespace(
+            sha=os.environ[\"FAKE_HF_RESOLVED\"], siblings=siblings
+        )
+
+    def list_repo_files(self, *, repo_id, revision):
+        log = Path(os.environ[\"FAKE_HF_LOG\"])
+        with log.open(\"a\") as output:
+            output.write(f\"list {repo_id} {revision}\\n\")
+        root = Path(os.environ[\"FAKE_HF_REMOTE\"]) / repo_id / revision
+        return sorted(
+            str(path.relative_to(root))
+            for path in root.rglob(\"*\")
+            if path.is_file()
+        )
 
 def hf_hub_download(*, repo_id, filename, revision, cache_dir,
                     local_files_only=False, force_download=False, **kwargs):
@@ -49,6 +100,12 @@ def hf_hub_download(*, repo_id, filename, revision, cache_dir,
         Path(cache_dir) / f\"models--{repo_id.replace('/', '--')}\"
         / \"snapshots\" / revision / filename
     )
+    if (
+        os.environ.get("FAKE_HF_FAIL_MIRROR_DOTFILE") == "1"
+        and filename == ".gitattributes"
+        and kwargs.get("endpoint") == "https://hf-mirror.example"
+    ):
+        raise RuntimeError("redirect metadata has no commit_hash/etag/size")
     if destination.is_file() and not force_download:
         return str(destination)
     if local_files_only:
@@ -70,6 +127,7 @@ def run_tool(
     log: Path,
     resolved: str,
     arguments: list[str],
+    extra_environment=None,
 ) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment.update(
@@ -80,6 +138,8 @@ def run_tool(
             "FAKE_HF_RESOLVED": resolved,
         }
     )
+    if extra_environment is not None:
+        environment.update(extra_environment)
     return subprocess.run(
         [sys.executable, str(tool), *arguments],
         check=False,
@@ -102,7 +162,7 @@ def main() -> int:
     parser.add_argument("--registry", required=True, type=Path)
     parser.add_argument("--work-dir", required=True, type=Path)
     args = parser.parse_args()
-    args.work_dir.mkdir(parents=True, exist_ok=True)
+    args.work_dir = prepare_work_dir(args.work_dir)
     help_result = subprocess.run(
         [sys.executable, str(args.tool), "--help"],
         check=False,
@@ -264,6 +324,406 @@ def main() -> int:
     isolated_receipt = require_success(isolated_result)
     if not Path(isolated_receipt["receipt"]).is_relative_to(isolated_receipts):
         raise AssertionError("custom receipt escaped its explicit directory")
+
+    geneb_revision = "c" * 40
+    geneb_root = remote / "owner" / "geneb" / geneb_revision
+    geneb_root.mkdir(parents=True, exist_ok=True)
+    (geneb_root / ".gitattributes").write_bytes(b"*.safetensors filter=lfs\n")
+    (geneb_root / "config.json").write_bytes(b'{"model":"geneb"}\n')
+    (geneb_root / "model.safetensors").write_bytes(b"pinned geneb weights")
+    (geneb_root / "tokenizer.json").write_bytes(b'{"tokenizer":true}\n')
+    training_corpus = geneb_root / "tokenized_chromosomes" / "train.bin"
+    training_corpus.parent.mkdir()
+    training_corpus.write_bytes(b"must not be fetched")
+    unbounded_root = remote / "owner" / "unbounded" / geneb_revision
+    (unbounded_root / "tokenized_chromosomes").mkdir(parents=True)
+    (unbounded_root / "config.json").write_bytes(b"{}\n")
+    (unbounded_root / "tokenized_chromosomes" / "train.bin").write_bytes(
+        b"metadata represents a very large corpus"
+    )
+    manual_id = "geneb-manual"
+    geneb_catalog = args.work_dir / "geneb-catalog.json"
+    geneb_catalog.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "aliases": {"models": {"geneb-alias": "geneb-tiny"}},
+                "models": [
+                    {
+                        "runtime_id": "geneb-tiny",
+                        "tokenizer": {"kind": "fixture"},
+                        "context": {"declared_max_tokens": 16},
+                        "source": {
+                            "kind": "huggingface",
+                            "repo": "owner/geneb",
+                            "requested_revision": "main",
+                            "revision": geneb_revision,
+                            "required_files": [
+                                {"path": name, "size": None, "sha256": None}
+                                for name in (
+                                    ".gitattributes",
+                                    "config.json",
+                                    "model.safetensors",
+                                    "tokenizer.json",
+                                )
+                            ],
+                        },
+                    },
+                    {
+                        "runtime_id": "geneb-unbounded",
+                        "tokenizer": {"kind": "fixture"},
+                        "context": {"declared_max_tokens": 16},
+                        "source": {
+                            "kind": "huggingface",
+                            "repo": "owner/unbounded",
+                            "requested_revision": "main",
+                            "revision": geneb_revision,
+                            "required_files": None,
+                        },
+                    },
+                    {
+                        "runtime_id": manual_id,
+                        "source": {
+                            "kind": "google-drive",
+                            "url": "https://drive.example/manual",
+                            "required_files": [
+                                {
+                                    "path": "manual.ckpt",
+                                    "size": None,
+                                    "sha256": None,
+                                }
+                            ],
+                            "manual_instructions": (
+                                "Download after accepting the provider terms."
+                            ),
+                        },
+                    },
+                ],
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    mirror_failure = run_tool(
+        args.tool,
+        python_path,
+        remote,
+        log,
+        geneb_revision,
+        [
+            "--cache-dir",
+            str(cache),
+            "--endpoint",
+            "https://hf-mirror.example",
+            "source",
+            "geneb-alias",
+            "--catalog",
+            str(geneb_catalog),
+        ],
+        {"FAKE_HF_FAIL_MIRROR_DOTFILE": "1"},
+    )
+    if (
+        mirror_failure.returncode == 0
+        or "effective endpoint https://hf-mirror.example" not in mirror_failure.stderr
+        or "--endpoint https://huggingface.co" not in mirror_failure.stderr
+        or ".gitattributes" not in mirror_failure.stderr
+    ):
+        raise AssertionError(
+            "mirror metadata failure was not actionable/fail-closed: "
+            "returncode=%d stdout=%r stderr=%r"
+            % (mirror_failure.returncode, mirror_failure.stdout, mirror_failure.stderr)
+        )
+    geneb_result = run_tool(
+        args.tool,
+        python_path,
+        remote,
+        log,
+        geneb_revision,
+        [
+            "--cache-dir",
+            str(cache),
+            "--endpoint",
+            "https://huggingface.co",
+            "source",
+            "geneb-alias",
+            "--catalog",
+            str(geneb_catalog),
+        ],
+    )
+    geneb_receipt = require_success(geneb_result)
+    geneb_catalog_value = json.loads(geneb_catalog.read_text(encoding="utf-8"))
+    geneb_model = geneb_catalog_value["models"][0]
+    expected_contract = catalog_contract_sha256(geneb_catalog_value, geneb_model)
+    if (
+        geneb_receipt["model_id"] != "geneb-tiny"
+        or geneb_receipt["requested_revision"] != "main"
+        or geneb_receipt["resolved_revision"] != geneb_revision
+        or geneb_receipt["source_kind"] != "huggingface"
+        or geneb_receipt["catalog_contract_sha256"] != expected_contract
+        or "catalog_sha256" in geneb_receipt
+        or {entry["name"] for entry in geneb_receipt["files"]}
+        != {".gitattributes", "config.json", "model.safetensors", "tokenizer.json"}
+    ):
+        raise AssertionError("GENEB discovery receipt omitted pinned provenance")
+    if "download owner/geneb %s tokenized_chromosomes/train.bin" % geneb_revision in log.read_text(encoding="utf-8"):
+        raise AssertionError("GENEB required_files allowlist downloaded training data")
+    geneb_receipt_path = Path(geneb_receipt["receipt"])
+    baseline_receipt = geneb_receipt_path.read_bytes()
+
+    legacy_receipt = json.loads(baseline_receipt)
+    legacy_receipt.pop("catalog_contract_sha256")
+    legacy_receipt["catalog_sha256"] = digest(geneb_catalog.read_bytes())
+    geneb_receipt_path.write_text(
+        json.dumps(legacy_receipt, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    migrated = require_success(
+        run_tool(
+            args.tool,
+            python_path,
+            remote,
+            log,
+            geneb_revision,
+            [
+                "--cache-dir",
+                str(cache),
+                "--endpoint",
+                "https://huggingface.co",
+                "source",
+                "geneb-alias",
+                "--catalog",
+                str(geneb_catalog),
+            ],
+        )
+    )
+    if (
+        migrated.get("catalog_contract_sha256") != expected_contract
+        or "catalog_sha256" in migrated
+        or geneb_receipt_path.read_bytes() != baseline_receipt
+    ):
+        raise AssertionError("legacy GENEB receipt did not migrate canonically")
+
+    promotion_catalog = copy.deepcopy(geneb_catalog_value)
+    for row in promotion_catalog["models"]:
+        row["oracle"] = {"status": "passed"}
+        row["runtime_support"] = {"status": "supported"}
+        row["backends"] = {"cpu": {"status": "promoted"}}
+        row["promotion_state"] = "runtime-supported"
+    geneb_catalog.write_text(
+        json.dumps(promotion_catalog, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    promotion_receipt = require_success(
+        run_tool(
+            args.tool,
+            python_path,
+            remote,
+            log,
+            geneb_revision,
+            [
+                "--cache-dir",
+                str(cache),
+                "--endpoint",
+                "https://huggingface.co",
+                "source",
+                "geneb-alias",
+                "--catalog",
+                str(geneb_catalog),
+            ],
+        )
+    )
+    if (
+        promotion_receipt.get("catalog_contract_sha256") != expected_contract
+        or geneb_receipt_path.read_bytes() != baseline_receipt
+    ):
+        raise AssertionError("promotion-only catalog changes altered source receipt")
+
+    for label, mutate in (
+        ("source", lambda row: row["source"].update({"url": "https://example.invalid"})),
+        ("tokenizer", lambda row: row["tokenizer"].update({"kind": "changed"})),
+        ("context", lambda row: row["context"].update({"declared_max_tokens": 17})),
+    ):
+        changed_catalog = copy.deepcopy(geneb_catalog_value)
+        mutate(changed_catalog["models"][0])
+        geneb_catalog.write_text(
+            json.dumps(changed_catalog, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        changed = run_tool(
+            args.tool,
+            python_path,
+            remote,
+            log,
+            geneb_revision,
+            [
+                "--cache-dir",
+                str(cache),
+                "--endpoint",
+                "https://huggingface.co",
+                "source",
+                "geneb-alias",
+                "--catalog",
+                str(geneb_catalog),
+            ],
+        )
+        if changed.returncode == 0 or "does not match the catalog" not in changed.stderr:
+            raise AssertionError("%s contract drift reused a prior receipt" % label)
+    geneb_catalog.write_text(
+        json.dumps(geneb_catalog_value, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    log.write_text("", encoding="utf-8")
+    unbounded = run_tool(
+        args.tool,
+        python_path,
+        remote,
+        log,
+        geneb_revision,
+        [
+            "--cache-dir",
+            str(args.work_dir / "unbounded-cache"),
+            "--endpoint",
+            "https://huggingface.co",
+            "source",
+            "geneb-unbounded",
+            "--catalog",
+            str(geneb_catalog),
+        ],
+        {
+            "FAKE_HF_LARGE_METADATA_NAME": "tokenized_chromosomes/train.bin",
+            "FAKE_HF_LARGE_METADATA_SIZE": str(17 * 1024 * 1024 * 1024),
+        },
+    )
+    if (
+        unbounded.returncode == 0
+        or "discovery safety cap" not in unbounded.stderr
+        or "source.required_files" not in unbounded.stderr
+        or "download owner/unbounded" in log.read_text(encoding="utf-8")
+    ):
+        raise AssertionError("unbounded GENEB snapshot was not rejected pre-download")
+    config_payload = (geneb_root / "config.json").read_bytes()
+    required_corruptions = (
+        (
+            "duplicate",
+            [
+                {"path": "config.json", "size": None, "sha256": None},
+                {"path": "config.json", "size": None, "sha256": None},
+            ],
+            "duplicate paths",
+        ),
+        (
+            "missing",
+            [{"path": "missing.bin", "size": None, "sha256": None}],
+            "missing or not regular files",
+        ),
+        (
+            "directory",
+            [
+                {
+                    "path": "tokenized_chromosomes",
+                    "size": None,
+                    "sha256": None,
+                }
+            ],
+            "missing or not regular files",
+        ),
+        (
+            "size",
+            [
+                {
+                    "path": "config.json",
+                    "size": len(config_payload) + 1,
+                    "sha256": digest(config_payload),
+                }
+            ],
+            "size/SHA256 differs",
+        ),
+        (
+            "hash",
+            [
+                {
+                    "path": "config.json",
+                    "size": len(config_payload),
+                    "sha256": "0" * 64,
+                }
+            ],
+            "size/SHA256 differs",
+        ),
+        (
+            "uppercase-hash",
+            [
+                {
+                    "path": "config.json",
+                    "size": len(config_payload),
+                    "sha256": digest(config_payload).upper(),
+                }
+            ],
+            "lowercase SHA256",
+        ),
+    )
+    for label, required_files, expected_error in required_corruptions:
+        corrupt_catalog_value = copy.deepcopy(geneb_catalog_value)
+        corrupt_catalog_value["models"][0]["source"]["required_files"] = required_files
+        corrupt_catalog = args.work_dir / ("required-%s.json" % label)
+        corrupt_catalog.write_text(
+            json.dumps(corrupt_catalog_value, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        rejected_required = run_tool(
+            args.tool,
+            python_path,
+            remote,
+            log,
+            geneb_revision,
+            [
+                "--cache-dir",
+                str(args.work_dir / ("required-%s-cache" % label)),
+                "--endpoint",
+                "https://huggingface.co",
+                "source",
+                "geneb-tiny",
+                "--catalog",
+                str(corrupt_catalog),
+            ],
+        )
+        if (
+            rejected_required.returncode == 0
+            or expected_error not in rejected_required.stderr
+        ):
+            raise AssertionError("required_files %s corruption was accepted" % label)
+    log.write_text("", encoding="utf-8")
+    geneb_offline = run_tool(
+        args.tool,
+        python_path,
+        remote,
+        log,
+        geneb_revision,
+        [
+            "--cache-dir",
+            str(cache),
+            "--local-files-only",
+            "source",
+            "geneb-tiny",
+            "--catalog",
+            str(geneb_catalog),
+        ],
+    )
+    require_success(geneb_offline)
+    if log.read_text(encoding="utf-8"):
+        raise AssertionError("offline GENEB fetch contacted Hugging Face")
+    manual_result = run_tool(
+        args.tool,
+        python_path,
+        remote,
+        log,
+        geneb_revision,
+        ["source", manual_id, "--catalog", str(geneb_catalog)],
+    )
+    if (
+        manual_result.returncode == 0
+        or "manual-source" not in manual_result.stderr
+        or "manual.ckpt" not in manual_result.stderr
+        or "provider terms" not in manual_result.stderr
+    ):
+        raise AssertionError("manual GENEB source did not fail with instructions")
 
     runtime_revision = "b" * 40
     runtime_root = remote / "owner" / "runtime" / runtime_revision

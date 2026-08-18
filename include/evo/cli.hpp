@@ -48,6 +48,7 @@ struct CliOptions final {
   std::string generation_name{"generated"};
   std::string embed_path;
   std::string embed_output_dir;
+  std::string embed_preset;
   std::size_t embed_layer{0};
   EmbeddingPooling embedding_pooling{EmbeddingPooling::kNone};
   std::string variant_sequence;
@@ -72,6 +73,7 @@ struct CliOptions final {
   bool profile_explicit{false};
   std::size_t generated_tokens{0};
   std::size_t context_size{8192};
+  bool context_size_explicit{false};
   std::optional<std::size_t> force_prompt_threshold;
   std::optional<std::size_t> gpu_layers;
   std::vector<int> gpu_ids;

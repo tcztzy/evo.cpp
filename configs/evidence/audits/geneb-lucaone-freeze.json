@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "kind": "geneb-t39-pre-native-freeze",
+  "runtime_id": "geneb-lucaone",
+  "native_observation_before_freeze": false,
+  "inputs": [
+    {
+      "label": "input-0",
+      "path": "evidence/oracles/geneb-lucaone/input-0.fa",
+      "size": 36,
+      "sha256": "c0dbf01cee442008fadfd38ed0e89c80dc63a8aaa8f5d8d803893e1624d89ba0",
+      "sequence": "ACGTNNNNACGT",
+      "input_ids": [2, 5, 7, 8, 6, 9, 9, 9, 9, 5, 7, 8, 6, 3],
+      "attention_mask": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+      "token_type_ids": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    },
+    {
+      "label": "input-1",
+      "path": "evidence/oracles/geneb-lucaone/input-1.fa",
+      "size": 37,
+      "sha256": "91e4c782b4e779975b18eeb7ed9d075ca559e9b8670590152374495ef074ddb5",
+      "sequence": "ttgcau?NXacgt",
+      "input_ids": [2, 6, 6, 8, 7, 5, 6, 9, 9, 9, 5, 7, 8, 6, 3],
+      "attention_mask": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+      "token_type_ids": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    }
+  ],
+  "embedding": {
+    "hidden_tap": "last-hidden-state",
+    "pooling": "attention-mask-mean",
+    "pooling_reduction": "ordered-f32-sum-then-direct-f32-division",
+    "special_tokens": "include-cls-and-sep",
+    "mask_domain": "attention-mask",
+    "output_width": 2560,
+    "single_record": true
+  },
+  "tolerances": {
+    "max_abs": 0.0001,
+    "mean_abs": 0.00001,
+    "cosine": 0.999999
+  },
+  "tokenizer": {
+    "kind": "character",
+    "modality": "gene",
+    "compiler_manifest_sha256": "ab157c44faddcf675bca7a28b16d2c7d4e73bb245415f583c4cccae193aa0eb9",
+    "source_receipt_contract_sha256": "b15eedddde020d8666cadb0b8231affa95ec9804c73e43ab6a0ed965541a9284",
+    "asset_sha256": "5660fa7f423d56563066931e93351869e0c10483bdd2a2552230a91e7dca9ac3",
+    "asset_size": 1560,
+    "descriptor_sha256": "badb16aa5667fdc6ec4cc590e70196ba00de259ccb411c5db625496430954c2d"
+  },
+  "source": {
+    "repo": "LucaGroup/LucaOne-default-step36M",
+    "revision": "f0d2807eb097a1507b911022d979b502cd62b74c",
+    "receipt_sha256": "e9cd81d50a0aac7e897bd1f9598b71cacee2c4797ae0fc45b3e876d61b8105c7",
+    "catalog_contract_sha256": "0dd2d9b95f1fb5cd53f5dbb48cea9a1a05da8214b3818ae710de03744f34b7b4",
+    "converter_profile_contract_sha256": "15aef85b2c7461df239af7a849907a9064b0cb4b263082c1af6f363c444766c5"
+  },
+  "oracle": {
+    "extractor_repo": "darlednik/GENEB",
+    "extractor_revision": "b465d2d6a11efbbc9a22c105e34832725ce50e05",
+    "extractor_path": "embedding_pipeline/extractors/lucaone.py",
+    "extractor_sha256": "4c471626e28f5ed98b820df46a1205262aae07da52a6e27c4242ec2697ae5787",
+    "torch": "2.7.1",
+    "transformers": "4.57.3",
+    "tokenizers": "0.22.2",
+    "numpy": "1.26.4",
+    "device": "cpu",
+    "dtype": "float32"
+  },
+  "spec": ["T39", "V44", "V45", "V47", "V48", "V53", "V55", "V56", "V65", "B55", "B58", "B70", "B71", "B74", "B77", "B87", "B93", "B113"]
+}

@@ -340,7 +340,8 @@ struct EsmcContext::Impl final {
     const std::size_t width = weights->public_config.width;
     std::vector<float> hidden(rows * width);
     for (std::size_t row = 0; row < rows; ++row) {
-      if (tokens[row] >= weights->public_config.vocab_size)
+      if (!token_id_in_vocabulary(tokens[row],
+                                  weights->public_config.vocab_size))
         return {ErrorCode::kInvalidArgument, "token exceeds ESMC vocabulary"};
       for (std::size_t column = 0; column < width; ++column) {
         hidden[row * width + column] = weights->embedding.at(

@@ -1,0 +1,13 @@
+diff --git a/genomics_fm/bert_layers.py b/genomics_fm/bert_layers.py
+--- a/genomics_fm/bert_layers.py
++++ b/genomics_fm/bert_layers.py
+@@ -98,7 +98,7 @@ class BertEmbeddings(nn.Module):
+         if inputs_embeds is None:
+             inputs_embeds = self.word_embeddings(input_ids)
+         token_type_embeddings = self.token_type_embeddings(token_type_ids)
+         seq_length = input_shape[1]
+-        gpu_number = int(input_ids.device.index)
++        gpu_number = 0 if input_ids.device.index is None else int(input_ids.device.index)
+         if use_alibi:
+             embeddings = inputs_embeds + token_type_embeddings
+         else:

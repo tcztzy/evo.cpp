@@ -1,0 +1,444 @@
+{
+  "schema_version": 1,
+  "kind": "geneb-t39-pre-native-preflight-freeze",
+  "runtime_id": "geneb-metagene-1",
+  "status": "bounded-preflight-complete-pending-bounded-fetch-receipt-remote-linux-x86_64-audit-only-and-verified-high-memory-host",
+  "observed_at_utc": "2026-08-17T04:33:11Z",
+  "native_observation_before_freeze": false,
+  "checkpoint_shard_opened_before_freeze": false,
+  "official_model_executed_before_freeze": false,
+  "conversion_executed_before_freeze": false,
+  "inputs": [
+    {
+      "label": "input-0",
+      "path": "configs/evidence/oracles/geneb-metagene-1/input-0.fa",
+      "size": 42,
+      "sha256": "51a958bd49ca046fab1f353e90f08c30fb6db0e78079120a7019a758a0be9f28",
+      "sequence": "ACGTNACGTNACGTA",
+      "input_ids": [252, 290, 11, 7, 8, 290, 11, 7, 8, 38, 4],
+      "tokens": ["_AC", "GT", "N", "A", "C", "GT", "N", "A", "C", "GTA", "[EOS]"],
+      "attention_mask": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+    },
+    {
+      "label": "input-1",
+      "path": "configs/evidence/oracles/geneb-metagene-1/input-1.fa",
+      "size": 49,
+      "sha256": "222952d0f2484b21eb645c3f94c3e16016e002795d98144a174a6a4eff9ffd3c",
+      "sequence": "NNNNNNACGTACNNNTATTGCA",
+      "input_ids": [6, 11, 11, 11, 11, 11, 11, 7, 8, 77, 11, 11, 11, 111, 34, 4],
+      "tokens": ["_", "N", "N", "N", "N", "N", "N", "A", "C", "GTAC", "N", "N", "N", "TATT", "GCA", "[EOS]"],
+      "attention_mask": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+    }
+  ],
+  "tolerances": {
+    "max_abs": 0.0001,
+    "mean_abs": 0.00001,
+    "cosine": 0.999999,
+    "frozen_before_native_or_official_model_output": true,
+    "post_observation_relaxation_forbidden": true
+  },
+  "source": {
+    "kind": "huggingface",
+    "repo": "metagene-ai/METAGENE-1",
+    "requested_revision": "main",
+    "revision": "ad8a1e0ee62b85058bfc05d823d8e8d4759edc48",
+    "required_file_count": 11,
+    "required_file_bytes": 25938743031,
+    "weight_shard_count": 6,
+    "weight_shard_physical_bytes": 25938674488,
+    "small_required_file_count": 5,
+    "small_required_file_bytes": 68543,
+    "catalog_contract_sha256": "8102f69393a48f55e082740ca8484879ffe5c32fc2ca25e5b5d4a2d54a51ce88",
+    "receipt_status": "absent-pending-single-bounded-fetch",
+    "receipt_exact_file_count_required": 11,
+    "checkpoint_shards_opened": false,
+    "required_files": [
+      {
+        "path": "config.json",
+        "size": 903,
+        "sha256": "dc3751f8648b4ab24a3c0c42026267e1a2561b93249f54b460c0374e62d33f98"
+      },
+      {
+        "path": "model-00001-of-00006.safetensors",
+        "size": 4941093144,
+        "sha256": "7f8e8789e005c63157a5c61e1a5974109136d44259020ac9e779f33a0b487480"
+      },
+      {
+        "path": "model-00002-of-00006.safetensors",
+        "size": 4991424824,
+        "sha256": "4fa6abadcb468608f19df31644f74c9151c28c8df3007a9b4f7946ea96bb6784"
+      },
+      {
+        "path": "model-00003-of-00006.safetensors",
+        "size": 4924315880,
+        "sha256": "8ecf5b3c2a7311ca4cb39a8832d276817ff0cafb328f70b1dab12a3a382774b7"
+      },
+      {
+        "path": "model-00004-of-00006.safetensors",
+        "size": 4857206904,
+        "sha256": "d481bc4e96ae0b2302931395315a3dc373e556d4269c564d4b306f6a1e5c451e"
+      },
+      {
+        "path": "model-00005-of-00006.safetensors",
+        "size": 4857206904,
+        "sha256": "25778d64535c016d32cedf1fceaf13a22bf52b3c557e129c2cdbb723eab017a6"
+      },
+      {
+        "path": "model-00006-of-00006.safetensors",
+        "size": 1367426832,
+        "sha256": "8abf5e8a7aef8884cf729f8efb97f02f799876e31ab326cb99565e7c52444a39"
+      },
+      {
+        "path": "model.safetensors.index.json",
+        "size": 23950,
+        "sha256": "a5957f6e6126ead8147acc48ee650770368c0ae2c86bbdd516fb041300149077"
+      },
+      {
+        "path": "special_tokens_map.json",
+        "size": 160,
+        "sha256": "f81b8d149b5b7baf0d3c634ffc7a12a83cfbdd60fea6eef9bbfcb2e9856f3b74"
+      },
+      {
+        "path": "tokenizer.json",
+        "size": 42154,
+        "sha256": "3fd754434de0e3aa76ad233e1bcbe1562a21a91a4e13dda947fd7dce401f0b88"
+      },
+      {
+        "path": "tokenizer_config.json",
+        "size": 1376,
+        "sha256": "520cd0838fd728266a9791264e418a93cf10b019224faf8b5aed85d60bcea332"
+      }
+    ],
+    "excluded_files": {
+      "tokenizer.model": {
+        "size": 6128,
+        "sha256": "0bcccad15ab3d220976cbfaf12718e4236f2159e5d0915d95c91f8d866b6569c",
+        "reason": "PreTrainedTokenizerFast executes tokenizer.json BPE and does not load the SentencePiece fallback",
+        "cataloged": false,
+        "executed": false
+      },
+      "other_excluded_classes": [
+        ".gitattributes",
+        "README.md",
+        "assets/overview.png",
+        "generation_config.json"
+      ]
+    }
+  },
+  "checkpoint_index": {
+    "size": 23950,
+    "sha256": "a5957f6e6126ead8147acc48ee650770368c0ae2c86bbdd516fb041300149077",
+    "logical_tensor_bytes": 25938640896,
+    "tensor_count": 291,
+    "source_dtype": "F32",
+    "parameter_count": 6484660224,
+    "shard_tensor_counts": {
+      "model-00001-of-00006.safetensors": 56,
+      "model-00002-of-00006.safetensors": 56,
+      "model-00003-of-00006.safetensors": 55,
+      "model-00004-of-00006.safetensors": 54,
+      "model-00005-of-00006.safetensors": 54,
+      "model-00006-of-00006.safetensors": 16
+    },
+    "lm_head_policy": "validate-and-omit",
+    "lm_head_source_bytes": 16777216,
+    "artifact_tensor_bytes": 25921863680,
+    "index_name_set_matches_profile_topology": true,
+    "weight_headers_or_payloads_read": false
+  },
+  "profile": {
+    "path": "configs/geneb-decoder-models.json",
+    "size_at_preflight": 14181,
+    "file_sha256_at_preflight": "cc535e3bcc3119633062bfcd973e9c9b61d035d1833c8b77ee7de9589fae2ad6",
+    "selected_contract_sha256": "d79570191192f57707c4e5e77ecfffdd02a1c5f2c2779d9be0852301aa1479bc",
+    "catalog_profile_identity_equal": true,
+    "config_sha256": "dc3751f8648b4ab24a3c0c42026267e1a2561b93249f54b460c0374e62d33f98",
+    "topology": {
+      "vocab_size": 1024,
+      "hidden_size": 4096,
+      "num_layers": 32,
+      "num_attention_heads": 32,
+      "num_key_value_heads": 32,
+      "head_dim": 128,
+      "inner_mlp_size": 11008,
+      "max_seqlen": 512,
+      "rms_norm_epsilon": 0.00001,
+      "rope_base": 10000.0,
+      "rope_layout": "split-half",
+      "mlp_activation": "swiglu",
+      "embedding_dtype": "F32",
+      "projection_dtype": "F32",
+      "norm_dtype": "F32",
+      "activation_dtype": "F32"
+    }
+  },
+  "tokenizer": {
+    "official_class": "transformers.tokenization_utils_fast.PreTrainedTokenizerFast",
+    "backend_model": "BPE",
+    "vocab_size": 1024,
+    "normalizer": "Replace(regex-start, underscore)",
+    "pre_tokenizer": "Whitespace",
+    "post_processor": "EOS-only",
+    "special_token_ids": {
+      "pad": 0,
+      "unk": 1,
+      "sep": 2,
+      "bos": 3,
+      "eos": 4,
+      "mask": 5
+    },
+    "padding_side": "right",
+    "truncation_side": "right",
+    "model_max_length": 512,
+    "config_max_sequence_length": 2048,
+    "config_max_sequence_length_used_by_geneb_wrapper": false,
+    "long_2048_nt_tokenization": {
+      "result_token_count": 512,
+      "expected_ids_contract": "[6] + [11] * 510 + [4]",
+      "eos_retained": true
+    },
+    "compiler_manifest_path": "configs/tokenizers/geneb-metagene-1-bpe-v1.json",
+    "compiler_manifest_size": 517,
+    "compiler_manifest_sha256": "11d6a12137231c641e860454396713f971e692b1eb07538b7d4ba6977e50066f",
+    "source_receipt_contract_sha256": "f73347a1ae68023529482f27ff2a9f452261f61174b847e9f249de55bf565b54",
+    "compiled_asset_size": 43998,
+    "compiled_asset_sha256": "c5e193c3b1124c7076ada0fe6d8688d5d19c42cec1e40176d3248db07768ae60",
+    "descriptor_size": 479,
+    "descriptor_sha256": "7d297b3de9f2460df05f5b7b0093851f4f03bb54fe8b132f5473c02db6c9d575",
+    "dual_absolute_root_asset_byte_identical": true,
+    "dual_absolute_root_descriptor_byte_identical": true,
+    "compiled_asset_official_input_parity": true,
+    "transformers_tokenizers_parity": [
+      {
+        "transformers": "4.38.2",
+        "tokenizers": "0.15.2",
+        "input_ids_equal": true
+      },
+      {
+        "transformers": "4.57.3",
+        "tokenizers": "0.22.2",
+        "input_ids_equal": true
+      }
+    ],
+    "batch_padding_ids": [
+      [252, 290, 11, 7, 8, 290, 11, 7, 8, 38, 4, 0, 0, 0, 0, 0],
+      [6, 11, 11, 11, 11, 11, 11, 7, 8, 77, 11, 11, 11, 111, 34, 4]
+    ],
+    "batch_attention_masks": [
+      [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0],
+      [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+    ]
+  },
+  "upstream_execution": {
+    "geneb_repo": "darlednik/GENEB",
+    "geneb_revision": "b465d2d6a11efbbc9a22c105e34832725ce50e05",
+    "extractor_path": "embedding_pipeline/extractors/metagene.py",
+    "extractor_size": 1723,
+    "extractor_sha256": "9d3100dc4dee5f1bd21f3bac3f7105bb13c88232d68d92fb52310c23c2e56faf",
+    "pyproject_size": 2759,
+    "pyproject_sha256": "616a15c0a751eb14687fefe691cd624fbf4cc104605f167a5782cb29d16060e0",
+    "uv_lock_size": 255360,
+    "uv_lock_sha256": "e1fce57ba7eaf9fddebf300161c2840b6e6722bb1c82ac3a5b4e8e093a699953",
+    "extractor_tokenizer_call": "AutoTokenizer.from_pretrained(name_model, trust_remote_code=True)",
+    "extractor_model_call": "AutoModelForCausalLM.from_pretrained(name_model, device_map=auto, trust_remote_code=True, output_hidden_states=True, return_dict=True)",
+    "extractor_hidden_tap": "out.hidden_states[-1]",
+    "reference_pooling": "last_hidden.mean(dim=1)",
+    "normalized_pooling": "attention-mask-f32-sum-then-direct-f32-division",
+    "reference_status": "blocked-by-batch-dependent-padding-contamination",
+    "normalized_status": "protocol-compatible",
+    "trust_remote_code_requested": true,
+    "config_auto_map": null,
+    "official_model_class": "transformers.models.llama.modeling_llama.LlamaForCausalLM",
+    "official_tokenizer_class": "transformers.tokenization_utils_fast.PreTrainedTokenizerFast",
+    "remote_model_or_tokenizer_python_executed": false,
+    "allowlisted_remote_python_files": [],
+    "standard_transformers_code_only": true
+  },
+  "oracle": {
+    "generator_path": "tools/generate_geneb_metagene_1_upstream_oracle.py",
+    "generator_size": 66533,
+    "generator_sha256": "e02fd1c9d40a1c572a08fb1a20f384ba414e4aad4a59f1817627ac6395bb0c8a",
+    "independent_of_evo_native_runtime": true,
+    "native_import_scan": "pass",
+    "audit_only_status": "prior-darwin-arm64-pass-current-generator-not-rerun",
+    "darwin_arm64_audit_only_status": "prior-pass-current-generator-not-rerun",
+    "linux_x86_64_audit_only_status": "not-run",
+    "planned_device": "cpu",
+    "planned_device_map": {
+      "": "cpu"
+    },
+    "planned_dtype": "float32",
+    "planned_num_threads": 1,
+    "planned_num_interop_threads": 1,
+    "planned_deterministic_algorithms": true,
+    "supported_host_profiles": [
+      "darwin-arm64",
+      "linux-x86_64"
+    ],
+    "cross_isa_bit_exact_claimed": false,
+    "planned_state_tensor_count": 291,
+    "planned_state_logical_bytes": 25938640896,
+    "planned_state_dtype": "float32",
+    "planned_rejected_placements": [
+      "cuda",
+      "mps",
+      "disk",
+      "meta"
+    ],
+    "planned_cuda_visible_devices": "empty",
+    "planned_hf_enable_parallel_loading": "false",
+    "planned_python": "3.11.15",
+    "planned_packages": {
+      "accelerate": "1.12.0",
+      "numpy": "1.26.4",
+      "safetensors": "0.7.0",
+      "tokenizers": "0.22.2",
+      "torch": "2.7.1",
+      "transformers": "4.57.3"
+    },
+    "planned_packages_host_profile": "darwin-arm64",
+    "planned_packages_by_host": {
+      "darwin-arm64": {
+        "accelerate": "1.12.0",
+        "numpy": "1.26.4",
+        "safetensors": "0.7.0",
+        "tokenizers": "0.22.2",
+        "torch": "2.7.1",
+        "transformers": "4.57.3"
+      },
+      "linux-x86_64": {
+        "accelerate": "1.12.0",
+        "numpy": "1.26.4",
+        "safetensors": "0.7.0",
+        "tokenizers": "0.22.2",
+        "torch": "2.7.1+cpu",
+        "transformers": "4.57.3"
+      }
+    },
+    "planned_torch_cuda_or_rocm_build": null,
+    "geneb_uv_lock_torch": "2.7.1+cu126",
+    "cpu_wheel_torch": "2.7.1",
+    "linux_x86_64_cpu_wheel_torch": "2.7.1+cpu",
+    "config_authored_transformers": "4.46.3",
+    "geneb_execution_transformers": "4.57.3",
+    "audit_core_package_count": 26,
+    "audit_core_package_lock_sha256": "2854579273037d07ac543932ee442bb4aaa3f12fd06a9fedb8316e1cf79fc096",
+    "full_oracle_environment_status": "pending-remote-linux-x86_64-audit-only-and-verified-high-memory-host",
+    "repeated_forward_bit_equal_required": true,
+    "execution_status": "forbidden-until-exact-eleven-file-receipt-remote-linux-x86_64-audit-only-operator-freeze-and-verified-high-memory-host"
+  },
+  "operator_gate": {
+    "kind": "transformers-4.57.3-standard-llama-cpu-f32-small-vector",
+    "host_profile": "darwin-arm64",
+    "platform_vector_status": "frozen",
+    "linux_x86_64_platform_vector_status": "candidate-not-collected-remote-audit-only-not-run",
+    "rmsnorm_raw_f32_sha256": "5508a7b5b5b7bfb6d1a7d9d651ef94951bb6c6be0fdc75d6aed75098d2930165",
+    "split_half_rope_raw_f32_sha256": "d9ae2aa864cdb7901dba7cfbcd72a8366bc50e7e05b615ee5a330fb6e58f7f12",
+    "sdpa_raw_f32_sha256": "974c359338753008a899d2d1ad32de410ebcf361303e4dbabfaa016e4a113065",
+    "swiglu_raw_f32_sha256": "30d6130e58fe750174bcff2fbac70ae7bbc6a9ec4939b3950e123d1f2b6be6b1",
+    "sdpa_matches_explicit_causal_attention_atol": 0.000001,
+    "repeated_bit_equal": true,
+    "transformers_source_contract_sha256": {
+      "LlamaRMSNorm": "6cf5b1db2ae8fd5ab4f0a49fcc176117f6a80f357560cf244c18e3ff640c6a81",
+      "LlamaRotaryEmbedding": "031c8cecfccf85d7466e66fd576fb49da8526fa5e3be62c70c8e8c9c97ee2162",
+      "apply_rotary_pos_emb": "d1e7d21b55bc5ca988047b17ea15ac7d674428b30073c3e101eb782180a58a25",
+      "eager_attention_forward": "8dd801c3a8d26a45507f388d43f47ff8640dd51c4ee3f9c71b3efc87a668788c",
+      "LlamaMLP": "c35b6e992834901a86bdaa4f6df75407051095fe23ea0ccdbc30bf302005f90c",
+      "LlamaDecoderLayer": "9a0b1ec85b8c3b8f9acc4859ec707696f660057cdc7d744a84a194a1fd4c94a1",
+      "LlamaModel": "d118ea71078b13561a8ea79ab47febf312d7acf67063a5fb425ece15a8e8a720",
+      "LlamaForCausalLM": "ba8b77aeb084b0d338d22818a15012c6e2fe50ef379e0f770e2adc3e7780ebb6"
+    }
+  },
+  "resource_plan": {
+    "external_root": "evo-geneb-t39/metagene-1",
+    "shared_cache_root": "evo-geneb-t39/hf-cache",
+    "shared_receipt_root": "evo-geneb-t39/receipts",
+    "external_free_bytes_observed": 402415165440,
+    "external_free_observed_at_utc": "2026-08-17T04:33:11Z",
+    "host_physical_memory_bytes": 17179869184,
+    "model_f32_parameter_bytes": 25938640896,
+    "model_only_memory_deficit_on_current_host_bytes": 8758771712,
+    "source_required_bytes": 25938743031,
+    "one_artifact_tensor_bytes": 25921863680,
+    "source_plus_two_artifact_tensor_bytes": 77782470391,
+    "source_plus_one_artifact_tensor_bytes_after_cmp_cleanup": 51860606711,
+    "minimum_oracle_host_memory_bytes": 51539607552,
+    "recommended_oracle_host_memory_bytes": 68719476736,
+    "current_host_real_oracle_allowed": false,
+    "configured_larger_host_candidate": {
+      "system": "Linux",
+      "machine": "x86_64",
+      "required_promotion_status": "verified-linux-x86_64-high-memory-host",
+      "remote_audit_only_status": "not-run",
+      "operator_vector_status": "candidate-not-collected",
+      "verified_high_memory_host": false,
+      "full_oracle_allowed": false
+    },
+    "execution_order": [
+      "wait-for-root-large-io-release",
+      "single-bounded-fetch-of-the-exact-eleven-file-allowlist-to-shared-cache",
+      "verify-all-eleven-regular-files-by-exact-size-and-full-sha256",
+      "sign-new-b71-catalog-contract-receipt",
+      "stop-and-backprop-on-any-source-index-tokenizer-or-topology-drift",
+      "create-isolated-cpython-3.11.15-cpu-oracle-environment-with-accelerate-1.12.0",
+      "run-linux-x86_64-audit-only-on-high-memory-host-candidate-without-checkpoint-read",
+      "review-and-freeze-linux-x86_64-package-build-and-operator-hashes",
+      "promote-candidate-to-verified-linux-x86_64-high-memory-host-only-after-remote-audit-and-memory-gates-pass",
+      "run-official-oracle-input-0-then-input-1-and-unload",
+      "strict-conversion-root-a",
+      "strict-conversion-root-b",
+      "byte-compare-artifacts-and-delete-root-b-artifact",
+      "wait-for-final-native-sha",
+      "formal-runners-serial"
+    ],
+    "forbidden_fallbacks": [
+      "weight-shard-open-during-preflight",
+      "duplicate-download",
+      "sentencepiece-fallback-tokenizer",
+      "bf16-oracle",
+      "cuda-or-mps-oracle",
+      "cuda-or-rocm-torch-build",
+      "device-map-auto-or-disk-offload",
+      "meta-parameter-or-state",
+      "cross-isa-bit-exact-claim",
+      "linux-full-oracle-before-platform-operator-freeze",
+      "16gib-local-real-oracle",
+      "unofficial-model-loader",
+      "threshold-relaxation",
+      "parallel-oracle-conversion-or-runner",
+      "native-runtime-import-in-oracle"
+    ]
+  },
+  "validation": {
+    "generator_py_compile": "pass",
+    "generator_audit_only": "prior-darwin-arm64-pass-current-generator-not-rerun",
+    "source_integrity_before_transformers_load": "pass",
+    "catalog_profile_index_static_gate": "pass",
+    "official_tokenizer_ids": "pass",
+    "dual_transformers_tokenizer_ids": "pass",
+    "compiled_tokenizer_official_ids": "pass",
+    "long_512_truncation_gate": "pass",
+    "dual_absolute_root_tokenizer_compile_cmp": "pass",
+    "transformers_source_dependency_gate": "pass",
+    "small_f32_operator_gate": "pass",
+    "b134_b135_host_and_placement_static": "pass",
+    "remote_linux_x86_64_audit_only": "not-run",
+    "native_import_scan": "pass",
+    "large_weight_read": "not-run",
+    "official_model": "not-run",
+    "native_model": "not-run",
+    "conversion": "not-run"
+  },
+  "spec": [
+    "T39",
+    "V44",
+    "V45",
+    "V48",
+    "V53",
+    "V55",
+    "V65",
+    "B127",
+    "B134",
+    "B135"
+  ]
+}

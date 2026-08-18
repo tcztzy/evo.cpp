@@ -15,6 +15,36 @@ variant 与 server surface 在 CPU 或 MPS 上运行官方 F32 HyenaDNA causal-L
 此外，runtime 原生支持 Biohub ESMC 300M、600M 与 6B F32 蛋白质 masked
 encoder，在 CPU、MPS 或单张 CUDA GPU 上输出逐 token logits 与官方 hidden-state
 索引下的 embedding；产品推理路径同样不依赖 Python、PyTorch 或 Transformers。
+CPU-only `GenebTransformerDecoder` adapter 通过验证后的 tokenizer artifact
+与 `geneb-decoder-runtime-v1` profile 运行七个 Llama/Mistral 派生的 GENEB
+checkpoint；GENEB v4 全部 40 个 checkpoint 均已通过各自固定的真实权重 CPU
+oracle 并处于 runtime-supported，详见 [GENEB 支持契约](docs/geneb.md)。
+独立的 CPU-only `GenebOlmoDecoder` / `geneb-olmo-runtime-v1` 路径保留两款
+Omni-DNA checkpoint 的 OLMo fused projection 与不同 normalization topology。
+CPU-only `GenebEsmEncoder` / `geneb-esm-runtime-v1` 路径则保留六款
+Nucleotide Transformer 与 Agro-NT 的 ESM-derived 双向 encoder 语义。
+CPU-only `GenebBertEncoder` / `geneb-bert-runtime-v1` 路径覆盖七款
+GENA、DNABERT、GROVER 与 MutBERT encoder checkpoint。
+CPU-only `GenebGpt2Decoder` / `geneb-gpt2-runtime-v1` 与
+`GenebDnaGptDecoder` / `geneb-dna-gpt-runtime-v1` 路径保留两款
+GPT2-Gene 和两款 DNA-GPT 的 embedding 契约；完整 40-checkpoint GENEB
+catalog 均已 CPU runtime-supported，CUDA 与 MPS 仍为 typed unsupported。
+CPU-only `GenebCustomEncoder` / `geneb-custom-encoder-runtime-v1` 路径保留
+LucaOne 与 Genomics-FM 两个固定 encoder variant 各自不同的 tokenizer vocab、
+位置编码、normalization 与 pooling 规则。
+CPU-only `GenebMambaEncoder` / `geneb-mamba-runtime-v1` 路径保留
+eccDNAMamba、PlantCaduceus 以及 Caduceus PS/PH 的双向 Mamba 语义，
+包括 reverse-complement 参数共享与模型/tokenizer vocab 分离。
+CPU-only `GenebHyenaDnaDecoder` / `geneb-hyenadna-runtime-v1` 与
+`GenebStripedHyenaV1` / `geneb-evo1-runtime-v1` 路径分别保留两款固定的
+长上下文 HyenaDNA checkpoint，以及结构不同的 Evo-1 StripedHyena 图。
+CPU-only `GenebJanusDnaEncoder` / `geneb-janusdna-runtime-v1` 路径保留
+两款固定的 Mamba+MoE variant，包括可选的中间 attention block 与最终
+双倍 hidden-state 契约。
+CPU-only `GenebSequenceCnnEncoder` / `geneb-sequence-cnn-runtime-v1` 路径
+保留固定的 Enformer 与 SPACE sequence-CNN trunk；
+`GenebRoformerEncoder` / `geneb-roformer-runtime-v1` 只接纳 DeepGene 在
+GENEB 中使用的 RoFormer embedding 路径，不接纳其 graph stage。
 
 ## 为什么选择 evo.cpp？
 
@@ -198,6 +228,7 @@ recipe revision。CUDA 使用的 FlashAttention 与 CUTLASS 仍由 CMake
 [数值契约](docs/math-semantics.md)、[checkpoint 转换](docs/checkpoint-conversion.md)和
 [执行 profile 与验收 gate](docs/execution-profiles.md)、
 [architecture registry 与 HyenaDNA 边界](docs/architectures.md)、
+[离线 tokenizer asset](docs/tokenizer-assets.md)、
 [原生 Biohub ESMC 推理](docs/esmc.md)、
 [GENEB v4 模型与证据契约](docs/geneb.md)、
 [sequence、gzip、stdin、VCF 与 reference 输入](docs/sequence-inputs.md)、

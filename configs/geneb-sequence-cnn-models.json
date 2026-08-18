@@ -1,0 +1,158 @@
+{
+  "schema_version": 1,
+  "format": "geneb-sequence-cnn-converter-v1",
+  "implementation_contracts": {
+    "enformer": {
+      "source": "enformer-pytorch v0.8.8@9ffeb8b62927d752b4983ef308a28bf70b34b160",
+      "modeling_sha256": "7d3d8860560e353983e85c325ead0ba7aab4281957251828392c49dc7426c008",
+      "data_sha256": "ec84cabc8476c7409726f5a0d0fc3ae4b88716f9f1d724cc8b87c7a2c3ca8a9a",
+      "configuration_sha256": "715f799e2a55f0b7f991b434197a17718694a4e85e2bc7c47c5486114db2193a"
+    },
+    "space": {
+      "source": "ZhuJiwei111/SPACE@4cdba18b80f948410623acee4b27a988ae7ddace",
+      "modeling_sha256": "b2f8111f34fd85c800446d5148762bfe9fb32fde40d13098bdb89dd333a2408a",
+      "modules_sha256": "56e5c00dcf4b17671cbe3184c797571f42c93e311c7e630b0028c1d2f017b0b7",
+      "configuration_sha256": "493d517e70e172345a97643482d505b13194dd8068c0ecfb48f515d02cb538c9"
+    }
+  },
+  "models": [
+    {
+      "runtime_id": "geneb-enformer",
+      "geneb_model_id": "enformer-official-rough",
+      "paper_name": "Enformer",
+      "catalog_architecture": "enformer",
+      "repo": "EleutherAI/enformer-official-rough",
+      "requested_revision": "main",
+      "revision": "affe5713ae9017460706a44108289b13c5fee16c",
+      "source_files": [
+        {"name": ".gitattributes", "size": 1227, "sha256": "be1dfa175012b2d5da7ed0030508e4b3b25a62fa26169855cffc7197616d51e7"},
+        {"name": "README.md", "size": 1125, "sha256": "398d37dee237c2a7931e974d8aeadf074309370daa480527ae784d1972a63282"},
+        {"name": "config.json", "size": 439, "sha256": "ad7a0e07b2fe40fd4c93a8528416406b4429f303946f5a93209ef26f160a034f"},
+        {"name": "pytorch_model.bin", "size": 1005149571, "sha256": "99b09d602e195d89c7d4debe144bb2f43907ba0d74006e97098e99d9171c439c"}
+      ],
+      "config_required": {
+        "architectures": ["Enformer"],
+        "attn_dim_key": 64,
+        "attn_dropout": 0.05,
+        "depth": 11,
+        "dim": 1536,
+        "dim_divisible_by": 128,
+        "dropout_rate": 0.4,
+        "heads": 8,
+        "model_type": "enformer",
+        "num_downsamples": 7,
+        "output_heads": {"human": 5313, "mouse": 1643},
+        "pos_dropout": 0.01,
+        "target_length": 896,
+        "torch_dtype": "float32",
+        "transformers_version": "4.16.2",
+        "use_checkpointing": false
+      },
+      "source_contract": {
+        "tensor_count": 570,
+        "f32_count": 542,
+        "i64_count": 28,
+        "canonical_f32_count": 269,
+        "canonical_bytes": 919500800,
+        "canonical_digest": "f4239e4472bf2d1d4b9e76b91cc46d59208acb421636f8407725d4ae4faad4b7",
+        "alias_pairs": 283,
+        "drop_policy": "validate _trunk exact aliases, output heads, and batch-norm counters; retain primary F32 trunk"
+      },
+      "topology": {
+        "variant": "enformer",
+        "input_length": 196608,
+        "trunk_width": 1536,
+        "output_width": 3072,
+        "depth": 11,
+        "heads": 8,
+        "key_width": 64,
+        "value_width": 192,
+        "relative_feature_width": 192,
+        "target_length": 896,
+        "num_downsamples": 7,
+        "batch_norm_epsilon": 0.00001,
+        "gelu_sigmoid_scale": 1.702,
+        "use_tf_gamma": false,
+        "species_num_experts": 0,
+        "top_k": 0,
+        "gate_negative_slope": 0.0,
+        "species": "",
+        "weight_dtype": "F32"
+      }
+    },
+    {
+      "runtime_id": "geneb-space",
+      "geneb_model_id": "space",
+      "paper_name": "SPACE",
+      "catalog_architecture": "space-multispecies-enformer",
+      "repo": "yangyz1230/space",
+      "requested_revision": "main",
+      "revision": "63c9f5011877cc20b3e9d2d63dcdb1d547e62c18",
+      "source_files": [
+        {"name": ".gitattributes", "size": 1519, "sha256": "11ad7efa24975ee4b0c3c3a38ed18737f0658a5f75a0a96787b576a78a023361"},
+        {"name": "README.md", "size": 879, "sha256": "4dd2a79d7ffcbe2916d1fe4ca06b2452083c39332574f723e8cbac6569bf2dcb"},
+        {"name": "config.json", "size": 700, "sha256": "aa0c989abae4593aa22faa7b9f544237015d431dd33ebea8a6a80a4f60fc739c"},
+        {"name": "pytorch_model.bin", "size": 2355245554, "sha256": "f22ce262adc3347a8182bcd3bb5cd630ded4f1586b6c2a9841de6d14ea61cc81"}
+      ],
+      "config_required": {
+        "MIloss_lambda": 0.01,
+        "architectures": ["MultiSpeciesEnformer"],
+        "dim": 1536,
+        "depth": 11,
+        "heads": 8,
+        "target_length": 896,
+        "attn_dim_key": 64,
+        "attn_dropout": 0.05,
+        "cvloss_lambda": 0.005,
+        "dim_divisible_by": 128,
+        "dropout_rate": 0.4,
+        "model_type": "space",
+        "num_downsamples": 7,
+        "use_tf_gamma": false,
+        "seq_length": 131072,
+        "topk": 3,
+        "moe": ["species", "tracks"],
+        "num": 1024,
+        "output_heads": {"human": 5313, "mouse": 1643},
+        "pos_dropout": 0.01,
+        "species_num_experts": 4,
+        "torch_dtype": "float32",
+        "tracks_num_experts": 8,
+        "transformers_version": "4.45.2",
+        "use_checkpointing": false,
+        "zloss_lambda": 0.001
+      },
+      "source_contract": {
+        "tensor_count": 363,
+        "f32_count": 349,
+        "i64_count": 14,
+        "canonical_f32_count": 315,
+        "canonical_bytes": 2166370656,
+        "canonical_digest": "27b5e9d233d07b4a11d9f36e8201cbcadcfff7a0a6ef319623dbe63b4dcd510b",
+        "alias_pairs": 0,
+        "drop_policy": "validate and drop model.heads.*, model.tracks.*, and batch-norm counters; strip leading model."
+      },
+      "topology": {
+        "variant": "space",
+        "input_length": 131072,
+        "trunk_width": 1536,
+        "output_width": 3072,
+        "depth": 11,
+        "heads": 8,
+        "key_width": 64,
+        "value_width": 192,
+        "relative_feature_width": 192,
+        "target_length": 896,
+        "num_downsamples": 7,
+        "batch_norm_epsilon": 0.00001,
+        "gelu_sigmoid_scale": 1.702,
+        "use_tf_gamma": false,
+        "species_num_experts": 4,
+        "top_k": 3,
+        "gate_negative_slope": 0.01,
+        "species": "human",
+        "weight_dtype": "F32"
+      }
+    }
+  ]
+}

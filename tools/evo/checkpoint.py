@@ -238,7 +238,10 @@ def load_checkpoint(
         ) from error
     torch.serialization.add_safe_globals([io.BytesIO])
     try:
-        state = torch.load(path, map_location="cpu", mmap=True, weights_only=True)
+        # PyTorch 2.1 requires a concrete string filename when mmap=True.
+        state = torch.load(
+            str(path), map_location="cpu", mmap=True, weights_only=True
+        )
     except Exception as error:
         raise CheckpointError(f"failed to load checkpoint {path}: {error}") from error
     if not isinstance(state, dict):

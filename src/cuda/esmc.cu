@@ -565,7 +565,8 @@ struct EsmcContext::Impl final {
               "ESMC CUDA forward requires one fresh full-sequence context"};
     }
     for (const TokenId token : host_tokens) {
-      if (token >= weights->public_config.vocab_size)
+      if (!token_id_in_vocabulary(token,
+                                  weights->public_config.vocab_size))
         return {ErrorCode::kInvalidArgument, "token exceeds ESMC vocabulary"};
     }
     auto status = select_device(weights->device);

@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "format": "geneb-gpt2-converter-v1",
+  "models": [
+    {
+      "runtime_id": "geneb-gpt2-gene-multi-v2",
+      "geneb_model_id": "gpt2_gene_multi_v2_ft",
+      "paper_name": "GPT2-Gene-Multi-v2",
+      "catalog_architecture": "gpt2-causal-lm",
+      "repo": "dnagpt/gpt2_gene_multi_v2_ft",
+      "requested_revision": "main",
+      "revision": "b74ac7de9a489e936f612ded2036e01a33eec743",
+      "config_sha256": "ed9b8b6cf30450895e85af7078c245f05e99dcddff428e87ef9e3449eea0e180",
+      "weights_sha256": "bc800db24ee41a9c448e7831b288f3748d81e9aea1b47e6262cbe72775c5244b",
+      "weights_size": 694305408,
+      "source_manifest_sha256": "822ccd6ffb9986b43e14cc3f69664809f3266cf4e3027c2d21a21b443e4bd256",
+      "source_tensor_count": 148,
+      "source_tensor_bytes": 694290432,
+      "tokenizer": {
+        "tokenizer_json_sha256": "741011bef34f7b37e7301c1b63cf505879153a2331e216a7ca6f3fbcfb6770c0",
+        "tokenizer_json_size": 6112143,
+        "tokenizer_config_sha256": "24c2cd599a40eb6df438fe4b5ff2dfe817ee82c9b48af3e181b53418c4d16c62",
+        "tokenizer_config_size": 776,
+        "special_tokens_map_sha256": "d0464b265d38a544c1703c14ddeff141f0063e6dbd1d6107571d8764b85852af",
+        "special_tokens_map_size": 433,
+        "compiled_asset_sha256": "717471cc4088830dd48f218c8f06678ed6c872a1e51253aefa8752d164ad03da",
+        "compiled_asset_size": 4434782,
+        "compiler_manifest_sha256": "5b65de938747912f11db594d60d48f8f698ad7dd0881d076eae7d7cb7ede510e",
+        "vocab_size": 115000,
+        "merge_count": 77552,
+        "pad_id": 0
+      },
+      "topology": {
+        "vocab_size": 115000,
+        "hidden_size": 768,
+        "num_layers": 12,
+        "num_attention_heads": 12,
+        "inner_width": 3072,
+        "max_seqlen": 256,
+        "norm_epsilon": 0.00001
+      }
+    },
+    {
+      "runtime_id": "geneb-gpt2-gene-v1",
+      "geneb_model_id": "gpt2_gene_v1",
+      "paper_name": "GPT2-Gene-v1",
+      "catalog_architecture": "gpt2-causal-lm",
+      "repo": "dnagpt/gpt2_gene_v1",
+      "requested_revision": "main",
+      "revision": "ffcc7a4135ec0439800ee95fdc413706685136e8",
+      "config_sha256": "87b0158521de7096e1f2013741e65b60c55c750a36aec9a7eb13dcdd542a9dd5",
+      "weights_sha256": "cd12bc25b882f82fa69665c299a0a206e2a2a4411d4a4f7b8114e0661b9c1d75",
+      "weights_size": 694305408,
+      "source_manifest_sha256": "822ccd6ffb9986b43e14cc3f69664809f3266cf4e3027c2d21a21b443e4bd256",
+      "source_tensor_count": 148,
+      "source_tensor_bytes": 694290432,
+      "tokenizer": {
+        "tokenizer_json_sha256": "741011bef34f7b37e7301c1b63cf505879153a2331e216a7ca6f3fbcfb6770c0",
+        "tokenizer_json_size": 6112143,
+        "tokenizer_config_sha256": "212fe6f400b180eb4d472394ce47a99efec99df7908c0fa99f02c69d1533707e",
+        "tokenizer_config_size": 768,
+        "special_tokens_map_sha256": "979813928e900b14949ebd46cf4ffb990826abec194239cd0a4599c56bd9af3c",
+        "special_tokens_map_size": 425,
+        "compiled_asset_sha256": "750662ca54e3ad8ac4b90bba611febd4f88887ef7376088be602073715a41cbf",
+        "compiled_asset_size": 4434782,
+        "compiler_manifest_sha256": "8b5b23a7c0427ff5d5da1660f81842d7f04abb56bc42aea9115d64760bcce3e8",
+        "vocab_size": 115000,
+        "merge_count": 77552,
+        "pad_id": 1
+      },
+      "topology": {
+        "vocab_size": 115000,
+        "hidden_size": 768,
+        "num_layers": 12,
+        "num_attention_heads": 12,
+        "inner_width": 3072,
+        "max_seqlen": 256,
+        "norm_epsilon": 0.00001
+      }
+    }
+  ],
+  "code_provenance": {
+    "package": "transformers",
+    "version": "4.45.2",
+    "modeling_gpt2_sha256": "57750b9faf5a72f596966d7f6541ad7a04294ea206c9af03a4702c60b1b4f3f6",
+    "configuration_gpt2_sha256": "3689eab68d1e20b31caff38976f9f7b12484791321d84a4ff7bd791b205cad01",
+    "activations_sha256": "10c37e915ce2b52d539a5b52ecaaf644e2b0c56d282db00778098d74342ebeee",
+    "extractor_commit": "b465d2d6a11efbbc9a22c105e34832725ce50e05",
+    "extractor_sha256": "f70ac97116ebd4971a0fdfe30cc5ddab18ea9c5c47b4f78e6b7dc046832de692"
+  }
+}

@@ -13,6 +13,8 @@ enum class ArchitectureTokenizer {
   kByteIdentity,
   kHyenaDnaCharacter,
   kEsmcProtein,
+  // The model artifact must carry a verified evo-tokenizer-v1 descriptor.
+  kArtifact,
 };
 
 // The native implementation selected by an artifact architecture.  This is
@@ -23,6 +25,19 @@ enum class ArchitectureImplementation {
   kStripedHyena2,
   kHyenaDna,
   kEsmc,
+  kGenebTransformerDecoder,
+  kGenebOlmoDecoder,
+  kGenebEsmEncoder,
+  kGenebBertEncoder,
+  kGenebGpt2Decoder,
+  kGenebDnaGptDecoder,
+  kGenebCustomEncoder,
+  kGenebMambaEncoder,
+  kGenebHyenaDnaDecoder,
+  kGenebStripedHyenaV1,
+  kGenebJanusDnaEncoder,
+  kGenebSequenceCnnEncoder,
+  kGenebRoformerEncoder,
 };
 
 enum ArchitectureBackend : unsigned {
@@ -106,8 +121,7 @@ struct OfficialEsmcModelSpec final {
 find_official_model(std::string_view model_id) noexcept;
 [[nodiscard]] const char *
 official_exact_support_name(OfficialExactSupport support) noexcept;
-[[nodiscard]] Status
-require_official_exact_support(std::string_view model_id);
+[[nodiscard]] Status require_official_exact_support(std::string_view model_id);
 [[nodiscard]] const std::vector<OfficialEsmcModelSpec> &
 official_esmc_model_specs();
 [[nodiscard]] const OfficialEsmcModelSpec *
@@ -117,6 +131,8 @@ find_official_esmc_model(std::string_view model_id) noexcept;
 find_architecture(std::string_view architecture) noexcept;
 [[nodiscard]] const ArchitectureSpec *
 find_artifact_profile(std::string_view profile) noexcept;
+[[nodiscard]] bool architecture_requires_artifact_tokenizer(
+    const ArchitectureSpec &architecture) noexcept;
 [[nodiscard]] const char *architecture_implementation_name(
     ArchitectureImplementation implementation) noexcept;
 [[nodiscard]] const ArchitectureBackendFactorySpec *

@@ -25,11 +25,16 @@ def main() -> int:
     native: dict[str, list[str]] = {}
     native_esmc: dict[str, list[str]] = {}
     architectures: dict[str, list[str]] = {}
+    factory_backends: dict[str, int] = {}
     for line in lines:
         fields = line.split("|")
         if fields[0] == "@":
             assert len(fields) == 9, line
             architectures[fields[1]] = fields[2:]
+            continue
+        if fields[0] == "&":
+            assert len(fields) == 3, line
+            factory_backends[fields[1]] = int(fields[2])
             continue
         if fields[0] == "$":
             assert len(fields) == 13, line
@@ -95,17 +100,21 @@ def main() -> int:
             entry["exact_support"],
             entry["exact_evidence"],
         ]
-    assert set(architectures) == {
-        "StripedHyena2",
+    registered_architecture_ids = {
+        entry["id"] for entry in registry["runtime_architectures"]
+    }
+    fixture_architecture_ids = {
         "StripedHyena2Test",
-        "HyenaDNA",
         "HyenaDNATest",
-        "ESMC",
         "ESMCTest",
     }
+    assert set(architectures) == registered_architecture_ids | fixture_architecture_ids
     production_architectures = {
         entry["id"]: [entry["artifact_profile"], entry["runtime_abi"]]
         for entry in registry["runtime_architectures"]
+    }
+    production_descriptors = {
+        entry["id"]: entry for entry in registry["runtime_architectures"]
     }
     artifact_profiles = {
         entry["id"]: [entry["runtime_abi"], entry["metadata_key"]]
@@ -124,8 +133,36 @@ def main() -> int:
     assert set(production_architectures) == {
         name for name in architectures if not name.endswith("Test")
     }
+    assert set(factory_backends) == set(architectures)
+    backend_bits = {"cpu": 1, "cuda": 2, "mps": 4}
+    capability_bits = {
+        "generate": 1,
+        "score": 2,
+        "embed": 4,
+        "variant": 8,
+        "serve": 16,
+        "logits": 32,
+    }
     for name, contract in production_architectures.items():
         assert architectures[name][:2] == contract
+        descriptor = production_descriptors[name]
+        backends = descriptor["backends"]
+        capabilities = descriptor["capabilities"]
+        assert isinstance(backends, list) and len(backends) == len(set(backends))
+        assert isinstance(capabilities, list) and len(capabilities) == len(
+            set(capabilities)
+        )
+        declared_backends = int(architectures[name][4])
+        declared_capabilities = int(architectures[name][5])
+        assert sum(backend_bits[value] for value in backends) == declared_backends
+        assert (
+            sum(capability_bits[value] for value in capabilities)
+            == declared_capabilities
+        )
+        assert factory_backends[name] == declared_backends
+        if contract[0].startswith("geneb-"):
+            assert backends == ["cpu"]
+            assert capabilities == ["embed", "serve"]
     assert architectures["StripedHyena2"] == [
         "evo2-runtime-v1",
         "evo2-safetensors-v1",
@@ -151,6 +188,105 @@ def main() -> int:
         "esmc-protein",
         "7",
         "36",
+        "0",
+    ]
+    assert architectures["GenebTransformerDecoder"] == [
+        "geneb-decoder-runtime-v1",
+        "geneb-decoder-safetensors-v1",
+        "geneb-transformer-decoder",
+        "artifact",
+        "1",
+        "20",
+        "0",
+    ]
+    assert architectures["GenebOlmoDecoder"] == [
+        "geneb-olmo-runtime-v1",
+        "geneb-olmo-safetensors-v1",
+        "geneb-olmo-decoder",
+        "artifact",
+        "1",
+        "20",
+        "0",
+    ]
+    assert architectures["GenebEsmEncoder"] == [
+        "geneb-esm-runtime-v1",
+        "geneb-esm-safetensors-v1",
+        "geneb-esm-encoder",
+        "artifact",
+        "1",
+        "20",
+        "0",
+    ]
+    assert architectures["GenebBertEncoder"] == [
+        "geneb-bert-runtime-v1",
+        "geneb-bert-safetensors-v1",
+        "geneb-bert-encoder",
+        "artifact",
+        "1",
+        "20",
+        "0",
+    ]
+    assert architectures["GenebGpt2Decoder"] == [
+        "geneb-gpt2-runtime-v1",
+        "geneb-gpt2-safetensors-v1",
+        "geneb-gpt2-decoder",
+        "artifact",
+        "1",
+        "20",
+        "0",
+    ]
+    assert architectures["GenebDnaGptDecoder"] == [
+        "geneb-dna-gpt-runtime-v1",
+        "geneb-dna-gpt-torch-pth-v1",
+        "geneb-dna-gpt-decoder",
+        "artifact",
+        "1",
+        "20",
+        "0",
+    ]
+    assert architectures["GenebCustomEncoder"] == [
+        "geneb-custom-encoder-runtime-v1",
+        "geneb-custom-encoder-safetensors-v1",
+        "geneb-custom-encoder",
+        "artifact",
+        "1",
+        "20",
+        "0",
+    ]
+    assert architectures["GenebMambaEncoder"] == [
+        "geneb-mamba-runtime-v1",
+        "geneb-mamba-safetensors-v1",
+        "geneb-mamba-encoder",
+        "artifact",
+        "1",
+        "20",
+        "0",
+    ]
+    assert architectures["GenebHyenaDnaDecoder"] == [
+        "geneb-hyenadna-runtime-v1",
+        "geneb-hyenadna-safetensors-v1",
+        "geneb-hyenadna-decoder",
+        "artifact",
+        "1",
+        "20",
+        "0",
+    ]
+    assert architectures["GenebStripedHyenaV1"] == [
+        "geneb-evo1-runtime-v1",
+        "geneb-evo1-safetensors-v1",
+        "geneb-striped-hyena-v1",
+        "artifact",
+        "1",
+        "20",
+        "0",
+    ]
+    assert architectures["GenebJanusDnaEncoder"] == [
+        "geneb-janusdna-runtime-v1",
+        "geneb-janusdna-lightning-v1",
+        "geneb-janusdna-encoder",
+        "artifact",
+        "1",
+        "20",
         "0",
     ]
     return 0

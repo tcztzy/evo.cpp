@@ -1,0 +1,14 @@
+{
+  "format": "evo-tokenizer-compiler-v1",
+  "source": "custom",
+  "kind": "byte-bpe",
+  "files": [
+    {
+      "role": "spec",
+      "name": "geneb-evo1-byte-source-v1.json",
+      "size": 34215,
+      "sha256": "209ad95ffb1c31c6ecbe2d1a7c8ab4170089f0a72db54f3a9f2e0e8399248b25"
+    }
+  ],
+  "options": {}
+}

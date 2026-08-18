@@ -1,12 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
+#include <cstdlib>
 #include <exception>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <memory>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "evo/cli.hpp"
 #include "evo/cpu/inference_cli.hpp"
+#include "evo/json.hpp"
 #include "evo/model_format.hpp"
 #include "evo/model_registry.hpp"
 #include "evo/server.hpp"
@@ -27,13 +33,27 @@
 
 namespace {
 
+constexpr std::size_t kMaximumGenebCatalogBytes = 8U * 1024U * 1024U;
+
 void print_help() { std::cout << evo::cli_usage(); }
 
 evo::Status dump_tokens(const std::string_view label,
                         const std::string_view bytes,
-                        const evo::ArchitectureTokenizer tokenizer) {
+                        const evo::ArchitectureTokenizer tokenizer,
+                        const evo::ModelFile *const artifact = nullptr) {
   std::vector<evo::TokenId> tokens;
-  const auto status = evo::encode_sequence(tokenizer, bytes, &tokens);
+  auto status = evo::Status::Ok();
+  if (artifact != nullptr &&
+      artifact->tokenizer_asset_descriptor().has_value()) {
+    std::unique_ptr<evo::ArtifactTokenizer> asset;
+    status = evo::ArtifactTokenizer::Load(
+        std::string{artifact->artifact_root()},
+        *artifact->tokenizer_asset_descriptor(), &asset);
+    if (status.ok())
+      status = asset->encode(bytes, {}, &tokens);
+  } else {
+    status = evo::encode_sequence(tokenizer, bytes, &tokens);
+  }
   if (!status.ok())
     return status;
   std::cerr << "tokens " << label << "=[";
@@ -63,6 +83,189 @@ int fail(const evo::Status &status) {
   std::cerr << "evo: " << evo::error_code_name(status.code()) << ": "
             << status.message() << '\n';
   return evo::exit_code(status.code());
+}
+
+const evo::JsonValue *object_member(const evo::JsonValue &object,
+                                    const std::string_view key,
+                                    const evo::JsonType type) noexcept {
+  const auto *const value = object.find(key);
+  return value != nullptr && value->type == type ? value : nullptr;
+}
+
+evo::Status locate_geneb_catalog(const std::string &explicit_path,
+                                 const std::string_view executable,
+                                 std::filesystem::path *const output) {
+  if (output == nullptr)
+    return {evo::ErrorCode::kInvalidArgument,
+            "GENEB catalog output path is null"};
+  std::vector<std::filesystem::path> candidates;
+  if (!explicit_path.empty()) {
+    candidates.emplace_back(explicit_path);
+  } else if (const char *const environment =
+                 std::getenv("EVO_GENEB_CATALOG")) {
+    if (*environment != '\0')
+      candidates.emplace_back(environment);
+  }
+  if (candidates.empty()) {
+    candidates.emplace_back("configs/geneb-models.json");
+    std::error_code absolute_error;
+    const auto binary = std::filesystem::absolute(
+        std::filesystem::path{executable}, absolute_error);
+    if (!absolute_error) {
+      candidates.push_back(binary.parent_path().parent_path() / "share" /
+                           "evo" / "configs" / "geneb-models.json");
+    }
+  }
+  for (const auto &candidate : candidates) {
+    std::error_code error;
+    if (std::filesystem::is_regular_file(candidate, error) && !error) {
+      *output = candidate;
+      return evo::Status::Ok();
+    }
+  }
+  return {evo::ErrorCode::kIo,
+          "cannot locate configs/geneb-models.json; set EVO_GENEB_CATALOG or "
+          "pass --catalog PATH"};
+}
+
+evo::Status read_geneb_catalog(const std::filesystem::path &path,
+                               std::string *const payload,
+                               evo::JsonValue *const root) {
+  if (payload == nullptr || root == nullptr)
+    return {evo::ErrorCode::kInvalidArgument,
+            "GENEB catalog output pointer is null"};
+  std::error_code error;
+  const auto size = std::filesystem::file_size(path, error);
+  if (error)
+    return {evo::ErrorCode::kIo,
+            "cannot stat GENEB catalog '" + path.string() + "'"};
+  if (size == 0 || size > kMaximumGenebCatalogBytes)
+    return {evo::ErrorCode::kModelFormat,
+            "GENEB catalog size is outside the supported range"};
+  std::ifstream input(path, std::ios::binary);
+  if (!input)
+    return {evo::ErrorCode::kIo,
+            "cannot open GENEB catalog '" + path.string() + "'"};
+  std::ostringstream stream;
+  stream << input.rdbuf();
+  if (!input && !input.eof())
+    return {evo::ErrorCode::kIo,
+            "cannot read GENEB catalog '" + path.string() + "'"};
+  *payload = stream.str();
+  if (payload->size() != size)
+    return {evo::ErrorCode::kIo,
+            "GENEB catalog changed while it was being read"};
+  auto status = evo::parse_json(*payload, root, 64);
+  if (!status.ok())
+    return {evo::ErrorCode::kModelFormat,
+            "GENEB catalog JSON is invalid: " + status.message()};
+  const auto *const schema = object_member(*root, "schema_version",
+                                           evo::JsonType::kNumber);
+  const auto *const suite =
+      object_member(*root, "suite", evo::JsonType::kObject);
+  const auto *const suite_id =
+      suite == nullptr
+          ? nullptr
+          : object_member(*suite, "id", evo::JsonType::kString);
+  const auto *const models =
+      object_member(*root, "models", evo::JsonType::kArray);
+  if (root->type != evo::JsonType::kObject || schema == nullptr ||
+      schema->number != 1.0 || suite_id == nullptr ||
+      suite_id->string != "geneb-v4" || models == nullptr ||
+      models->array.size() != 40) {
+    return {evo::ErrorCode::kModelFormat,
+            "GENEB catalog must be schema v1 suite geneb-v4 with 40 models"};
+  }
+  return evo::Status::Ok();
+}
+
+evo::Status run_models_command(const int argc, char **argv) {
+  bool json = false;
+  bool seen_suite = false;
+  std::string catalog_path;
+  for (int index = 2; index < argc; ++index) {
+    const std::string_view option{argv[index]};
+    if (option == "--help" || option == "-h") {
+      std::cout << "Usage: evo models --suite geneb [--json] "
+                   "[--catalog PATH]\n";
+      return evo::Status::Ok();
+    }
+    if (option == "--json") {
+      if (json)
+        return {evo::ErrorCode::kInvalidArgument,
+                "option '--json' was specified twice"};
+      json = true;
+      continue;
+    }
+    if (option == "--suite") {
+      if (seen_suite)
+        return {evo::ErrorCode::kInvalidArgument,
+                "option '--suite' was specified twice"};
+      seen_suite = true;
+      if (++index >= argc || std::string_view{argv[index]} != "geneb")
+        return {evo::ErrorCode::kInvalidArgument, "--suite must be geneb"};
+      continue;
+    }
+    if (option == "--catalog") {
+      if (!catalog_path.empty())
+        return {evo::ErrorCode::kInvalidArgument,
+                "option '--catalog' was specified twice"};
+      if (++index >= argc || std::string_view{argv[index]}.empty())
+        return {evo::ErrorCode::kInvalidArgument,
+                "option '--catalog' requires a path"};
+      catalog_path = argv[index];
+      continue;
+    }
+    return {evo::ErrorCode::kInvalidArgument,
+            "unknown models option '" + std::string{option} + "'"};
+  }
+  if (!seen_suite)
+    return {evo::ErrorCode::kInvalidArgument,
+            "models requires --suite geneb"};
+  std::filesystem::path resolved;
+  auto status = locate_geneb_catalog(catalog_path, argv[0], &resolved);
+  if (!status.ok())
+    return status;
+  std::string payload;
+  evo::JsonValue root;
+  status = read_geneb_catalog(resolved, &payload, &root);
+  if (!status.ok())
+    return status;
+  if (json) {
+    std::cout << payload;
+    if (payload.back() != '\n')
+      std::cout << '\n';
+    return evo::Status::Ok();
+  }
+  std::cout << "runtime_id\tpaper_name\truntime_support\tartifact_profile\n";
+  const auto *const models = root.find("models");
+  for (const auto &model : models->array) {
+    const auto *const runtime =
+        object_member(model, "runtime_id", evo::JsonType::kString);
+    const auto *const paper =
+        object_member(model, "paper_name", evo::JsonType::kString);
+    const auto *const support =
+        object_member(model, "runtime_support", evo::JsonType::kObject);
+    const auto *const support_status =
+        support == nullptr
+            ? nullptr
+            : object_member(*support, "status", evo::JsonType::kString);
+    const auto *const profile =
+        support == nullptr ? nullptr : support->find("artifact_profile");
+    if (runtime == nullptr || paper == nullptr || support_status == nullptr ||
+        profile == nullptr ||
+        (profile->type != evo::JsonType::kNull &&
+         profile->type != evo::JsonType::kString)) {
+      return {evo::ErrorCode::kModelFormat,
+              "GENEB catalog model summary fields are invalid"};
+    }
+    std::cout << runtime->string << '\t' << paper->string << '\t'
+              << support_status->string << '\t'
+              << (profile->type == evo::JsonType::kString ? profile->string
+                                                           : "-")
+              << '\n';
+  }
+  return evo::Status::Ok();
 }
 
 const evo::ArchitectureBackendFactorySpec *architecture_backend_factory(
@@ -183,7 +386,7 @@ evo::Status validate_model_operation(evo::CliOptions *const options) {
             "ESMC CUDA inference currently supports exactly one GPU"};
   }
   if (options->mode == evo::RunMode::kGenerate && options->dump_tokens) {
-    status = dump_tokens("prompt", options->prompt, spec->tokenizer);
+    status = dump_tokens("prompt", options->prompt, spec->tokenizer, &artifact);
     if (!status.ok())
       return status;
   }
@@ -194,6 +397,10 @@ evo::Status validate_model_operation(evo::CliOptions *const options) {
 
 int main(const int argc, char **argv) {
   try {
+    if (argc > 1 && std::string_view{argv[1]} == "models") {
+      const auto status = run_models_command(argc, argv);
+      return status.ok() ? 0 : fail(status);
+    }
     if (argc == 2) {
       const std::string_view arg{argv[1]};
       if (arg == "--help" || arg == "-h") {

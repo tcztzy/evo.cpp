@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import subprocess
@@ -59,6 +60,16 @@ def main() -> int:
     registered_architectures = [
         entry["id"] for entry in registry["runtime_architectures"]
     ]
+    architecture_matrix = [
+        {
+            "id": entry["id"],
+            "artifact_profile": entry["artifact_profile"],
+            "runtime_abi": entry["runtime_abi"],
+            "backends": entry["backends"],
+            "capabilities": entry["capabilities"],
+        }
+        for entry in registry["runtime_architectures"]
+    ]
     runtime_profiles = list(
         dict.fromkeys(
             entry["artifact_profile"]
@@ -78,6 +89,7 @@ def main() -> int:
             metadata["build_image"] != "nvidia/cuda@sha256:" + "b" * 64,
             metadata["registered_architectures"]
             != registered_architectures,
+            metadata["architecture_matrix"] != architecture_matrix,
             metadata["runtime_profiles"]
             != runtime_profiles,
             metadata["execution_profiles"]
@@ -104,6 +116,40 @@ def main() -> int:
     )
     if mismatch.returncode == 0 or "does not match project version" not in mismatch.stderr:
         raise AssertionError("release metadata accepted a tag/version mismatch")
+
+    for label, field, value in (
+        ("backend-order", "backends", ["cuda", "cpu"]),
+        ("capability-order", "capabilities", ["serve", "embed"]),
+    ):
+        corrupt_root = args.work_dir / label
+        (corrupt_root / "configs").mkdir(parents=True, exist_ok=True)
+        (corrupt_root / "CMakeLists.txt").write_text(
+            (args.source_dir / "CMakeLists.txt").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        candidate = copy.deepcopy(registry)
+        candidate["runtime_architectures"][0][field] = value
+        (corrupt_root / "configs" / "model-registry.json").write_text(
+            json.dumps(candidate) + "\n", encoding="utf-8"
+        )
+        corrupt_command = command.copy()
+        corrupt_command[corrupt_command.index("--source-dir") + 1] = str(
+            corrupt_root
+        )
+        corrupt_command[corrupt_command.index("--output") + 1] = str(
+            corrupt_root / "metadata.json"
+        )
+        corruption = subprocess.run(
+            corrupt_command,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if corruption.returncode == 0 or "has invalid " + field not in corruption.stderr:
+            raise AssertionError(
+                "release metadata accepted noncanonical architecture " + field
+            )
 
     ci = (args.source_dir / ".github" / "workflows" / "ci.yml").read_text(
         encoding="utf-8"

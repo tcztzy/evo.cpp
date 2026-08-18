@@ -52,8 +52,8 @@ Fixture make_fixture(std::string header,
   return fixture;
 }
 
-std::string
-metadata_json(const std::string_view profile = "s:evo2-runtime-v1") {
+std::string metadata_json(const std::string_view profile = "s:evo2-runtime-v1",
+                          const std::string_view extra = {}) {
   return "\"__metadata__\":{"
          "\"evo2.profile\":\"" +
          std::string{profile} +
@@ -65,7 +65,8 @@ metadata_json(const std::string_view profile = "s:evo2-runtime-v1") {
          "\"config.tie_embeddings\":\"b:1\","
          "\"config.layers\":\"l:0,3\","
          "\"config.eps\":\"f:3eb0c6f7a0b5ed8d\","
-         "\"fixture.opaque\":\"x:00ff\"}";
+         "\"fixture.opaque\":\"x:00ff\"" +
+         std::string{extra} + "}";
 }
 
 Fixture valid_fixture() {
@@ -90,6 +91,21 @@ Fixture esmc_fixture() {
       "\"dtype\":\"F32\",\"shape\":[1],\"data_offsets\":[0,4]}}";
   return make_fixture(header, {0, 0, 0, 0});
 }
+
+Fixture tokenizer_descriptor_fixture(const std::string_view extra) {
+  const std::string header =
+      "{" + metadata_json("s:evo2-runtime-v1", extra) +
+      ",\"embed.weight\":{\"dtype\":\"F32\",\"shape\":[1],"
+      "\"data_offsets\":[0,4]}}";
+  return make_fixture(header, {0, 0, 0, 0});
+}
+
+constexpr std::string_view kTokenizerDescriptor =
+    ",\"tokenizer.profile\":\"s:evo-tokenizer-v1\""
+    ",\"tokenizer.path\":\"s:assets/tokenizer.evo.json\""
+    ",\"tokenizer.sha256\":\"s:"
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\""
+    ",\"tokenizer.size\":\"u:123\"";
 
 class TemporaryFile final {
 public:
@@ -122,11 +138,50 @@ private:
   std::string path_;
 };
 
+class TemporaryDirectory final {
+public:
+  TemporaryDirectory() {
+    auto pattern =
+        (std::filesystem::temp_directory_path() / "evo-model-index-XXXXXX")
+            .string();
+    std::vector<char> writable(pattern.begin(), pattern.end());
+    writable.push_back('\0');
+    const auto *const created = ::mkdtemp(writable.data());
+    if (created == nullptr) {
+      std::perror("mkdtemp");
+      std::abort();
+    }
+    path_ = created;
+  }
+
+  ~TemporaryDirectory() {
+    std::error_code error;
+    std::filesystem::remove_all(path_, error);
+  }
+
+  TemporaryDirectory(const TemporaryDirectory &) = delete;
+  TemporaryDirectory &operator=(const TemporaryDirectory &) = delete;
+
+  [[nodiscard]] const std::filesystem::path &path() const noexcept {
+    return path_;
+  }
+
+private:
+  std::filesystem::path path_;
+};
+
 bool write_file(const std::string &path,
                 const std::vector<std::uint8_t> &bytes) {
   std::ofstream output(path, std::ios::binary | std::ios::trunc);
   output.write(reinterpret_cast<const char *>(bytes.data()),
                static_cast<std::streamsize>(bytes.size()));
+  return output.good();
+}
+
+bool write_text(const std::filesystem::path &path,
+                const std::string_view text) {
+  std::ofstream output(path, std::ios::binary | std::ios::trunc);
+  output.write(text.data(), static_cast<std::streamsize>(text.size()));
   return output.good();
 }
 
@@ -189,6 +244,86 @@ void test_valid_fixture(const Fixture &fixture) {
   check(!read_status.ok(), "out-of-range tensor reads are rejected");
 }
 
+void test_tokenizer_descriptor() {
+  TemporaryFile file;
+  const auto fixture = tokenizer_descriptor_fixture(kTokenizerDescriptor);
+  check(write_file(file.path(), fixture.bytes),
+        "write tokenizer descriptor fixture");
+  evo::ModelFile model;
+  const auto status = model.open(file.path());
+  check(status.ok(),
+        std::string{"tokenizer descriptor fixture loads: "} + status.message());
+  if (!status.ok())
+    return;
+  const auto expected_root =
+      std::filesystem::path{file.path()}.parent_path().string();
+  check(model.artifact_root() == expected_root,
+        "ModelFile exposes the entry path parent as artifact root");
+  const auto &descriptor = model.tokenizer_asset_descriptor();
+  check(descriptor.has_value(),
+        "ModelFile exposes an optional tokenizer descriptor");
+  if (descriptor.has_value()) {
+    check(descriptor->path == "assets/tokenizer.evo.json" &&
+              descriptor->size == 123 &&
+              descriptor->sha256 == "0123456789abcdef0123456789abcdef0123456789"
+                                    "abcdef0123456789abcdef",
+          "ModelFile decodes all strict tokenizer descriptor fields");
+  }
+}
+
+void test_index_artifact_root() {
+  TemporaryDirectory temporary;
+  const auto shard = tokenizer_descriptor_fixture(kTokenizerDescriptor);
+  const auto shard_path = temporary.path() / "weights.safetensors";
+  check(write_file(shard_path.string(), shard.bytes),
+        "write indexed tokenizer descriptor shard");
+  const auto index_path = temporary.path() / "model.safetensors.index.json";
+  check(
+      write_text(
+          index_path,
+          R"({"metadata":{"total_size":4},"weight_map":{"embed.weight":"weights.safetensors"}})"),
+      "write tokenizer descriptor index");
+  evo::ModelFile model;
+  const auto status = model.open(index_path.string());
+  check(status.ok(),
+        std::string{"indexed tokenizer fixture loads: "} + status.message());
+  if (!status.ok())
+    return;
+  check(model.artifact_root() == temporary.path().string(),
+        "indexed ModelFile exposes the index path parent as artifact root");
+  check(model.tokenizer_asset_descriptor().has_value(),
+        "indexed ModelFile preserves tokenizer descriptor metadata");
+}
+
+void test_converter_profile_contract() {
+  constexpr std::string_view digest =
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+  TemporaryFile file;
+  const auto valid = tokenizer_descriptor_fixture(
+      std::string{",\"source.converter_profile_contract_sha256\":\"s:"} +
+      std::string{digest} + "\"");
+  check(write_file(file.path(), valid.bytes),
+        "write converter profile contract fixture");
+  evo::ModelFile model;
+  const auto status = model.open(file.path());
+  check(status.ok(), std::string{"converter profile contract loads: "} +
+                         status.message());
+
+  expect_failure(
+      tokenizer_descriptor_fixture(
+          std::string{",\"source.converter_manifest_sha256\":\"s:"} +
+          std::string{digest} + "\""),
+      "legacy whole-profile converter digest");
+  expect_failure(
+      tokenizer_descriptor_fixture(
+          ",\"source.converter_profile_contract_sha256\":\"s:ABC\""),
+      "canonical lowercase hex");
+  expect_failure(
+      tokenizer_descriptor_fixture(
+          ",\"source.converter_profile_contract_sha256\":\"u:1\""),
+      "canonical lowercase hex");
+}
+
 void test_invalid_files() {
   auto fixture = valid_fixture();
   fixture.bytes.resize(7);
@@ -246,6 +381,39 @@ void test_invalid_files() {
                                   "\"data_offsets\":[0,4]}}",
                               std::vector<std::uint8_t>(4)),
                  "not typed");
+
+  expect_failure(tokenizer_descriptor_fixture(
+                     ",\"tokenizer.profile\":\"s:evo-tokenizer-v1\""),
+                 "incomplete tokenizer descriptor");
+  expect_failure(
+      tokenizer_descriptor_fixture(
+          ",\"tokenizer.path\":\"s:tokenizer.json\""),
+      "incomplete tokenizer descriptor");
+  expect_failure(
+      tokenizer_descriptor_fixture(
+          ",\"tokenizer.profile\":\"s:evo-tokenizer-v1\""
+          ",\"tokenizer.path\":\"s:tokenizer.json\""
+          ",\"tokenizer.sha256\":\"s:"
+          "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\""
+          ",\"tokenizer.size\":\"u:1\""
+          ",\"tokenizer.unknown\":\"s:value\""),
+      "unknown tokenizer descriptor");
+  expect_failure(
+      tokenizer_descriptor_fixture(
+          ",\"tokenizer.profile\":\"s:evo-tokenizer-v1\""
+          ",\"tokenizer.path\":\"s:../tokenizer.json\""
+          ",\"tokenizer.sha256\":\"s:"
+          "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\""
+          ",\"tokenizer.size\":\"u:1\""),
+      "canonical relative path");
+  expect_failure(
+      tokenizer_descriptor_fixture(
+          ",\"tokenizer.profile\":\"s:unknown-tokenizer\""
+          ",\"tokenizer.path\":\"s:tokenizer.json\""
+          ",\"tokenizer.sha256\":\"s:"
+          "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\""
+          ",\"tokenizer.size\":\"u:1\""),
+      "tokenizer.profile");
 }
 
 } // namespace
@@ -273,6 +441,9 @@ int main(const int argc, char **argv) {
   }
 
   test_valid_fixture(fixture);
+  test_tokenizer_descriptor();
+  test_index_artifact_root();
+  test_converter_profile_contract();
   test_invalid_files();
   if (failures != 0) {
     std::cerr << failures << " model format test(s) failed\n";

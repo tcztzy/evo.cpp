@@ -1,0 +1,229 @@
+{
+  "schema_version": 1,
+  "kind": "geneb-t39-pre-native-preflight-freeze",
+  "runtime_id": "geneb-dna-gpt-3b-m",
+  "status": "blocked-pending-manual-checkpoint-sha256-and-serialized-large-io",
+  "native_observation_before_freeze": false,
+  "checkpoint_payload_read_before_freeze": false,
+  "inputs": [
+    {
+      "label": "input-0",
+      "path": "evidence/oracles/geneb-dna-gpt-3b-m/input-0.fa",
+      "size": 38,
+      "sha256": "ed7e6526a13e80f320a984ecf4614a8e77b5405906adbe0207a4b359a024b910",
+      "sequence": "ACGTNACGTNACGTA",
+      "input_ids": [21, 9290, 15072, 135],
+      "attention_mask": [1, 1, 1, 1],
+      "nonpadding_tokens": 4
+    },
+    {
+      "label": "input-1",
+      "path": "evidence/oracles/geneb-dna-gpt-3b-m/input-1.fa",
+      "size": 45,
+      "sha256": "14aece18ae2895ed4bb0f1adc796c95f0e6e30293c72ebabcdd309522ed94f14",
+      "sequence": "NNNNNNACGTACNNNTATTGCA",
+      "input_ids": [21, 3939, 9297, 4048, 755],
+      "attention_mask": [1, 1, 1, 1, 1],
+      "nonpadding_tokens": 5
+    }
+  ],
+  "embedding": {
+    "hidden_tap": "post-final-layernorm",
+    "pooling": "attention-mask-mean",
+    "pooling_reduction": "torch-f32-sum-then-direct-f32-division",
+    "special_tokens": "include-prefix",
+    "mask_domain": "non-pad-token-rows",
+    "output_width": 2048,
+    "reference_max_tokens": 512,
+    "padding_side": "right",
+    "single_record": true
+  },
+  "tolerances": {
+    "max_abs": 0.0001,
+    "mean_abs": 0.00001,
+    "cosine": 0.999999,
+    "approved_before_native_output": true
+  },
+  "source": {
+    "kind": "google-drive",
+    "folder_url": "https://drive.google.com/drive/folders/10UPPx6V13oQW6knuLV7d8SRIA3D6hYor",
+    "file_id": "1pQ3Ai7C-ObzKkKTRwuf6eshVneKHzYEg",
+    "filename": "dna_gpt3b_m.pth",
+    "size": 6227969411,
+    "sha256": null,
+    "receipt_status": "pending-manual-acquisition",
+    "catalog_source_pin_status": "pending-size-and-sha256-update",
+    "catalog_contract_before_source_pin": "a8f85eaedd7ab445882dcf1c646005abf12134de2a94921dc80a1c07458b1a6b",
+    "catalog_contract_before_source_pin_is_not_reusable": true,
+    "redistribution": false
+  },
+  "source_layout": {
+    "checkpoint_root": "raw-state-dict",
+    "checkpoint_loader": "torch.load-map_location-cpu-weights_only-mmap",
+    "tensor_layout": "cpu-strided-contiguous",
+    "source_dtype": "BF16",
+    "tensor_count": 372,
+    "logical_tensor_bytes": 6227845120,
+    "manifest_sha256": "0394af26ac57ba360bb5009a3892e2bc9a1b87d34cfc38371c5386804d65309f",
+    "checkpoint_container_overhead_bytes": 124291,
+    "runtime_backbone_tensor_count": 363,
+    "runtime_backbone_source_bytes": 6122524672,
+    "dropped_task_head_tensor_count": 9,
+    "dropped_task_head_source_bytes": 105320448,
+    "runtime_artifact_f32_tensor_bytes": 12245049344,
+    "official_f32_all_parameter_bytes": 12455690240,
+    "topology": {
+      "vocab_size": 19564,
+      "hidden_size": 2048,
+      "num_layers": 60,
+      "num_attention_heads": 64,
+      "inner_width": 8192,
+      "max_seqlen": 512,
+      "norm_epsilon": 0.00001,
+      "linear_bias": false,
+      "layer_norm_bias": false,
+      "activation": "gelu-tanh",
+      "attention": "causal-sdpa"
+    }
+  },
+  "tokenizer": {
+    "kind": "dynamic-sixmer",
+    "official_class": "dna_gpt.tokenizer.KmerTokenizer",
+    "alphabet": "NAGCT",
+    "vocab_size": 19564,
+    "reserved_count": 34,
+    "unk_id": 0,
+    "pad_id": 20,
+    "prefix_literal": "<R>",
+    "prefix_id": 21,
+    "compiler_manifest_path": "configs/tokenizers/geneb-dna-gpt-3b-m-kmer-v1.json",
+    "compiler_manifest_size": 244,
+    "compiler_manifest_sha256": "a68ef6e9b9343388fb762b7cb71ef38ba5f5407fb92c4217fd7da0bffc9c3649",
+    "generated_source_size": 571223,
+    "generated_source_sha256": "c76782c6f0b3bfccc6b1faabffc2d48105e5ce396e498b41a64bd73e487ae6d2",
+    "compiled_asset_size": 571216,
+    "compiled_asset_sha256": "8dc2953cdf6bcc676093a5812f26bceacdf2cf92256128356d0bb6ac86f0683f",
+    "descriptor_size": 455,
+    "descriptor_sha256": "cf648398292705443226d72a429a15a1dcee6a167c06d5b27456ddb9f0dd9c96",
+    "dual_root_asset_byte_identical": true,
+    "dual_root_descriptor_byte_identical": true,
+    "official_input_parity": true
+  },
+  "profile": {
+    "path": "configs/geneb-dna-gpt-models.json",
+    "size": 3085,
+    "sha256": "2a95ae146959ee86844a65a083c81237ddc35d2cac832b25554fd3f73f458fca",
+    "selected_contract_sha256": "f735052d47b7cdcfd0cdcf41bded49528b308a3057c1ed52808f88b93d5f5563"
+  },
+  "converter": {
+    "path": "tools/convert_geneb_dna_gpt_checkpoint.py",
+    "size": 24576,
+    "sha256": "08fc7e2643bd621eae68034682ead2282b3a8c4f4193273dfcc0054e7fe94cf6",
+    "source_integrity_before_parser": true,
+    "exact_manifest_before_publish": true,
+    "bf16_to_f32_expansion": "high-16-bits-to-ieee-f32",
+    "task_heads_dropped_exactly": true
+  },
+  "code_provenance": {
+    "upstream_repo": "TencentAILabHealthcare/DNAGPT",
+    "upstream_revision": "9b6c0931e3b2011ee5bbb4b988be3e19d62953ae",
+    "geneb_revision": "b465d2d6a11efbbc9a22c105e34832725ce50e05",
+    "extractor_path": "embedding_pipeline/extractors/dnagpt.py",
+    "extractor_size": 3250,
+    "extractor_sha256": "3c9df4316dc049d447516527b378e6a4d944a63b83f4d656099d40e648656212",
+    "source_files": {
+      "dna_gpt/model/gpt.py": {
+        "size": 11214,
+        "sha256": "e07ae8f5b7bed3ef38009a68d3699a215e4bc6c0e860a77fa873779a2123a6f0"
+      },
+      "dna_gpt/model/dna_gpt.py": {
+        "size": 5360,
+        "sha256": "be7e4b7bfd249a1c56f1d2b282d756f62482e69daa81054d57d72afa414caa8f"
+      },
+      "dna_gpt/tokenizer.py": {
+        "size": 3081,
+        "sha256": "799bba1f99977fe9b998d5e0a765ded7b973d7929481497dc741291d575dec16"
+      },
+      "dna_gpt/utils.py": {
+        "size": 1398,
+        "sha256": "aada73ee3d8f4900e077d4da4e4be0df9c34fcee0832539b1146a71c81341605"
+      }
+    },
+    "vendored_patch": "DNAGPT.forward returns logits and post-final-layernorm hidden",
+    "vendored_patch_required_for_oracle": true
+  },
+  "oracle": {
+    "generator_path": "tools/generate_geneb_dna_gpt_3b_m_upstream_oracle.py",
+    "generator_size": 29887,
+    "generator_sha256": "a19fa89ec9824f1a6e953a1cd8af6669ae9f0c9915b17301d56a7382ce0faea8",
+    "existing_promoted_0_1b_generator_path": "tools/generate_geneb_dna_gpt_upstream_oracle.py",
+    "existing_promoted_0_1b_generator_sha256": "8b8978273d046b52d3570ccda295ac1054357fb036cbd5a6d881e6a00e499888",
+    "existing_promoted_generator_modified": false,
+    "independent_of_evo_native_runtime": true,
+    "python": "3.9.6",
+    "torch": "2.1.2",
+    "numpy": "1.26.4",
+    "device": "cpu",
+    "dtype": "float32",
+    "num_threads": 1,
+    "num_interop_threads": 1,
+    "deterministic_algorithms": true,
+    "package_count": 31,
+    "package_lock_sha256": "4ab98a21761e5c0e844011e66e20024110c77b870e18b51a45cbf4a61d358f07",
+    "environment_matches_promoted_0_1b": true,
+    "repeated_forward_bit_equal_required": true,
+    "execution_status": "forbidden-until-catalog-and-receipt-sha256-are-frozen"
+  },
+  "resource_plan": {
+    "external_root": "evo-geneb-t39/dna-gpt-3b-m",
+    "external_free_bytes_observed_at_freeze": 402415218688,
+    "external_free_observed_at_utc": "2026-08-17T03:43:59Z",
+    "source_bytes": 6227969411,
+    "one_artifact_tensor_bytes": 12245049344,
+    "source_plus_two_artifact_tensor_bytes": 30718068099,
+    "source_plus_two_artifacts_and_two_tokenizers_bytes": 30719210531,
+    "official_oracle_model_plus_mmap_lower_bound_bytes": 18683659651,
+    "oracle_lower_bound_excludes_python_allocator_and_forward_workspace": true,
+    "host_physical_memory_bytes": 17179869184,
+    "large_io_owner_at_freeze": "geneb-nt-2-5b-ms",
+    "execution_order": [
+      "wait-for-root-release-of-nt-large-io",
+      "manual-google-drive-download-once-to-external-source-root",
+      "verify-regular-file-size-and-full-sha256-and-create-receipt",
+      "backprop-stop-on-any-layout-drift",
+      "root-freezes-catalog-source-and-tokenizer-pins",
+      "official-oracle-input-0-then-input-1",
+      "strict-conversion-root-a",
+      "strict-conversion-root-b",
+      "byte-compare-and-delete-root-b-artifact",
+      "final-native-runners-serial"
+    ],
+    "oracle_memory_failure_policy": "stop-and-migrate-to-larger-memory-host",
+    "forbidden_fallbacks": [
+      "bf16-oracle",
+      "unofficial-model-loader",
+      "threshold-relaxation",
+      "parallel-oracle-conversion-or-runner",
+      "duplicate-checkpoint-download"
+    ]
+  },
+  "small_gates": {
+    "generator_py_compile": "pass",
+    "audit_only_checkpoint_payload_opened": false,
+    "catalog_null_pin_fail_closed": "pass",
+    "tokenizer_dual_root_cmp": "pass",
+    "dna_gpt_tokenizer_contract_release": "pass"
+  },
+  "spec": [
+    "T39",
+    "V10",
+    "V44",
+    "V45",
+    "V47",
+    "V48",
+    "V53",
+    "V55",
+    "V56",
+    "V65"
+  ]
+}

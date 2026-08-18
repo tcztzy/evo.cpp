@@ -1,5 +1,6 @@
-if(NOT DEFINED EVO_BINARY OR NOT DEFINED EVO_INSPECT_BINARY)
-  message(FATAL_ERROR "CLI contract test requires both executable paths")
+if(NOT DEFINED EVO_BINARY OR NOT DEFINED EVO_INSPECT_BINARY OR
+   NOT DEFINED EVO_GENEB_CATALOG)
+  message(FATAL_ERROR "CLI contract test requires executable and catalog paths")
 endif()
 
 execute_process(
@@ -19,11 +20,38 @@ execute_process(
 if(NOT help_result EQUAL 0 OR NOT help_output MATCHES "Usage:")
   message(FATAL_ERROR "evo --help contract failed: ${help_error}${help_output}")
 endif()
-foreach(command IN ITEMS run score logits embed variant-score serve bench)
+foreach(command IN ITEMS run score logits embed variant-score serve bench models)
   if(NOT help_output MATCHES "evo ${command}")
     message(FATAL_ERROR "evo --help omitted ${command} command")
   endif()
 endforeach()
+
+execute_process(
+  COMMAND "${EVO_BINARY}" models --suite geneb --catalog "${EVO_GENEB_CATALOG}"
+  RESULT_VARIABLE models_result
+  OUTPUT_VARIABLE models_output
+  ERROR_VARIABLE models_error)
+if(NOT models_result EQUAL 0 OR
+   NOT models_output MATCHES "runtime_id" OR
+   NOT models_output MATCHES "paper_name" OR
+   NOT models_output MATCHES "geneb-metagene-1" OR
+   NOT models_output MATCHES "METAGENE-1" OR
+   NOT models_output MATCHES "geneb-caduceus-ph-1k" OR
+   NOT models_output MATCHES "Caduceus-PH-1k")
+  message(FATAL_ERROR "GENEB model listing failed: ${models_error}${models_output}")
+endif()
+
+execute_process(
+  COMMAND "${EVO_BINARY}" models --suite geneb --json
+          --catalog "${EVO_GENEB_CATALOG}"
+  RESULT_VARIABLE models_json_result
+  OUTPUT_VARIABLE models_json_output
+  ERROR_VARIABLE models_json_error)
+if(NOT models_json_result EQUAL 0 OR
+   NOT models_json_output MATCHES "\"id\": \"geneb-v4\"" OR
+   NOT models_json_output MATCHES "\"paper_name\": \"Enformer\"")
+  message(FATAL_ERROR "GENEB JSON listing failed: ${models_json_error}${models_json_output}")
+endif()
 
 execute_process(
   COMMAND "${EVO_BINARY}" bench --help

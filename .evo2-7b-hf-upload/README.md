@@ -19,7 +19,12 @@ The official PyTorch `.pt` checkpoint was converted to sharded Safetensors for
 direct loading by [evo.cpp](https://github.com/tcztzy/evo.cpp).
 
 evo.cpp is an independent C++17 biological-sequence inference runtime with
-registered StripedHyena2 (Evo 2), HyenaDNA, and ESMC architectures. This model
+registered StripedHyena2 (Evo 2), HyenaDNA, ESMC, and
+GenebTransformerDecoder, GenebOlmoDecoder, GenebEsmEncoder, GenebBertEncoder,
+GenebGpt2Decoder, GenebDnaGptDecoder, GenebCustomEncoder, and
+GenebMambaEncoder, GenebHyenaDnaDecoder, and GenebStripedHyenaV1
+plus GenebJanusDnaEncoder, GenebSequenceCnnEncoder, and
+GenebRoformerEncoder architectures. This model
 card is scoped only to its Evo 2 artifact, which runs on CUDA devices without a
 Hopper FP8 execution path. Model files are memory-mapped and loaded into the
 required runtime representation without embedding or invoking Python. The 7B

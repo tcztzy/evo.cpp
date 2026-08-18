@@ -1,0 +1,25 @@
+{
+  "format": "evo-tokenizer-compiler-v1",
+  "source": "huggingface-json",
+  "kind": "bpe",
+  "files": [
+    {
+      "role": "tokenizer",
+      "name": "tokenizer.json",
+      "size": 286487,
+      "sha256": "c02de8344eee229f6355e3de63d18fc0d4110f276320774ff891d6a5f81d817b"
+    }
+  ],
+  "options": {
+    "special_tokens": {
+      "unk": "[UNK]",
+      "pad": "[PAD]",
+      "bos": null,
+      "eos": null,
+      "cls": "[CLS]",
+      "sep": "[SEP]",
+      "mask": "[MASK]"
+    },
+    "padding_side": "right"
+  }
+}

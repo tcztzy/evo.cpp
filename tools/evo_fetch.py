@@ -26,11 +26,17 @@ from evo.artifact_profiles import (
     ProfileRegistryError,
     load_artifact_profiles as _load_artifact_profiles,
 )
+from evo.geneb_artifact import (  # noqa: E402
+    GenebArtifactError,
+    catalog_contract_sha256,
+)
 
 
 COMMIT_RE = re.compile(r"[0-9a-fA-F]{40}")
 SHA256_RE = re.compile(r"[0-9a-fA-F]{64}")
 REPO_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*")
+MAX_GENEB_DISCOVERY_FILES = 1024
+MAX_GENEB_DISCOVERY_BYTES = 16 * 1024 * 1024 * 1024
 
 
 class FetchError(RuntimeError):
@@ -62,7 +68,11 @@ def validate_relative_path(value: object, label: str) -> str:
     if not isinstance(value, str) or not value:
         raise FetchError(f"{label} must be a nonempty string")
     path = PurePosixPath(value)
-    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+    if (
+        path.is_absolute()
+        or str(path) != value
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
         raise FetchError(f"{label} must be a normalized relative path")
     return value
 
@@ -99,6 +109,24 @@ def default_registry() -> Path:
         / "model-registry.json"
     )
     return installed_candidate
+
+
+def default_geneb_catalog() -> Path:
+    override = os.environ.get("EVO_GENEB_CATALOG")
+    if override:
+        return Path(override)
+    source_candidate = (
+        Path(__file__).resolve().parents[1] / "configs" / "geneb-models.json"
+    )
+    if source_candidate.is_file():
+        return source_candidate
+    return (
+        Path(__file__).resolve().parent.parent
+        / "share"
+        / "evo"
+        / "configs"
+        / "geneb-models.json"
+    )
 
 
 def default_cache_dir() -> Path:
@@ -212,8 +240,13 @@ def download_verified(
             try:
                 return Path(hf_hub_download(**arguments)).resolve()
             except Exception as error:
+                effective_endpoint = endpoint or "https://huggingface.co"
                 raise FetchError(
-                    f"cannot fetch {repo}@{resolved_revision}/{name}: {error}"
+                    f"cannot fetch {repo}@{resolved_revision}/{name} through "
+                    f"effective endpoint {effective_endpoint}: {error}. "
+                    "Some mirrors return incomplete redirect metadata for "
+                    "huggingface-hub; retry with explicit "
+                    "--endpoint https://huggingface.co or repair that mirror"
                 ) from error
 
         path = acquire(False)
@@ -241,7 +274,9 @@ def download_verified(
 def validate_file_entry(value: object, label: str) -> dict[str, object]:
     if not isinstance(value, dict):
         raise FetchError(f"{label} must be an object")
-    name = validate_relative_path(value.get("path", value.get("name")), f"{label}.path")
+    # Runtime manifests use `path`; receipts additionally carry the resolved
+    # absolute local `path` and retain the canonical relative `name`.
+    name = validate_relative_path(value.get("name", value.get("path")), f"{label}.path")
     size = value.get("size")
     digest = value.get("sha256")
     if not isinstance(size, int) or isinstance(size, bool) or size < 0:
@@ -355,7 +390,372 @@ def load_json(path: Path, label: str) -> dict[str, object]:
     return value
 
 
+def geneb_catalog_entry(
+    catalog: dict[str, object], requested_id: str
+) -> tuple[str, dict[str, object]]:
+    models = catalog.get("models")
+    if catalog.get("schema_version") != 1 or not isinstance(models, list):
+        raise FetchError("GENEB catalog must be schema v1 with a models array")
+    aliases = catalog.get("aliases")
+    if isinstance(aliases, dict):
+        model_aliases = aliases.get("models")
+        if isinstance(model_aliases, dict):
+            alias = model_aliases.get(requested_id)
+            if isinstance(alias, str):
+                requested_id = alias
+    matches = [
+        item
+        for item in models
+        if isinstance(item, dict) and item.get("runtime_id") == requested_id
+    ]
+    if len(matches) != 1:
+        raise FetchError(f"unknown GENEB runtime model ID: {requested_id}")
+    return requested_id, matches[0]
+
+
+def prior_geneb_entries(
+    path: Path,
+    *,
+    model_id: str,
+    catalog_contract_digest: str,
+    catalog_sha256: str,
+    required_names: list[str] | None,
+) -> list[dict[str, object]] | None:
+    if not path.is_file():
+        return None
+    receipt = load_json(path, "prior GENEB source receipt")
+    contract_digest = receipt.get("catalog_contract_sha256")
+    legacy_digest = receipt.get("catalog_sha256")
+    valid_catalog = (
+        contract_digest == catalog_contract_digest and legacy_digest is None
+    ) or (contract_digest is None and legacy_digest == catalog_sha256)
+    if (
+        receipt.get("kind") != "source-checkpoint"
+        or receipt.get("model_id") != model_id
+        or not valid_catalog
+    ):
+        raise FetchError("prior GENEB source receipt does not match the catalog")
+    files = receipt.get("files")
+    if not isinstance(files, list) or not files:
+        raise FetchError("prior GENEB source receipt has no files")
+    entries = [
+        validate_file_entry(value, f"prior receipt files[{index}]")
+        for index, value in enumerate(files)
+    ]
+    names = [str(item["name"]) for item in entries]
+    if len(names) != len(set(names)):
+        raise FetchError("prior GENEB source receipt has duplicate files")
+    if required_names is not None and sorted(names) != sorted(required_names):
+        raise FetchError("prior GENEB source receipt differs from required_files")
+    return entries
+
+
+def required_geneb_files(source: dict[str, object]) -> list[dict[str, object]] | None:
+    raw = source.get("required_files")
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or not raw:
+        raise FetchError("GENEB source.required_files must be null or a nonempty array")
+    result: list[dict[str, object]] = []
+    names: set[str] = set()
+    for index, value in enumerate(raw):
+        label = f"GENEB source.required_files[{index}]"
+        if not isinstance(value, dict) or set(value) != {"path", "size", "sha256"}:
+            raise FetchError(f"{label} fields differ")
+        name = validate_relative_path(value["path"], f"{label}.path")
+        if name in names:
+            raise FetchError("GENEB source.required_files contains duplicate paths")
+        names.add(name)
+        size = value["size"]
+        digest = value["sha256"]
+        if (size is None) != (digest is None):
+            raise FetchError(f"{label} size/sha256 must both be null or both be set")
+        if size is not None:
+            if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+                raise FetchError(f"{label}.size must be a nonnegative integer")
+            if (
+                not isinstance(digest, str)
+                or not SHA256_RE.fullmatch(digest)
+                or digest != digest.lower()
+            ):
+                raise FetchError(f"{label}.sha256 must be a lowercase SHA256")
+        result.append({"name": name, "size": size, "sha256": digest})
+    return result
+
+
+def discover_geneb_hf_files(
+    *,
+    repo: str,
+    resolved_revision: str,
+    cache_dir: Path,
+    endpoint: str | None,
+    required: list[dict[str, object]] | None,
+) -> list[dict[str, object]]:
+    HfApi, hf_hub_download = load_huggingface()
+    api_arguments: dict[str, Any] = {}
+    if endpoint:
+        api_arguments["endpoint"] = endpoint
+    api = HfApi(**api_arguments)
+    try:
+        names = api.list_repo_files(repo_id=repo, revision=resolved_revision)
+    except Exception as error:
+        raise FetchError(
+            f"cannot list pinned GENEB source {repo}@{resolved_revision}: {error}"
+        ) from error
+    if (
+        not isinstance(names, list)
+        or not names
+        or len(names) > 100000
+        or any(not isinstance(name, str) for name in names)
+    ):
+        raise FetchError("Hugging Face returned an invalid source file list")
+    normalized = [
+        validate_relative_path(name, f"GENEB source file[{index}]")
+        for index, name in enumerate(names)
+    ]
+    if len(normalized) != len(set(normalized)):
+        raise FetchError("Hugging Face returned duplicate source files")
+    available = set(normalized)
+    expected_sizes: dict[str, int] = {}
+    if required is not None:
+        selected = sorted(str(item["name"]) for item in required)
+        missing = sorted(set(selected) - available)
+        if missing:
+            raise FetchError(
+                "GENEB source.required_files paths are missing or not regular files: "
+                + ", ".join(missing)
+            )
+        required_by_name = {str(item["name"]): item for item in required}
+    else:
+        if len(normalized) > MAX_GENEB_DISCOVERY_FILES:
+            raise FetchError(
+                "GENEB source snapshot has %d files, exceeding the %d-file "
+                "discovery safety cap; add nonempty source.required_files"
+                % (len(normalized), MAX_GENEB_DISCOVERY_FILES)
+            )
+        try:
+            info = api.model_info(
+                repo_id=repo, revision=resolved_revision, files_metadata=True
+            )
+        except Exception as error:
+            raise FetchError(
+                "cannot preflight GENEB source sizes; add nonempty "
+                "source.required_files: %s" % error
+            ) from error
+        siblings = getattr(info, "siblings", None)
+        if not isinstance(siblings, list):
+            raise FetchError(
+                "Hugging Face omitted source file metadata; add nonempty "
+                "source.required_files"
+            )
+        for index, sibling in enumerate(siblings):
+            name = validate_relative_path(
+                getattr(sibling, "rfilename", None),
+                "Hugging Face source metadata[%d].path" % index,
+            )
+            size = getattr(sibling, "size", None)
+            if (
+                name in expected_sizes
+                or isinstance(size, bool)
+                or not isinstance(size, int)
+                or size < 0
+            ):
+                raise FetchError(
+                    "Hugging Face source file metadata is incomplete or duplicated; "
+                    "add nonempty source.required_files"
+                )
+            expected_sizes[name] = size
+        if set(expected_sizes) != available:
+            raise FetchError(
+                "Hugging Face source listing/metadata differs; add nonempty "
+                "source.required_files"
+            )
+        total = sum(expected_sizes.values())
+        if total > MAX_GENEB_DISCOVERY_BYTES:
+            raise FetchError(
+                "GENEB source snapshot declares %d bytes, exceeding the %d-byte "
+                "discovery safety cap; add nonempty source.required_files"
+                % (total, MAX_GENEB_DISCOVERY_BYTES)
+            )
+        selected = sorted(normalized)
+        required_by_name = {}
+    files: list[dict[str, object]] = []
+    effective_endpoint = endpoint or "https://huggingface.co"
+    for name in selected:
+        arguments: dict[str, Any] = {
+            "repo_id": repo,
+            "filename": name,
+            "revision": resolved_revision,
+            "cache_dir": str(cache_dir),
+            "local_files_only": False,
+        }
+        if endpoint:
+            arguments["endpoint"] = endpoint
+        try:
+            path = Path(hf_hub_download(**arguments)).resolve()
+        except Exception as error:
+            raise FetchError(
+                f"cannot fetch {repo}@{resolved_revision}/{name} through "
+                f"effective endpoint {effective_endpoint}: {error}. "
+                "Some mirrors return incomplete redirect metadata for "
+                "huggingface-hub; retry with explicit "
+                "--endpoint https://huggingface.co or repair that mirror"
+            ) from error
+        if not path.is_file():
+            raise FetchError(f"downloaded source file is unavailable: {path}")
+        actual_size = path.stat().st_size
+        actual_sha256 = sha256_file(path)
+        expected = required_by_name.get(name)
+        if expected is not None and expected["size"] is not None:
+            if (
+                actual_size != expected["size"]
+                or actual_sha256 != expected["sha256"]
+            ):
+                raise FetchError(
+                    f"GENEB required file {name} size/SHA256 differs"
+                )
+        elif required is None and actual_size != expected_sizes[name]:
+            raise FetchError(
+                f"GENEB source file {name} differs from preflight metadata size"
+            )
+        files.append(
+            {
+                "name": name,
+                "size": actual_size,
+                "sha256": actual_sha256,
+                "path": str(path),
+            }
+        )
+    return files
+
+
+def geneb_source_command(args: argparse.Namespace) -> dict[str, object]:
+    catalog = load_json(args.catalog, "GENEB catalog")
+    model_id, model = geneb_catalog_entry(catalog, args.model)
+    source = model.get("source")
+    if not isinstance(source, dict):
+        raise FetchError(f"{model_id} has no valid source declaration")
+    source_kind = source.get("kind")
+    if source_kind != "huggingface":
+        instructions = source.get("manual_instructions")
+        url = source.get("url")
+        required = source.get("required_files")
+        file_names = []
+        if isinstance(required, list):
+            file_names = [
+                str(item.get("path"))
+                for item in required
+                if isinstance(item, dict) and isinstance(item.get("path"), str)
+            ]
+        detail = str(instructions) if isinstance(instructions, str) else ""
+        if isinstance(url, str):
+            detail = (detail + " Provider: " + url).strip()
+        if file_names:
+            detail = (detail + " Required files: " + ", ".join(file_names)).strip()
+        raise FetchError(
+            f"manual-source: {model_id} ({source_kind}) cannot be fetched "
+            f"automatically. {detail}"
+        )
+    repo = source.get("repo")
+    requested_revision = source.get("requested_revision")
+    pinned_revision = source.get("revision")
+    if not isinstance(repo, str) or not REPO_RE.fullmatch(repo):
+        raise FetchError(f"{model_id} GENEB source repo is invalid")
+    requested_revision = validate_revision(requested_revision)
+    if not isinstance(pinned_revision, str) or not COMMIT_RE.fullmatch(
+        pinned_revision
+    ):
+        raise FetchError(f"{model_id} GENEB source revision is not immutable")
+    pinned_revision = pinned_revision.lower()
+    # The catalog already carries the immutable commit. Offline replay uses
+    # that commit plus the prior receipt instead of requiring a mutable
+    # refs/main cache entry from a particular huggingface-hub version.
+    resolved = (
+        pinned_revision
+        if args.local_files_only
+        else resolve_revision(
+            repo,
+            requested_revision,
+            args.cache_dir,
+            args.endpoint,
+            False,
+        )
+    )
+    if resolved != pinned_revision:
+        raise FetchError(
+            f"GENEB source {repo}@{requested_revision} resolved to {resolved}, "
+            f"not pinned {pinned_revision}"
+        )
+    catalog_sha256 = sha256_file(args.catalog)
+    try:
+        catalog_contract_digest = catalog_contract_sha256(catalog, model)
+    except GenebArtifactError as error:
+        raise FetchError(str(error)) from error
+    required = required_geneb_files(source)
+    prior_path = receipt_destination(
+        args.cache_dir,
+        repo,
+        resolved,
+        "source-checkpoint",
+        args.receipt_dir,
+    )
+    entries = prior_geneb_entries(
+        prior_path,
+        model_id=model_id,
+        catalog_contract_digest=catalog_contract_digest,
+        catalog_sha256=catalog_sha256,
+        required_names=(
+            None if required is None else [str(item["name"]) for item in required]
+        ),
+    )
+    extra = {
+        "model_id": model_id,
+        "source_kind": "huggingface",
+        "catalog_path": str(args.catalog),
+        "catalog_contract_sha256": catalog_contract_digest,
+        "load_path": None,
+    }
+    if entries is not None:
+        return fetch_files(
+            kind="source-checkpoint",
+            repo=repo,
+            requested_revision=requested_revision,
+            resolved_revision=resolved,
+            entries=entries,
+            cache_dir=args.cache_dir,
+            receipt_dir=args.receipt_dir,
+            endpoint=args.endpoint,
+            local_files_only=args.local_files_only,
+            extra=extra,
+        )
+    if args.local_files_only:
+        raise FetchError(
+            "offline GENEB source discovery requires a prior verified receipt"
+        )
+    files = discover_geneb_hf_files(
+        repo=repo,
+        resolved_revision=resolved,
+        cache_dir=args.cache_dir,
+        endpoint=args.endpoint,
+        required=required,
+    )
+    receipt: dict[str, object] = {
+        "schema_version": 1,
+        "kind": "source-checkpoint",
+        "repo": repo,
+        "requested_revision": requested_revision,
+        "resolved_revision": resolved,
+        "files": files,
+        **extra,
+    }
+    receipt_path = write_receipt(args.cache_dir, receipt, args.receipt_dir)
+    receipt["receipt"] = str(receipt_path.resolve())
+    return receipt
+
+
 def source_command(args: argparse.Namespace) -> dict[str, object]:
+    if args.catalog is not None:
+        return geneb_source_command(args)
     registry = load_json(args.registry, "model registry")
     models = registry.get("models")
     entry = models.get(args.model) if isinstance(models, dict) else None
@@ -509,6 +909,14 @@ def parse_args() -> argparse.Namespace:
     )
     source.add_argument("model")
     source.add_argument("--registry", type=Path, default=default_registry())
+    source.add_argument(
+        "--catalog",
+        type=Path,
+        help=(
+            "resolve MODEL from the GENEB catalog; pinned Hugging Face "
+            "snapshots are receipted and manual providers fail with instructions"
+        ),
+    )
     runtime = commands.add_parser("runtime", help="fetch a manifested runtime artifact")
     runtime.add_argument("repository", help="OWNER/NAME[@REVISION]")
     runtime.add_argument("--manifest", default="evo-artifact.json")
@@ -523,6 +931,8 @@ def main() -> int:
         if args.receipt_dir is not None:
             args.receipt_dir = args.receipt_dir.expanduser().resolve()
         args.registry = args.registry.expanduser().resolve()
+        if args.command == "source" and args.catalog is not None:
+            args.catalog = args.catalog.expanduser().resolve()
         if args.command == "source":
             receipt = source_command(args)
         else:

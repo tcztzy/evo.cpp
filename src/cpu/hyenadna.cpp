@@ -297,7 +297,8 @@ struct HyenaDnaContext::Impl final {
 
   Status step(const TokenId token, const std::size_t capture_layer,
               float *const logits, float *const capture) {
-    if (!weights || token >= weights->public_config.vocab_size ||
+    if (!weights ||
+        !token_id_in_vocabulary(token, weights->public_config.vocab_size) ||
         position >= capacity) {
       return {ErrorCode::kInvalidArgument,
               "HyenaDNA token/context is outside its configured bounds"};

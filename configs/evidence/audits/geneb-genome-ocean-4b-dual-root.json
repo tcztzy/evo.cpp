@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "kind": "geneb-dual-root-promotion-audit-v1",
+  "runtime_id": "geneb-genome-ocean-4b",
+  "frozen_contract": {
+    "catalog_contract_sha256": "77137e2132fc4af6937035d995ea6564865738ec1bf8fe25d4c30a9e859cd201",
+    "converter_profile_contract_sha256": "ecc34b024b8a3c2fcff8f65a9d46d96a1104bdab14051b144ccf9a65cfb0988e",
+    "converter_sha256": "f863dfbe47aeb0e3b39ce9db85f622b6747808c71b21e9d34dd53c6ff2cc0329",
+    "final_native_sha256": "bbad40732ef35c11b63ccbddab6ee6d50e42269aec96dbaf4925ea9f2a8e67ab",
+    "profiles_sha256": "d5cc152df07544cdfc441836556bb2adf7440c0ac3af93550bfc2f8347f40243",
+    "source_receipt_sha256": "c117d1548dcecbf9190ac72cba0a4db5eb696bc19d79a8fca06b941d6ed58727",
+    "tokenizer": {
+      "asset_sha256": "b4f4748cc8197e63fe43f28235eed82d6d1409aa87528ff0ee696ae74c8cb87f",
+      "asset_size": 180689,
+      "compiler_manifest_sha256": "c4e7ddda310eaf409a737485a6f2a1e2d185aeda8b55181910cc8ff0b1ae9500",
+      "descriptor_sha256": "4c3088a7bf0a985abf3f9fa6419a368992715078b8c08f121053a39110de1aa7",
+      "source_receipt_contract_sha256": "cb19c0e662d36615a0570db3e087e500896aef262ec857c277f8d076752df80d"
+    },
+    "tolerances": {
+      "cosine": 0.999999,
+      "max_abs": 0.0001,
+      "mean_abs": 0.00001
+    }
+  },
+  "backprop_closures": {
+    "B116": {
+      "description": "The catalog, receipt, and converter use the exact seven-file source allowlist.",
+      "file_count": 7,
+      "file_manifest_sha256": "49abc8e8094df4cb9da1f32f418114a32b520182815bdfe78c873f4efd8be07e"
+    },
+    "B119": {
+      "description": "Only the GenomeOcean-4B profile executes F32 activations; BF16 source and runtime weights remain unchanged.",
+      "activation_dtype": "F32",
+      "source_weight_dtype": "bfloat16",
+      "runtime_weight_dtype": "BF16"
+    },
+    "B128": {
+      "description": "The independent oracle uses the official Transformers loader on CPU with torch_dtype=float32 and low_cpu_mem_usage=True.",
+      "transformers": "4.38.2",
+      "torch": "2.1.2",
+      "accelerate": "0.27.2",
+      "package_lock_sha256": "d3579f23321bc11d71d8c6e5d47454d617debaa93b3f6260da025d325fa975af"
+    }
+  },
+  "artifact": {
+    "absolute_root_count": 2,
+    "byte_identical": true,
+    "header_sha256": "647db397a89a35ef7171c7c6fb9ca46c98e6f230769fb164d88c351627765e75",
+    "sha256": "410ed7c1defc98c53ad247c498cfe33d4e69316b2b32ddc0eb2dd2d9f1e14904",
+    "size": 8481212960,
+    "tensor_count": 218,
+    "activation_dtype": "F32"
+  },
+  "oracle": {
+    "absolute_root_count": 2,
+    "byte_identical": true,
+    "generator_sha256": "b3ef0d0b0d0008d1a15d69cece9458b20e304d4ca2e9c5d35848d9cc8616ee83",
+    "report_path": "evidence/oracles/geneb-genome-ocean-4b/oracle-report.json",
+    "report_sha256": "883fa2d657a9f398ba2178bea3c9ba82243828ee96a3c9d379abdfb953e29bc5",
+    "runs": [
+      {
+        "root": "A",
+        "elapsed_seconds": 754.03,
+        "peak_memory_footprint_bytes": 18869548904
+      },
+      {
+        "root": "B",
+        "elapsed_seconds": 757.87,
+        "peak_memory_footprint_bytes": 18863306600
+      }
+    ],
+    "inputs": [
+      {
+        "label": "input-0",
+        "npy_sha256": "5f976278005a3a8f4e8c8f76a5a5ad1c940d8ad132203ba16bbb0791cff5822a",
+        "raw_f32_sha256": "96a8dcebc9812606e93f526908d633d4f7d4730eb05b79ed09bc6ce9e2afb341",
+        "vector_sha256": "9dd7e76f802ae926dfe57bf5e2fec5ca4674203fc0d0d1d35685611882c2075c"
+      },
+      {
+        "label": "input-1",
+        "npy_sha256": "5a8e6e7fb8c4f9e8efbd022d7098b3224f861ca166ba6b2a04499aca6023e9d3",
+        "raw_f32_sha256": "455d041416ee067ae1e607c4f514a265da84b01f9688daf1bcf2e259e26b4e7e",
+        "vector_sha256": "b1bdd8ad392b249d141d5c4a95be34f77f77e6597e2e88cebfd4d743ed0723ed"
+      }
+    ]
+  },
+  "runs": [
+    {
+      "absolute_root_count": 2,
+      "byte_identical": {
+        "evidence": true,
+        "npy": true,
+        "raw_manifest": true
+      },
+      "evidence_path": "evidence/geneb-genome-ocean-4b.json",
+      "evidence_sha256": "33e2e662a296b9e0514bad488bb25f4fd00662759d3fa594979086a35dc88b4e",
+      "label": "input-0",
+      "metrics": {
+        "cosine": 0.9999999999974788,
+        "max_abs": 0.000011920928955078125,
+        "mean_abs": 6.219130881390811e-7
+      },
+      "native_npy_sha256": "e331da94934fddac94241b80bebf7bdf89dad8cec4039f0d203f0bfe3e3e589b",
+      "normalized_manifest_sha256": "98ffcc05cb462f5d53acbaf92790f9781fd024a0d0af70b3e0137546c27db1f2",
+      "raw_manifest_sha256": "8b7ab0256e83046415c3534af26eb3e6748ab15fc452e000597ad28afd4695b4"
+    },
+    {
+      "absolute_root_count": 2,
+      "byte_identical": {
+        "evidence": true,
+        "npy": true,
+        "raw_manifest": true
+      },
+      "evidence_path": "evidence/audits/geneb-genome-ocean-4b-input1.json",
+      "evidence_sha256": "28b172d574f23dc05cca263dc15925205ca0b25271ccf2cc3561ded8bad3e503",
+      "label": "input-1",
+      "metrics": {
+        "cosine": 0.9999999999966535,
+        "max_abs": 0.000004291534423828125,
+        "mean_abs": 8.295750528001614e-7
+      },
+      "native_npy_sha256": "ae2d002744833c55b70869e771932c592617bb6eac92eb99d78455a4116a1d48",
+      "normalized_manifest_sha256": "b317ee8cc6d4af2cc07ac3f726f87ac43f8c0f4d7d8607a73742d300dca434d9",
+      "raw_manifest_sha256": "5d9481a7e1fc064bf0913ebae5518cf943754bb0c5435f0e6695526a0eca779a"
+    }
+  ],
+  "regression": {
+    "release_targeted_tests": "5/5 passed",
+    "asan_targeted_tests": "5/5 passed",
+    "tests": [
+      "geneb_decoder",
+      "geneb_decoder_vectors",
+      "geneb_catalog_contract",
+      "geneb_checkpoint_evidence_contract",
+      "geneb_decoder_converter_contract"
+    ]
+  }
+}

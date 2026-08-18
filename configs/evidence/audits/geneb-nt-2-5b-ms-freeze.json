@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "kind": "geneb-t39-pre-native-freeze",
+  "runtime_id": "geneb-nt-2-5b-ms",
+  "native_observation_before_freeze": false,
+  "inputs": [
+    {
+      "label": "input-0",
+      "path": "evidence/oracles/geneb-nt-2-5b-ms/input-0.fa",
+      "size": 34,
+      "sha256": "1a042ddc3370c899410a3011701608d674f9afc9eaf67d12ae16cdbc0067beb9",
+      "sequence": "ATTCCGATTCCGATTCCG",
+      "input_ids": [3, 367, 367, 367],
+      "nonpadding_tokens": 4
+    },
+    {
+      "label": "input-1",
+      "path": "evidence/oracles/geneb-nt-2-5b-ms/input-1.fa",
+      "size": 61,
+      "sha256": "51359a6dfdb95751d69690fc8063bfbb9956cfa364cead1f5e6dfdeab91d3432",
+      "sequence": "AAAACCCCGGGGTTTTACGTNACGTNNNNACGTTGCAACGTACGT",
+      "input_ids": [
+        3,
+        14,
+        2819,
+        1366,
+        4103,
+        4101,
+        4104,
+        4100,
+        4102,
+        4103,
+        4101,
+        4104,
+        4104,
+        4104,
+        4104,
+        731,
+        2097,
+        4100,
+        4102,
+        4103,
+        4101
+      ],
+      "nonpadding_tokens": 21
+    }
+  ],
+  "embedding": {
+    "hidden_tap": "outputs.hidden_states[-1]",
+    "pooling": "attention-mask-mean",
+    "pooling_reduction": "ordered-f32-sum-then-direct-f32-division",
+    "special_tokens": "include-cls",
+    "mask_domain": "attention-mask",
+    "output_width": 2560,
+    "model_max_length": 1000,
+    "padding": "right-to-model-max-length",
+    "single_record": true
+  },
+  "tolerances": {
+    "max_abs": 0.0001,
+    "mean_abs": 0.00001,
+    "cosine": 0.999999
+  },
+  "tokenizer": {
+    "kind": "kmer",
+    "k": 6,
+    "source_vocab_size": 4107,
+    "compiled_vocab_size": 4105,
+    "excluded_source_suffix": [
+      {"id": 4105, "piece": "<eos>", "input_policy": "reject"},
+      {"id": 4106, "piece": "<bos>", "input_policy": "reject"}
+    ],
+    "compiler_manifest_sha256": "a19b30c4284c792be67a79dba336156d0cdebd2b2f4d57ea4d1a7cc62975cb26",
+    "source_receipt_contract_sha256": "3c9bc95e63930dccd733d81e51e75522475127b08ea080468575742882c22662",
+    "asset_sha256": "f574aad91e382548e0bc6f87fefd0b2022fcfeaf612c7c90be5c133f74a75794",
+    "asset_size": 118259,
+    "descriptor_sha256": "9b8ceb70c7a9c630351a57a17821dc18f1d75e47c992c0490728d8f3ce3a224a"
+  },
+  "source": {
+    "repo": "InstaDeepAI/nucleotide-transformer-2.5b-multi-species",
+    "revision": "b746b125aacd1b0970c05a32fd71ba726754542e",
+    "receipt_sha256": "81c3cc779229df03741ceaf69532d2117ea5bd3d988c61df63c5161861415817",
+    "catalog_contract_sha256": "17519bb61cf0e6efd33d456b4afa49f07c1651bb9bb60580af9ab02490b8995f",
+    "converter_profile_contract_sha256": "e129e09df18ddccb732a135396fd9918ff620f0dfdd92f5f371eb9a6934350a8",
+    "tensor_count": 525,
+    "runtime_tensor_count": 516,
+    "source_tensor_layout": {
+      "contiguous_full_storage": 331,
+      "exact_column_major_full_storage": 194,
+      "other": 0,
+      "shard_counts": [509, 16]
+    }
+  },
+  "oracle": {
+    "extractor_repo": "darlednik/GENEB",
+    "extractor_revision": "b465d2d6a11efbbc9a22c105e34832725ce50e05",
+    "extractor_path": "embedding_pipeline/extractors/nt.py",
+    "extractor_sha256": "50332b6070b944dd4d26dc2641ebadfea7270513d34294add5f7066295567c43",
+    "python": "3.9.6",
+    "torch": "2.1.2",
+    "transformers": "4.32.0",
+    "tokenizers": "0.13.3",
+    "numpy": "1.26.4",
+    "accelerate": "0.21.0",
+    "device": "cpu",
+    "dtype": "float32",
+    "official_model_class": "transformers.models.esm.modeling_esm.EsmForMaskedLM",
+    "loading": "low_cpu_mem_usage=True",
+    "post_load_layout": "194 exact-column-major parameters copied value-identically to contiguous row-major"
+  },
+  "execution": {
+    "native_sha256": "bbad40732ef35c11b63ccbddab6ee6d50e42269aec96dbaf4925ea9f2a8e67ab",
+    "profile": "cpu-f32",
+    "preset": "geneb-v4-normalized"
+  },
+  "spec": [
+    "T39",
+    "V44",
+    "V45",
+    "V47",
+    "V48",
+    "V53",
+    "V55",
+    "V65",
+    "B115",
+    "B120",
+    "B121",
+    "B123"
+  ]
+}

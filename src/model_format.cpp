@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <filesystem>
 #include <iomanip>
 #include <iterator>
 #include <limits>
@@ -715,15 +716,51 @@ std::string sibling_path(const std::string &path,
   return path.substr(0, separator + 1) + std::string{filename};
 }
 
+bool canonical_sha256(const std::string_view value) noexcept {
+  return value.size() == 64 &&
+         std::all_of(value.begin(), value.end(), [](const char character) {
+           return (character >= '0' && character <= '9') ||
+                  (character >= 'a' && character <= 'f');
+         });
+}
+
+bool valid_tokenizer_asset_path(const std::string_view value) {
+  if (value.empty() || value.find('\\') != std::string_view::npos)
+    return false;
+  const std::filesystem::path path{value};
+  if (path.is_absolute() || path.has_root_name() || path.has_root_directory())
+    return false;
+  for (const auto &component : path) {
+    if (component.empty() || component == "." || component == "..")
+      return false;
+  }
+  return path.generic_string() == value;
+}
+
+std::string metadata_string(const MetadataEntry &entry) {
+  if (entry.value.empty())
+    return {};
+  return {reinterpret_cast<const char *>(entry.value.data()),
+          entry.value.size()};
+}
+
 } // namespace
 
 Status ModelFile::open(const std::string &path) {
   ModelFile candidate;
+  const auto parent = std::filesystem::path{path}.parent_path();
+  candidate.artifact_root_ = parent.empty() ? "." : parent.string();
   if (has_suffix(path, ".index.json")) {
     auto status = candidate.open_index(path);
     if (!status.ok()) {
       return status;
     }
+    status = candidate.parse_tokenizer_asset_descriptor();
+    if (!status.ok())
+      return status;
+    status = candidate.parse_converter_profile_contract();
+    if (!status.ok())
+      return status;
     *this = std::move(candidate);
     return Status::Ok();
   }
@@ -738,6 +775,12 @@ Status ModelFile::open(const std::string &path) {
   if (!status.ok()) {
     return status;
   }
+  status = candidate.parse_tokenizer_asset_descriptor();
+  if (!status.ok())
+    return status;
+  status = candidate.parse_converter_profile_contract();
+  if (!status.ok())
+    return status;
   *this = std::move(candidate);
   return Status::Ok();
 }
@@ -881,10 +924,9 @@ Status ModelFile::parse_shard(const std::size_t shard_index) {
               return left.key < right.key;
             });
   const auto find_profile = [&](const std::string_view key) {
-    return std::find_if(shard_metadata.begin(), shard_metadata.end(),
-                        [key](const MetadataEntry &entry) {
-                          return entry.key == key;
-                        });
+    return std::find_if(
+        shard_metadata.begin(), shard_metadata.end(),
+        [key](const MetadataEntry &entry) { return entry.key == key; });
   };
   const auto evo_profile = find_profile("evo2.profile");
   const auto runtime_profile = find_profile("runtime.profile");
@@ -893,8 +935,8 @@ Status ModelFile::parse_shard(const std::size_t shard_index) {
     return format_error(
         "exactly one registered artifact profile metadata key is required");
   }
-  const auto profile = evo_profile != shard_metadata.end() ? evo_profile
-                                                            : runtime_profile;
+  const auto profile =
+      evo_profile != shard_metadata.end() ? evo_profile : runtime_profile;
   if (profile->type != MetadataType::kString) {
     return format_error("artifact profile metadata must be a string");
   }
@@ -980,6 +1022,80 @@ Status ModelFile::parse_shard(const std::size_t shard_index) {
   tensors_.insert(tensors_.end(),
                   std::make_move_iterator(shard_tensors.begin()),
                   std::make_move_iterator(shard_tensors.end()));
+  return Status::Ok();
+}
+
+Status ModelFile::parse_tokenizer_asset_descriptor() {
+  constexpr std::array<std::string_view, 4> keys{
+      "tokenizer.profile", "tokenizer.path", "tokenizer.sha256",
+      "tokenizer.size"};
+  const bool present = find_metadata(keys[0]) != nullptr;
+  // Existing architecture-local tokenizer metadata (for example
+  // tokenizer.kind and tokenizer.pad_token_id) predates the sidecar asset
+  // descriptor.  It remains valid when none of the four descriptor keys is
+  // present; once a descriptor starts, its namespace is deliberately closed.
+  if (!present) {
+    // `tokenizer.sha256` is also an established architecture-local evidence
+    // field in legacy ESMC artifacts.  A path or size, unlike a digest alone,
+    // unambiguously starts the sidecar descriptor contract.
+    if (find_metadata(keys[1]) != nullptr || find_metadata(keys[3]) != nullptr)
+      return format_error("incomplete tokenizer descriptor metadata: missing "
+                          "'tokenizer.profile'");
+    tokenizer_asset_descriptor_.reset();
+    return Status::Ok();
+  }
+  for (const auto &entry : metadata_) {
+    if (entry.key.rfind("tokenizer.", 0) == 0 &&
+        std::find(keys.begin(), keys.end(), entry.key) == keys.end())
+      return format_error("unknown tokenizer descriptor metadata '" +
+                          entry.key + "'");
+  }
+  std::array<const MetadataEntry *, keys.size()> entries{};
+  for (std::size_t index = 0; index < keys.size(); ++index) {
+    entries[index] = find_metadata(keys[index]);
+    if (entries[index] == nullptr)
+      return format_error(
+          "incomplete tokenizer descriptor metadata: missing '" +
+          std::string{keys[index]} + "'");
+  }
+  if (entries[0]->type != MetadataType::kString ||
+      metadata_string(*entries[0]) != "evo-tokenizer-v1")
+    return format_error("tokenizer.profile must be evo-tokenizer-v1");
+  if (entries[1]->type != MetadataType::kString ||
+      !valid_tokenizer_asset_path(metadata_string(*entries[1])))
+    return format_error("tokenizer.path must be a canonical relative path");
+  if (entries[2]->type != MetadataType::kString ||
+      !canonical_sha256(metadata_string(*entries[2])))
+    return format_error("tokenizer.sha256 must be canonical lowercase hex");
+  if (entries[3]->type != MetadataType::kU64 ||
+      entries[3]->value.size() != sizeof(std::uint64_t))
+    return format_error("tokenizer.size must be a u64");
+  const auto size = read_u64(entries[3]->value.data());
+  if (size == 0 || size > (64U << 20U))
+    return format_error("tokenizer.size is outside the supported range");
+  TokenizerAssetDescriptor descriptor;
+  descriptor.path = metadata_string(*entries[1]);
+  descriptor.sha256 = metadata_string(*entries[2]);
+  descriptor.size = size;
+  tokenizer_asset_descriptor_ = std::move(descriptor);
+  return Status::Ok();
+}
+
+Status ModelFile::parse_converter_profile_contract() {
+  constexpr std::string_view legacy_key{"source.converter_manifest_sha256"};
+  constexpr std::string_view contract_key{
+      "source.converter_profile_contract_sha256"};
+  if (find_metadata(legacy_key) != nullptr)
+    return format_error("legacy whole-profile converter digest metadata is "
+                        "unsupported");
+  const auto *const entry = find_metadata(contract_key);
+  if (entry == nullptr)
+    return Status::Ok();
+  if (entry->type != MetadataType::kString ||
+      !canonical_sha256(metadata_string(*entry)))
+    return format_error(
+        "source.converter_profile_contract_sha256 must be canonical "
+        "lowercase hex");
   return Status::Ok();
 }
 

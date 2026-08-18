@@ -1,0 +1,6 @@
+# Locked GENEB v4 linear-probe environment; see configs/geneb-probe-lock.json.
+numpy==1.26.4
+scipy==1.13.1
+scikit-learn==1.5.2
+joblib==1.4.2
+threadpoolctl==3.5.0

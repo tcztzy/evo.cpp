@@ -1,0 +1,14 @@
+{
+  "format": "evo-tokenizer-compiler-v1",
+  "source": "custom",
+  "kind": "longest-match",
+  "files": [
+    {
+      "role": "spec",
+      "name": "geneb-biofm-annotation-v1.json",
+      "size": 30916,
+      "sha256": "77ad0370ea82f5f9b823f16e8a625db11f547ba06f198b95b7134aaa8d3f5081"
+    }
+  ],
+  "options": {}
+}

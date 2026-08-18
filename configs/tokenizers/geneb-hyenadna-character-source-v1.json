@@ -1,0 +1,79 @@
+{
+  "format": "evo-tokenizer-source-v1",
+  "kind": "single-nucleotide",
+  "normalization": [],
+  "pre_tokenizer": {
+    "kind": "none"
+  },
+  "model": {
+    "unknown_policy": "unk",
+    "match_special_literals": false
+  },
+  "post_processor": {
+    "prefix_ids": [],
+    "suffix_ids": [],
+    "padding": {
+      "side": "left",
+      "pad_id": 4
+    }
+  },
+  "special_tokens": {
+    "unk": 6,
+    "pad": 4,
+    "bos": 2,
+    "eos": 1,
+    "cls": 0,
+    "sep": 1,
+    "mask": 3
+  },
+  "vocab": [
+    {
+      "id": 0,
+      "piece": "[CLS]"
+    },
+    {
+      "id": 1,
+      "piece": "[SEP]"
+    },
+    {
+      "id": 2,
+      "piece": "[BOS]"
+    },
+    {
+      "id": 3,
+      "piece": "[MASK]"
+    },
+    {
+      "id": 4,
+      "piece": "[PAD]"
+    },
+    {
+      "id": 5,
+      "piece": "[RESERVED]"
+    },
+    {
+      "id": 6,
+      "piece": "[UNK]"
+    },
+    {
+      "id": 7,
+      "piece": "A"
+    },
+    {
+      "id": 8,
+      "piece": "C"
+    },
+    {
+      "id": 9,
+      "piece": "G"
+    },
+    {
+      "id": 10,
+      "piece": "T"
+    },
+    {
+      "id": 11,
+      "piece": "N"
+    }
+  ]
+}

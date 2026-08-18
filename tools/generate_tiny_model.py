@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import math
 import struct
 from dataclasses import dataclass, field
@@ -441,6 +442,7 @@ def main() -> int:
     parser.add_argument("--hyena-projection-dtype", default="BF16")
     parser.add_argument("--use-fp8-input-projections", action="store_true")
     parser.add_argument("--add-fp8-residue", action="store_true")
+    parser.add_argument("--tokenizer-asset", type=Path)
     args = parser.parse_args()
     if not args.config_only and any(
         path is None
@@ -481,6 +483,22 @@ def main() -> int:
         "hyena_projection_dtype": args.hyena_projection_dtype,
         "hcm_filter_dtype": "F32",
     }
+    if args.tokenizer_asset is not None:
+        tokenizer_payload = args.tokenizer_asset.read_bytes()
+        try:
+            tokenizer_path = args.tokenizer_asset.resolve().relative_to(
+                args.model.parent.resolve()
+            )
+        except ValueError:
+            parser.error("--tokenizer-asset must be beneath the model directory")
+        metadata.update(
+            {
+                "tokenizer.profile": "evo-tokenizer-v1",
+                "tokenizer.path": tokenizer_path.as_posix(),
+                "tokenizer.sha256": hashlib.sha256(tokenizer_payload).hexdigest(),
+                "tokenizer.size": len(tokenizer_payload),
+            }
+        )
     args.model.parent.mkdir(parents=True, exist_ok=True)
     write_model(
         args.model,

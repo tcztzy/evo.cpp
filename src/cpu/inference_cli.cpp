@@ -47,6 +47,8 @@ std::size_t input_byte_limit(const ArchitectureTokenizer tokenizer,
                ? std::numeric_limits<std::size_t>::max()
                : context_size * kLongestTokenBytes;
   }
+  case ArchitectureTokenizer::kArtifact:
+    return kArtifactTokenizerInputSafetyLimit;
   }
   return context_size;
 }
@@ -59,13 +61,27 @@ std::size_t embedding_layer_count(const ModelConfig &config) noexcept {
   case ArchitectureImplementation::kHyenaDna:
     return config.layers;
   case ArchitectureImplementation::kEsmc:
+  case ArchitectureImplementation::kGenebTransformerDecoder:
+  case ArchitectureImplementation::kGenebOlmoDecoder:
+  case ArchitectureImplementation::kGenebEsmEncoder:
+  case ArchitectureImplementation::kGenebBertEncoder:
+  case ArchitectureImplementation::kGenebGpt2Decoder:
+  case ArchitectureImplementation::kGenebDnaGptDecoder:
+  case ArchitectureImplementation::kGenebCustomEncoder:
+  case ArchitectureImplementation::kGenebMambaEncoder:
+  case ArchitectureImplementation::kGenebHyenaDnaDecoder:
+  case ArchitectureImplementation::kGenebStripedHyenaV1:
+  case ArchitectureImplementation::kGenebJanusDnaEncoder:
+  case ArchitectureImplementation::kGenebRoformerEncoder:
     return config.layers + 1U;
+  case ArchitectureImplementation::kGenebSequenceCnnEncoder:
+    return 1U;
   }
   return 0;
 }
 
-const char *embedding_point(const ArchitectureImplementation implementation)
-    noexcept {
+const char *
+embedding_point(const ArchitectureImplementation implementation) noexcept {
   switch (implementation) {
   case ArchitectureImplementation::kUnknown:
     return "unknown";
@@ -74,13 +90,33 @@ const char *embedding_point(const ArchitectureImplementation implementation)
     return "block_output";
   case ArchitectureImplementation::kEsmc:
     return "official_hidden_state";
+  case ArchitectureImplementation::kGenebTransformerDecoder:
+    return "post_final_norm";
+  case ArchitectureImplementation::kGenebOlmoDecoder:
+    return "post_final_norm";
+  case ArchitectureImplementation::kGenebEsmEncoder:
+  case ArchitectureImplementation::kGenebBertEncoder:
+  case ArchitectureImplementation::kGenebGpt2Decoder:
+  case ArchitectureImplementation::kGenebDnaGptDecoder:
+    return "post_final_norm";
+  case ArchitectureImplementation::kGenebCustomEncoder:
+    return "official_hidden_state";
+  case ArchitectureImplementation::kGenebMambaEncoder:
+  case ArchitectureImplementation::kGenebHyenaDnaDecoder:
+  case ArchitectureImplementation::kGenebStripedHyenaV1:
+  case ArchitectureImplementation::kGenebJanusDnaEncoder:
+    return "post_final_norm";
+  case ArchitectureImplementation::kGenebSequenceCnnEncoder:
+    return "returned_sequence_embedding";
+  case ArchitectureImplementation::kGenebRoformerEncoder:
+    return "official_hidden_state";
   }
   return "unknown";
 }
 
-const ArchitectureBackendFactorySpec *architecture_backend_factory(
-    const ArchitectureSpec &architecture,
-    const ExecutionBackend backend) noexcept {
+const ArchitectureBackendFactorySpec *
+architecture_backend_factory(const ArchitectureSpec &architecture,
+                             const ExecutionBackend backend) noexcept {
   switch (backend) {
   case ExecutionBackend::kCpu:
     return find_architecture_backend_factory(architecture,
@@ -699,8 +735,32 @@ const char *pooling_name(const EmbeddingPooling pooling) noexcept {
 
 Status run_embed(const CliOptions &options, const Model &model) {
   const std::size_t layer_count = embedding_layer_count(model.config());
-  if (options.embed_layer >= layer_count)
+  const std::size_t context_capacity =
+      !options.context_size_explicit && model.config().max_seqlen != 0U
+          ? std::min(options.context_size, model.config().max_seqlen)
+          : options.context_size;
+  const bool use_preset = !options.embed_preset.empty();
+  const auto *const geneb_spec = model.geneb_embedding_spec();
+  if (use_preset && geneb_spec == nullptr) {
+    return {ErrorCode::kUnsupported,
+            "embedding preset requires a verified GENEB artifact"};
+  }
+  if (layer_count == 0U)
+    return {ErrorCode::kUnsupported, "model has no embedding layers"};
+  if (!use_preset && model.config().implementation ==
+                         ArchitectureImplementation::kGenebSequenceCnnEncoder) {
+    return {ErrorCode::kUnsupported,
+            "GENEB sequence CNN exposes its returned sequence embedding only "
+            "through a GENEB preset"};
+  }
+  const std::size_t layer = use_preset ? layer_count - 1U : options.embed_layer;
+  if (layer >= layer_count)
     return {ErrorCode::kInvalidArgument, "embedding layer exceeds model"};
+  GenebEmbeddingPresetKind preset_kind = GenebEmbeddingPresetKind::kNormalized;
+  if (options.embed_preset == "geneb-v4-reference")
+    preset_kind = GenebEmbeddingPresetKind::kReference;
+  const GenebEmbeddingPresetSpec *resolved =
+      use_preset ? &geneb_embedding_preset(*geneb_spec, preset_kind) : nullptr;
   const std::filesystem::path directory{options.embed_output_dir};
   std::error_code error;
   if (std::filesystem::exists(directory, error)) {
@@ -717,45 +777,99 @@ Status run_embed(const CliOptions &options, const Model &model) {
   if (!manifest)
     return {ErrorCode::kIo, "cannot create embedding manifest"};
   std::size_t record_index = 0;
+  const std::size_t byte_limit =
+      use_preset
+          ? geneb_spec->input_transform.raw_safety_cap
+          : input_byte_limit(model.config().tokenizer, context_capacity);
   return stream_sequence_file(
-      options.embed_path,
-      input_byte_limit(model.config().tokenizer, options.context_size),
+      options.embed_path, byte_limit,
       [&](const SequenceRecord &record) -> Status {
-        Context context;
-        auto status = context.initialize_shared(model, options.context_size);
-        if (!status.ok())
-          return status;
         std::vector<TokenId> tokens;
-        status = model.encode(record.bytes, &tokens);
-        if (!status.ok())
-          return status;
-        if (tokens.size() > options.context_size) {
+        GenebPreparedEmbeddingInput prepared;
+        auto status = Status::Ok();
+        if (use_preset) {
+          const std::string_view raw{
+              reinterpret_cast<const char *>(record.bytes.data()),
+              record.bytes.size()};
+          status = model.prepare_geneb_embedding_input(raw, &prepared);
+          if (!status.ok())
+            return status;
+          tokens = prepared.tokens;
+        } else {
+          status = model.encode(record.bytes, &tokens);
+          if (!status.ok())
+            return status;
+        }
+        std::size_t record_capacity = context_capacity;
+        if (!options.context_size_explicit && tokens.size() > record_capacity &&
+            (model.config().max_seqlen == 0U ||
+             tokens.size() <= model.config().max_seqlen)) {
+          record_capacity = tokens.size();
+        }
+        if (tokens.size() > record_capacity) {
           return {ErrorCode::kInvalidArgument,
                   "encoded embedding record exceeds --ctx"};
         }
+        Context context;
+        status = context.initialize_shared(model, record_capacity);
+        if (!status.ok())
+          return status;
         std::vector<float> all;
-        std::size_t offset = 0;
-        bool first = true;
-        while (offset < tokens.size()) {
-          const auto rows =
-              std::min(context.activation_capacity(), tokens.size() - offset);
-          const std::vector<TokenId> chunk(
-              tokens.begin() + static_cast<std::ptrdiff_t>(offset),
-              tokens.begin() + static_cast<std::ptrdiff_t>(offset + rows));
-          std::vector<float> values;
-          status = first ? context.prefill_embedding(chunk, options.embed_layer,
-                                                     &values)
-                         : context.prefill_chunk_embedding(
-                               chunk, options.embed_layer, &values);
+        if (use_preset) {
+          status = context.prefill_embedding_masked(
+              tokens, prepared.attention_mask, layer, &all);
           if (!status.ok())
             return status;
-          all.insert(all.end(), values.begin(), values.end());
-          offset += rows;
-          first = false;
+        } else {
+          std::size_t offset = 0;
+          bool first = true;
+          while (offset < tokens.size()) {
+            const auto chunk_rows =
+                std::min(context.activation_capacity(), tokens.size() - offset);
+            const std::vector<TokenId> chunk(
+                tokens.begin() + static_cast<std::ptrdiff_t>(offset),
+                tokens.begin() +
+                    static_cast<std::ptrdiff_t>(offset + chunk_rows));
+            std::vector<float> values;
+            status =
+                first ? context.prefill_embedding(chunk, layer, &values)
+                      : context.prefill_chunk_embedding(chunk, layer, &values);
+            if (!status.ok())
+              return status;
+            all.insert(all.end(), values.begin(), values.end());
+            offset += chunk_rows;
+            first = false;
+          }
         }
         const auto width = model.config().width;
-        std::size_t rows = tokens.size();
-        if (options.embedding_pooling == EmbeddingPooling::kMean) {
+        if (width == 0U || all.empty() || all.size() % width != 0U) {
+          return {ErrorCode::kInternal,
+                  "embedding backend returned an invalid matrix shape"};
+        }
+        std::size_t rows = all.size() / width;
+        if (use_preset) {
+          std::vector<std::uint8_t> pooling_mask;
+          const std::vector<std::uint8_t> *mask = &prepared.attention_mask;
+          if (rows != prepared.attention_mask.size()) {
+            if (resolved->pooling != "spatial-mean") {
+              return {ErrorCode::kInternal,
+                      "GENEB hidden rows differ from the token mask"};
+            }
+            pooling_mask.assign(rows, 1U);
+            mask = &pooling_mask;
+          }
+          if (resolved->output_width != width) {
+            return {ErrorCode::kModelFormat,
+                    "GENEB preset output width differs from runtime"};
+          }
+          std::vector<float> pooled;
+          status = pool_geneb_embedding(all, rows, width, *mask,
+                                        resolved->pooling, &pooled);
+          if (!status.ok())
+            return status;
+          all = std::move(pooled);
+          rows = 1U;
+        } else if (options.embedding_pooling == EmbeddingPooling::kMean) {
           std::vector<float> pooled(width, 0.0F);
           for (std::size_t row = 0; row < rows; ++row)
             for (std::size_t column = 0; column < width; ++column)
@@ -779,12 +893,43 @@ Status run_embed(const CliOptions &options, const Model &model) {
                  << sequence_format_name(record.format) << "\",\"file\":";
         write_json_string(manifest, filename.str());
         manifest << ",\"source_tokens\":" << tokens.size() << ",\"shape\":["
-                 << rows << ',' << width
-                 << "],\"layer\":" << options.embed_layer << ",\"point\":\""
-                 << embedding_point(model.config().implementation)
-                 << "\",\"pooling\":\""
-                 << pooling_name(options.embedding_pooling)
-                 << "\",\"dtype\":\"float32\",\"backend\":\""
+                 << rows << ',' << width << "],\"layer\":" << layer
+                 << ",\"point\":";
+        write_json_string(manifest, use_preset
+                                        ? std::string_view{resolved->hidden_tap}
+                                        : std::string_view{embedding_point(
+                                              model.config().implementation)});
+        manifest << ",\"pooling\":";
+        write_json_string(manifest, use_preset
+                                        ? std::string_view{resolved->pooling}
+                                        : std::string_view{pooling_name(
+                                              options.embedding_pooling)});
+        if (use_preset) {
+          if (prepared.transform.pad_left >
+                  std::numeric_limits<std::size_t>::max() -
+                      prepared.token_plan.pad_left ||
+              prepared.transform.pad_right >
+                  std::numeric_limits<std::size_t>::max() -
+                      prepared.token_plan.pad_right) {
+            return {ErrorCode::kInternal,
+                    "GENEB embedding padding metadata overflowed"};
+          }
+          manifest << ",\"preset\":";
+          write_json_string(manifest, resolved->name);
+          manifest << ",\"original_length\":"
+                   << prepared.transform.original_length
+                   << ",\"effective_length\":"
+                   << prepared.transform.effective_length
+                   << ",\"crop_left\":" << prepared.transform.crop_left
+                   << ",\"crop_right\":" << prepared.transform.crop_right
+                   << ",\"pad_left\":"
+                   << prepared.transform.pad_left + prepared.token_plan.pad_left
+                   << ",\"pad_right\":"
+                   << prepared.transform.pad_right +
+                          prepared.token_plan.pad_right
+                   << ",\"token_count\":" << tokens.size();
+        }
+        manifest << ",\"dtype\":\"float32\",\"backend\":\""
                  << execution_backend_name(options.backend)
                  << "\",\"profile\":\""
                  << inference_profile_name(options.inference_profile)
@@ -853,7 +998,8 @@ Status run_inference_cli_loaded(const CliOptions &options, const Model &model,
     status = {ErrorCode::kUnsupported, "server dispatch is separate"};
   std::cerr << "evo_metrics {\"backend\":\""
             << execution_backend_name(options.backend) << "\",\"profile\":\""
-            << inference_profile_name(options.inference_profile) << "\","
+            << inference_profile_name(options.inference_profile)
+            << "\","
                "\"kernel\":\""
             << model.kernel_name()
             << "\",\"model_load_seconds\":" << std::setprecision(9)

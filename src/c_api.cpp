@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -16,6 +17,7 @@
 #include <vector>
 
 #include "evo/cpu/model.hpp"
+#include "evo/geneb_embedding.hpp"
 #include "evo/model_format.hpp"
 #include "evo/model_registry.hpp"
 #include "evo/profile.hpp"
@@ -121,19 +123,19 @@ bool valid_status(const evo_status status) noexcept {
          status == EVO_STATUS_MPS || status == EVO_STATUS_INTERNAL;
 }
 
-const evo::ArchitectureBackendFactorySpec *architecture_backend_factory(
-    const evo::ArchitectureSpec &architecture,
-    const evo_backend backend) noexcept {
+const evo::ArchitectureBackendFactorySpec *
+architecture_backend_factory(const evo::ArchitectureSpec &architecture,
+                             const evo_backend backend) noexcept {
   switch (backend) {
   case EVO_BACKEND_CPU:
-    return evo::find_architecture_backend_factory(
-        architecture, evo::kArchitectureBackendCpu);
+    return evo::find_architecture_backend_factory(architecture,
+                                                  evo::kArchitectureBackendCpu);
   case EVO_BACKEND_CUDA:
     return evo::find_architecture_backend_factory(
         architecture, evo::kArchitectureBackendCuda);
   case EVO_BACKEND_MPS:
-    return evo::find_architecture_backend_factory(
-        architecture, evo::kArchitectureBackendMps);
+    return evo::find_architecture_backend_factory(architecture,
+                                                  evo::kArchitectureBackendMps);
   case EVO_BACKEND_AUTO:
     return nullptr;
   }
@@ -153,6 +155,8 @@ struct ModelState final {
   std::size_t embedding_width{0};
   std::size_t layer_count{0};
   bool allow_synthetic{false};
+  std::shared_ptr<evo::ArtifactTokenizer> artifact_tokenizer;
+  std::optional<evo::GenebEmbeddingArtifactSpec> geneb_embedding;
   std::mutex cpu_mutex;
   std::unique_ptr<evo::cpu::Model> cpu_weights;
 #if defined(EVO_HAS_CUDA)
@@ -160,6 +164,55 @@ struct ModelState final {
   std::unique_ptr<evo::cuda::EsmcModel> cuda_esmc_weights;
 #endif
 };
+
+evo::Status encode_model_sequence(const ModelState &model,
+                                  const std::string_view sequence,
+                                  std::vector<evo::TokenId> *const tokens) {
+  if (model.artifact_tokenizer)
+    return model.artifact_tokenizer->encode(sequence, {}, tokens);
+  return evo::encode_sequence(model.architecture_spec->tokenizer, sequence,
+                              tokens);
+}
+
+evo::Status decode_model_token(const ModelState &model,
+                               const evo::TokenId token,
+                               std::uint8_t *const byte) {
+  if (model.artifact_tokenizer) {
+    return {evo::ErrorCode::kUnsupported,
+            "artifact tokenizer detokenization is not supported"};
+  }
+  return evo::decode_sequence_token(model.architecture_spec->tokenizer, token,
+                                    byte);
+}
+
+struct LegacyEmbeddingCapture final {
+  std::vector<float> values;
+  std::size_t rows{0};
+  std::size_t columns{0};
+  std::size_t next_offset{0};
+};
+
+evo_status capture_legacy_embedding(const float *const values,
+                                    const std::size_t rows,
+                                    const std::size_t columns,
+                                    const std::size_t token_offset,
+                                    void *const user_data) {
+  auto *const capture = static_cast<LegacyEmbeddingCapture *>(user_data);
+  if (capture == nullptr || values == nullptr || rows == 0 || columns == 0 ||
+      token_offset != capture->next_offset ||
+      (capture->columns != 0 && capture->columns != columns) ||
+      rows > std::numeric_limits<std::size_t>::max() / columns ||
+      rows * columns >
+          std::numeric_limits<std::size_t>::max() - capture->values.size()) {
+    return EVO_STATUS_INTERNAL;
+  }
+  capture->columns = columns;
+  capture->rows += rows;
+  capture->next_offset += rows;
+  capture->values.insert(capture->values.end(), values,
+                         values + rows * columns);
+  return EVO_STATUS_OK;
+}
 
 } // namespace
 
@@ -228,6 +281,11 @@ evo_context_params evo_context_default_params(void) {
 
 evo_sampler_params evo_sampler_default_params(void) {
   return {sizeof(evo_sampler_params), 1.0F, 1, 1.0F, 0};
+}
+
+evo_embedding_options evo_embedding_default_options(void) {
+  return {sizeof(evo_embedding_options), nullptr,
+          std::numeric_limits<std::size_t>::max(), nullptr};
 }
 
 evo_status evo_model_load(const char *const path,
@@ -306,8 +364,8 @@ evo_status evo_model_load(const char *const path,
     state->architecture_spec = architecture;
     if (state->backend == EVO_BACKEND_AUTO) {
 #if defined(EVO_HAS_CUDA)
-      state->backend = architecture_backend_factory(
-                           *architecture, EVO_BACKEND_CUDA) != nullptr
+      state->backend = architecture_backend_factory(*architecture,
+                                                    EVO_BACKEND_CUDA) != nullptr
                            ? EVO_BACKEND_CUDA
                            : EVO_BACKEND_CPU;
 #else
@@ -318,7 +376,8 @@ evo_status evo_model_load(const char *const path,
       return publish(EVO_STATUS_INTERNAL,
                      "internal: automatic backend selection was unresolved");
     }
-    if (architecture_backend_factory(*architecture, state->backend) == nullptr) {
+    if (architecture_backend_factory(*architecture, state->backend) ==
+        nullptr) {
       return publish(EVO_STATUS_UNSUPPORTED,
                      "unsupported: selected architecture/backend factory is "
                      "not registered");
@@ -340,15 +399,76 @@ evo_status evo_model_load(const char *const path,
     state->embedding_width = metadata_size(state->file, "config.hidden_size");
     const std::size_t transformer_layers =
         metadata_size(state->file, "config.num_layers");
+    const auto implementation = state->architecture_spec->implementation;
+    const bool includes_post_final_norm =
+        implementation == evo::ArchitectureImplementation::kEsmc ||
+        implementation ==
+            evo::ArchitectureImplementation::kGenebTransformerDecoder ||
+        implementation == evo::ArchitectureImplementation::kGenebOlmoDecoder ||
+        implementation == evo::ArchitectureImplementation::kGenebEsmEncoder ||
+        implementation == evo::ArchitectureImplementation::kGenebBertEncoder ||
+        implementation == evo::ArchitectureImplementation::kGenebGpt2Decoder ||
+        implementation ==
+            evo::ArchitectureImplementation::kGenebDnaGptDecoder ||
+        implementation ==
+            evo::ArchitectureImplementation::kGenebCustomEncoder ||
+        implementation == evo::ArchitectureImplementation::kGenebMambaEncoder ||
+        implementation ==
+            evo::ArchitectureImplementation::kGenebHyenaDnaDecoder ||
+        implementation ==
+            evo::ArchitectureImplementation::kGenebStripedHyenaV1 ||
+        implementation ==
+            evo::ArchitectureImplementation::kGenebJanusDnaEncoder ||
+        implementation ==
+            evo::ArchitectureImplementation::kGenebRoformerEncoder;
+    if (implementation ==
+        evo::ArchitectureImplementation::kGenebSequenceCnnEncoder) {
+      state->vocab_size = 256U;
+    }
     const std::size_t default_embedding_layers =
-        state->architecture_spec->implementation ==
-                    evo::ArchitectureImplementation::kEsmc &&
-                transformer_layers !=
-                    std::numeric_limits<std::size_t>::max()
+        includes_post_final_norm &&
+                transformer_layers != std::numeric_limits<std::size_t>::max()
             ? transformer_layers + 1U
             : transformer_layers;
     state->layer_count = metadata_size(
         state->file, "runtime.embedding_layer_count", default_embedding_layers);
+    if (state->file.tokenizer_asset_descriptor().has_value()) {
+      std::unique_ptr<evo::ArtifactTokenizer> tokenizer;
+      status = evo::ArtifactTokenizer::Load(
+          std::string{state->file.artifact_root()},
+          *state->file.tokenizer_asset_descriptor(), &tokenizer);
+      if (!status.ok())
+        return publish(status);
+      const auto tokenizer_vocabulary_size = metadata_size(
+          state->file, "runtime.tokenizer_vocabulary_size", state->vocab_size);
+      if (tokenizer->vocabulary_size() != tokenizer_vocabulary_size) {
+        return publish(EVO_STATUS_MODEL_FORMAT,
+                       "model_format: tokenizer vocabulary size differs from "
+                       "model vocabulary");
+      }
+      state->artifact_tokenizer = std::move(tokenizer);
+    }
+    if (evo::architecture_requires_artifact_tokenizer(
+            *state->architecture_spec) &&
+        !state->artifact_tokenizer) {
+      return publish(EVO_STATUS_MODEL_FORMAT,
+                     "model_format: architecture requires a verified "
+                     "artifact tokenizer descriptor");
+    }
+    if (state->artifact_profile.rfind("geneb-", 0) == 0) {
+      evo::GenebEmbeddingArtifactSpec spec;
+      status = evo::geneb_embedding_spec_from_artifact(state->file, &spec);
+      if (!status.ok())
+        return publish(status);
+      if (spec.runtime_id != state->model_id ||
+          spec.reference.output_width != state->embedding_width ||
+          spec.normalized.output_width != state->embedding_width) {
+        return publish(EVO_STATUS_MODEL_FORMAT,
+                       "model_format: GENEB preset identity/width differs "
+                       "from runtime config");
+      }
+      state->geneb_embedding = std::move(spec);
+    }
     if (state->max_context == 0 &&
         metadata_bool(state->file, "fixture.synthetic")) {
       state->max_context = std::numeric_limits<std::size_t>::max();
@@ -376,6 +496,58 @@ evo_status evo_model_load(const char *const path,
         return publish(EVO_STATUS_UNSUPPORTED,
                        "unsupported: CUDA architecture factory has no "
                        "HyenaDNA implementation");
+      case evo::ArchitectureImplementation::kGenebTransformerDecoder:
+        return publish(EVO_STATUS_UNSUPPORTED,
+                       "unsupported: CUDA architecture factory has no "
+                       "GENEB transformer decoder implementation");
+      case evo::ArchitectureImplementation::kGenebOlmoDecoder:
+        return publish(EVO_STATUS_UNSUPPORTED,
+                       "unsupported: CUDA architecture factory has no "
+                       "GENEB OLMo decoder implementation");
+      case evo::ArchitectureImplementation::kGenebEsmEncoder:
+        return publish(EVO_STATUS_UNSUPPORTED,
+                       "unsupported: CUDA architecture factory has no "
+                       "GENEB ESM encoder implementation");
+      case evo::ArchitectureImplementation::kGenebBertEncoder:
+        return publish(EVO_STATUS_UNSUPPORTED,
+                       "unsupported: CUDA architecture factory has no "
+                       "GENEB BERT encoder implementation");
+      case evo::ArchitectureImplementation::kGenebGpt2Decoder:
+        return publish(EVO_STATUS_UNSUPPORTED,
+                       "unsupported: CUDA architecture factory has no "
+                       "GENEB GPT-2 decoder implementation");
+      case evo::ArchitectureImplementation::kGenebDnaGptDecoder:
+        return publish(EVO_STATUS_UNSUPPORTED,
+                       "unsupported: CUDA architecture factory has no "
+                       "GENEB DNA-GPT decoder implementation");
+      case evo::ArchitectureImplementation::kGenebCustomEncoder:
+        return publish(EVO_STATUS_UNSUPPORTED,
+                       "unsupported: CUDA architecture factory has no "
+                       "GENEB custom encoder implementation");
+      case evo::ArchitectureImplementation::kGenebMambaEncoder:
+        return publish(EVO_STATUS_UNSUPPORTED,
+                       "unsupported: CUDA architecture factory has no "
+                       "GENEB Mamba encoder implementation");
+      case evo::ArchitectureImplementation::kGenebHyenaDnaDecoder:
+        return publish(EVO_STATUS_UNSUPPORTED,
+                       "unsupported: CUDA architecture factory has no "
+                       "GENEB HyenaDNA decoder implementation");
+      case evo::ArchitectureImplementation::kGenebStripedHyenaV1:
+        return publish(EVO_STATUS_UNSUPPORTED,
+                       "unsupported: CUDA architecture factory has no "
+                       "GENEB Evo-1 implementation");
+      case evo::ArchitectureImplementation::kGenebJanusDnaEncoder:
+        return publish(EVO_STATUS_UNSUPPORTED,
+                       "unsupported: CUDA architecture factory has no "
+                       "GENEB JanusDNA encoder implementation");
+      case evo::ArchitectureImplementation::kGenebSequenceCnnEncoder:
+        return publish(EVO_STATUS_UNSUPPORTED,
+                       "unsupported: CUDA architecture factory has no "
+                       "GENEB sequence CNN encoder implementation");
+      case evo::ArchitectureImplementation::kGenebRoformerEncoder:
+        return publish(EVO_STATUS_UNSUPPORTED,
+                       "unsupported: CUDA architecture factory has no "
+                       "GENEB RoFormer encoder implementation");
       }
       if (!status.ok())
         return publish(status);
@@ -384,8 +556,8 @@ evo_status evo_model_load(const char *const path,
 #if defined(EVO_HAS_MPS)
     if (state->backend == EVO_BACKEND_MPS) {
       state->cpu_weights = std::make_unique<evo::cpu::Model>();
-      status = evo::mps::ModelLoader::load(
-          state->file, state->allow_synthetic, state->cpu_weights.get());
+      status = evo::mps::ModelLoader::load(state->file, state->allow_synthetic,
+                                           state->cpu_weights.get());
       if (!status.ok())
         return publish(status);
     }
@@ -453,9 +625,7 @@ evo_status evo_model_encode(const evo_model *const model,
     const std::string_view text{reinterpret_cast<const char *>(sequence),
                                 sequence_length};
     std::vector<evo::TokenId> encoded;
-    const auto status =
-        evo::encode_sequence(model->state->architecture_spec->tokenizer, text,
-                             &encoded);
+    const auto status = encode_model_sequence(*model->state, text, &encoded);
     if (!status.ok())
       return publish(status);
     *token_count = encoded.size();
@@ -475,15 +645,13 @@ evo_status evo_model_decode_token(const evo_model *const model,
                                   const uint32_t token,
                                   uint8_t *const byte_out) {
   return protect([&]() -> evo_status {
-    if (model == nullptr || !model->state || byte_out == nullptr ||
-        token > std::numeric_limits<evo::TokenId>::max()) {
+    if (model == nullptr || !model->state || byte_out == nullptr) {
       return publish(EVO_STATUS_INVALID_ARGUMENT,
                      "invalid_argument: model detokenizer arguments are "
                      "invalid");
     }
-    return publish(evo::decode_sequence_token(
-        model->state->architecture_spec->tokenizer,
-        static_cast<evo::TokenId>(token), byte_out));
+    return publish(decode_model_token(
+        *model->state, static_cast<evo::TokenId>(token), byte_out));
   });
 }
 
@@ -605,6 +773,58 @@ evo_status evo_context_create(const evo_model *const model,
       return publish(EVO_STATUS_UNSUPPORTED,
                      "unsupported: CUDA architecture factory has no "
                      "HyenaDNA context implementation");
+    case evo::ArchitectureImplementation::kGenebTransformerDecoder:
+      return publish(EVO_STATUS_UNSUPPORTED,
+                     "unsupported: CUDA architecture factory has no "
+                     "GENEB transformer decoder context implementation");
+    case evo::ArchitectureImplementation::kGenebOlmoDecoder:
+      return publish(EVO_STATUS_UNSUPPORTED,
+                     "unsupported: CUDA architecture factory has no "
+                     "GENEB OLMo decoder context implementation");
+    case evo::ArchitectureImplementation::kGenebEsmEncoder:
+      return publish(EVO_STATUS_UNSUPPORTED,
+                     "unsupported: CUDA architecture factory has no "
+                     "GENEB ESM encoder context implementation");
+    case evo::ArchitectureImplementation::kGenebBertEncoder:
+      return publish(EVO_STATUS_UNSUPPORTED,
+                     "unsupported: CUDA architecture factory has no "
+                     "GENEB BERT encoder context implementation");
+    case evo::ArchitectureImplementation::kGenebGpt2Decoder:
+      return publish(EVO_STATUS_UNSUPPORTED,
+                     "unsupported: CUDA architecture factory has no "
+                     "GENEB GPT-2 decoder context implementation");
+    case evo::ArchitectureImplementation::kGenebDnaGptDecoder:
+      return publish(EVO_STATUS_UNSUPPORTED,
+                     "unsupported: CUDA architecture factory has no "
+                     "GENEB DNA-GPT decoder context implementation");
+    case evo::ArchitectureImplementation::kGenebCustomEncoder:
+      return publish(EVO_STATUS_UNSUPPORTED,
+                     "unsupported: CUDA architecture factory has no "
+                     "GENEB custom encoder context implementation");
+    case evo::ArchitectureImplementation::kGenebMambaEncoder:
+      return publish(EVO_STATUS_UNSUPPORTED,
+                     "unsupported: CUDA architecture factory has no "
+                     "GENEB Mamba encoder context implementation");
+    case evo::ArchitectureImplementation::kGenebHyenaDnaDecoder:
+      return publish(EVO_STATUS_UNSUPPORTED,
+                     "unsupported: CUDA architecture factory has no "
+                     "GENEB HyenaDNA decoder context implementation");
+    case evo::ArchitectureImplementation::kGenebStripedHyenaV1:
+      return publish(EVO_STATUS_UNSUPPORTED,
+                     "unsupported: CUDA architecture factory has no "
+                     "GENEB Evo-1 context implementation");
+    case evo::ArchitectureImplementation::kGenebJanusDnaEncoder:
+      return publish(EVO_STATUS_UNSUPPORTED,
+                     "unsupported: CUDA architecture factory has no "
+                     "GENEB JanusDNA encoder context implementation");
+    case evo::ArchitectureImplementation::kGenebSequenceCnnEncoder:
+      return publish(EVO_STATUS_UNSUPPORTED,
+                     "unsupported: CUDA architecture factory has no "
+                     "GENEB sequence CNN encoder context implementation");
+    case evo::ArchitectureImplementation::kGenebRoformerEncoder:
+      return publish(EVO_STATUS_UNSUPPORTED,
+                     "unsupported: CUDA architecture factory has no "
+                     "GENEB RoFormer encoder context implementation");
     }
     *context_out = handle.release();
     return publish(evo::Status::Ok());
@@ -653,9 +873,8 @@ evo_status evo_context_prefill(evo_context *const context,
                      "invalid_argument: context is invalid after a prior "
                      "failure");
     }
-    if (!context->state ||
-        (context->state->architecture_spec->capabilities &
-         evo::kArchitectureLogits) == 0) {
+    if (!context->state || (context->state->architecture_spec->capabilities &
+                            evo::kArchitectureLogits) == 0) {
       return publish(EVO_STATUS_UNSUPPORTED,
                      "unsupported: architecture does not expose logits");
     }
@@ -674,8 +893,7 @@ evo_status evo_context_prefill(evo_context *const context,
     const std::string_view sequence_view{
         reinterpret_cast<const char *>(sequence.data()), sequence.size()};
     const auto encode_status =
-        evo::encode_sequence(context->state->architecture_spec->tokenizer,
-                             sequence_view, &tokens);
+        encode_model_sequence(*context->state, sequence_view, &tokens);
     if (!encode_status.ok())
       return publish(encode_status);
     if (tokens.size() > context->capacity) {
@@ -792,18 +1010,15 @@ evo_status evo_context_decode(evo_context *const context, const uint32_t token,
                      "invalid_argument: context is invalid after a prior "
                      "failure");
     }
-    if (!context->state ||
-        (context->state->architecture_spec->capabilities &
-         evo::kArchitectureGenerate) == 0) {
+    if (!context->state || (context->state->architecture_spec->capabilities &
+                            evo::kArchitectureGenerate) == 0) {
       return publish(EVO_STATUS_UNSUPPORTED,
                      "unsupported: architecture does not support incremental "
                      "decode");
     }
     const std::size_t offset = evo_context_position(context);
     if (offset == 0 || offset >= context->capacity || !context->state ||
-        (context->state->vocab_size != 0 &&
-         token >= context->state->vocab_size) ||
-        token > std::numeric_limits<evo::TokenId>::max()) {
+        !evo::token_id_in_vocabulary(token, context->state->vocab_size)) {
       return publish(EVO_STATUS_INVALID_ARGUMENT,
                      "invalid_argument: decode token/context is invalid");
     }
@@ -871,11 +1086,17 @@ evo_status evo_context_embed(evo_context *const context,
                      "invalid_argument: context is invalid after a prior "
                      "failure");
     }
-    if (!context->state ||
-        (context->state->architecture_spec->capabilities &
-         evo::kArchitectureEmbed) == 0) {
+    if (!context->state || (context->state->architecture_spec->capabilities &
+                            evo::kArchitectureEmbed) == 0) {
       return publish(EVO_STATUS_UNSUPPORTED,
                      "unsupported: architecture does not expose embeddings");
+    }
+    if (context->state->architecture_spec->implementation ==
+        evo::ArchitectureImplementation::kGenebSequenceCnnEncoder) {
+      return publish(EVO_STATUS_UNSUPPORTED,
+                     "unsupported: GENEB sequence CNN exposes its returned "
+                     "sequence embedding through evo_context_embed_ex with "
+                     "a GENEB preset");
     }
     if (!context->state || layer >= context->state->layer_count) {
       return publish(EVO_STATUS_INVALID_ARGUMENT,
@@ -896,8 +1117,7 @@ evo_status evo_context_embed(evo_context *const context,
     const std::string_view sequence_view{
         reinterpret_cast<const char *>(sequence.data()), sequence.size()};
     const auto encode_status =
-        evo::encode_sequence(context->state->architecture_spec->tokenizer,
-                             sequence_view, &tokens);
+        encode_model_sequence(*context->state, sequence_view, &tokens);
     if (!encode_status.ok())
       return publish(encode_status);
     if (tokens.size() > context->capacity) {
@@ -1001,6 +1221,215 @@ evo_status evo_context_embed(evo_context *const context,
     return publish(EVO_STATUS_UNSUPPORTED,
                    "unsupported: this evo library was built without CUDA");
 #endif
+  });
+}
+
+evo_status evo_context_embed_ex(evo_context *const context,
+                                const evo_batch *const batch,
+                                const evo_embedding_options *const options,
+                                const evo_embedding_ex_callback callback,
+                                void *const user_data) {
+  return protect([&]() -> evo_status {
+    if (context == nullptr || batch == nullptr || callback == nullptr) {
+      return publish(EVO_STATUS_INVALID_ARGUMENT,
+                     "invalid_argument: extended embedding argument is null");
+    }
+    if (options != nullptr &&
+        options->struct_size < sizeof(evo_embedding_options)) {
+      return publish(EVO_STATUS_INVALID_ARGUMENT,
+                     "invalid_argument: evo_embedding_options is too small");
+    }
+    const evo_embedding_options selected =
+        options == nullptr ? evo_embedding_default_options() : *options;
+    const std::string_view preset =
+        selected.preset == nullptr ? std::string_view{} : selected.preset;
+    const std::string_view pooling =
+        selected.pooling == nullptr ? std::string_view{} : selected.pooling;
+    if (batch->sequences.size() != 1 || batch->sequences.front().empty()) {
+      return publish(EVO_STATUS_UNSUPPORTED,
+                     "unsupported: extended embeddings require one nonempty "
+                     "sequence");
+    }
+    if (preset.empty()) {
+      if (selected.layer == std::numeric_limits<std::size_t>::max()) {
+        return publish(EVO_STATUS_INVALID_ARGUMENT,
+                       "invalid_argument: explicit embedding requires layer");
+      }
+      const std::string resolved_pooling =
+          pooling.empty() ? std::string{"none"} : std::string{pooling};
+      if (resolved_pooling != "none" && resolved_pooling != "mean" &&
+          resolved_pooling != "last") {
+        return publish(EVO_STATUS_INVALID_ARGUMENT,
+                       "invalid_argument: pooling must be none, mean, or last");
+      }
+      std::vector<evo::TokenId> tokens;
+      const auto &sequence = batch->sequences.front();
+      const std::string_view sequence_view{
+          reinterpret_cast<const char *>(sequence.data()), sequence.size()};
+      auto status =
+          encode_model_sequence(*context->state, sequence_view, &tokens);
+      if (!status.ok())
+        return publish(status);
+      LegacyEmbeddingCapture capture;
+      const auto embedded = evo_context_embed(
+          context, batch, selected.layer, capture_legacy_embedding, &capture);
+      if (embedded != EVO_STATUS_OK)
+        return embedded;
+      std::vector<float> result;
+      std::size_t rows = capture.rows;
+      if (resolved_pooling == "none") {
+        result = std::move(capture.values);
+      } else if (resolved_pooling == "last") {
+        if (capture.rows == 0)
+          return publish(EVO_STATUS_INTERNAL,
+                         "internal: embedding callback returned no rows");
+        const auto begin =
+            capture.values.end() - static_cast<std::ptrdiff_t>(capture.columns);
+        result.assign(begin, capture.values.end());
+        rows = 1;
+      } else {
+        const std::vector<std::uint8_t> mask(capture.rows, 1U);
+        status = evo::pool_geneb_embedding(capture.values, capture.rows,
+                                           capture.columns, mask,
+                                           "attention-mask-mean", &result);
+        if (!status.ok())
+          return publish(status);
+        rows = 1;
+      }
+      const evo_embedding_result_info info{
+          sizeof(evo_embedding_result_info),
+          "",
+          "explicit-layer",
+          resolved_pooling.c_str(),
+          selected.layer,
+          sequence.size(),
+          sequence.size(),
+          0,
+          0,
+          0,
+          0,
+          tokens.size(),
+          rows,
+          capture.columns,
+      };
+      const evo_status callback_status =
+          callback(result.data(), rows, capture.columns, 0, &info, user_data);
+      if (callback_status != EVO_STATUS_OK) {
+        context->failed = true;
+        return publish(valid_status(callback_status) ? callback_status
+                                                     : EVO_STATUS_INTERNAL,
+                       "callback: extended embedding consumer aborted");
+      }
+      return publish(evo::Status::Ok());
+    }
+
+    if (selected.layer != std::numeric_limits<std::size_t>::max() ||
+        !pooling.empty()) {
+      return publish(EVO_STATUS_INVALID_ARGUMENT,
+                     "invalid_argument: preset is mutually exclusive with "
+                     "layer and pooling");
+    }
+    if (!context->state || !context->state->geneb_embedding.has_value() ||
+        !context->cpu || !context->state->cpu_weights) {
+      return publish(EVO_STATUS_UNSUPPORTED,
+                     "unsupported: GENEB presets require a registered CPU "
+                     "artifact and preprocessing contract");
+    }
+    evo::GenebEmbeddingPresetKind preset_kind;
+    if (preset == "geneb-v4-reference") {
+      preset_kind = evo::GenebEmbeddingPresetKind::kReference;
+    } else if (preset == "geneb-v4-normalized" || preset == "geneb") {
+      preset_kind = evo::GenebEmbeddingPresetKind::kNormalized;
+    } else {
+      return publish(EVO_STATUS_INVALID_ARGUMENT,
+                     "invalid_argument: unknown embedding preset");
+    }
+    if (context->failed || evo_context_position(context) != 0) {
+      return publish(EVO_STATUS_INVALID_ARGUMENT,
+                     "invalid_argument: embedding preset requires a fresh "
+                     "context");
+    }
+    const auto &sequence = batch->sequences.front();
+    const std::string_view sequence_view{
+        reinterpret_cast<const char *>(sequence.data()), sequence.size()};
+    evo::GenebPreparedEmbeddingInput prepared;
+    auto status = context->state->cpu_weights->prepare_geneb_embedding_input(
+        sequence_view, &prepared);
+    if (!status.ok())
+      return publish(status);
+    if (prepared.tokens.size() > context->capacity) {
+      return publish(EVO_STATUS_INVALID_ARGUMENT,
+                     "invalid_argument: GENEB effective token count exceeds "
+                     "context capacity");
+    }
+    const auto &resolved = evo::geneb_embedding_preset(
+        *context->state->geneb_embedding, preset_kind);
+    const std::size_t layer = context->state->layer_count - 1U;
+    context->failed = true;
+    std::vector<float> hidden;
+    status = context->cpu->prefill_embedding_masked(
+        prepared.tokens, prepared.attention_mask, layer, &hidden);
+    if (!status.ok())
+      return publish(status);
+    const std::size_t columns = context->cpu->config().width;
+    if (columns == 0U || hidden.empty() || hidden.size() % columns != 0U ||
+        resolved.output_width != columns) {
+      return publish(EVO_STATUS_INTERNAL,
+                     "internal: GENEB embedding shape/preset width differs");
+    }
+    const std::size_t hidden_rows = hidden.size() / columns;
+    std::vector<std::uint8_t> spatial_mask;
+    const std::vector<std::uint8_t> *pooling_mask = &prepared.attention_mask;
+    if (hidden_rows != prepared.attention_mask.size()) {
+      if (resolved.pooling != "spatial-mean") {
+        return publish(EVO_STATUS_INTERNAL,
+                       "internal: GENEB hidden rows differ from token mask");
+      }
+      spatial_mask.assign(hidden_rows, 1U);
+      pooling_mask = &spatial_mask;
+    }
+    std::vector<float> result;
+    status = evo::pool_geneb_embedding(hidden, hidden_rows, columns,
+                                       *pooling_mask,
+                                       resolved.pooling, &result);
+    if (!status.ok())
+      return publish(status);
+    if (result.size() != columns) {
+      return publish(EVO_STATUS_INTERNAL,
+                     "internal: GENEB preset did not produce one vector");
+    }
+    if (prepared.transform.pad_left > std::numeric_limits<std::size_t>::max() -
+                                          prepared.token_plan.pad_left ||
+        prepared.transform.pad_right > std::numeric_limits<std::size_t>::max() -
+                                           prepared.token_plan.pad_right) {
+      return publish(EVO_STATUS_INTERNAL,
+                     "internal: GENEB padding metadata overflowed");
+    }
+    const evo_embedding_result_info info{
+        sizeof(evo_embedding_result_info),
+        resolved.name.c_str(),
+        resolved.hidden_tap.c_str(),
+        resolved.pooling.c_str(),
+        layer,
+        prepared.transform.original_length,
+        prepared.transform.effective_length,
+        prepared.transform.crop_left,
+        prepared.transform.crop_right,
+        prepared.transform.pad_left + prepared.token_plan.pad_left,
+        prepared.transform.pad_right + prepared.token_plan.pad_right,
+        prepared.tokens.size(),
+        1,
+        columns,
+    };
+    const evo_status callback_status =
+        callback(result.data(), 1, columns, 0, &info, user_data);
+    if (callback_status != EVO_STATUS_OK) {
+      return publish(valid_status(callback_status) ? callback_status
+                                                   : EVO_STATUS_INTERNAL,
+                     "callback: GENEB embedding consumer aborted");
+    }
+    context->failed = false;
+    return publish(evo::Status::Ok());
   });
 }
 

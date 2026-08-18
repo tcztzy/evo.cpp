@@ -8,24 +8,40 @@
 namespace evo {
 namespace {
 
-OfficialModelSpec spec(
-    const std::string_view id, const std::size_t width,
-    const std::size_t layers, const std::size_t heads,
-    const std::size_t inner, const std::size_t hcs_groups,
-    const std::size_t hcm_groups, const std::size_t hcl_groups,
-    const std::size_t max_seqlen, const double rope_base,
-    const double rope_scale, const bool interpolated,
-    const OfficialProjectionPrecision precision,
-    const OfficialProjectionWeightDType weight_dtype,
-    const OfficialHcmFilterDType hcm_dtype,
-    const OfficialExactSupport exact_support,
-    const std::string_view exact_evidence, std::vector<std::size_t> hcs,
-    std::vector<std::size_t> hcm, std::vector<std::size_t> hcl,
-    std::vector<std::size_t> attention) {
-  return {id, 512, width, layers, heads, inner, hcs_groups, hcm_groups,
-          hcl_groups, max_seqlen, rope_base, rope_scale, interpolated,
-          precision, weight_dtype, hcm_dtype, exact_support, exact_evidence,
-          std::move(hcs), std::move(hcm), std::move(hcl),
+OfficialModelSpec
+spec(const std::string_view id, const std::size_t width,
+     const std::size_t layers, const std::size_t heads, const std::size_t inner,
+     const std::size_t hcs_groups, const std::size_t hcm_groups,
+     const std::size_t hcl_groups, const std::size_t max_seqlen,
+     const double rope_base, const double rope_scale, const bool interpolated,
+     const OfficialProjectionPrecision precision,
+     const OfficialProjectionWeightDType weight_dtype,
+     const OfficialHcmFilterDType hcm_dtype,
+     const OfficialExactSupport exact_support,
+     const std::string_view exact_evidence, std::vector<std::size_t> hcs,
+     std::vector<std::size_t> hcm, std::vector<std::size_t> hcl,
+     std::vector<std::size_t> attention) {
+  return {id,
+          512,
+          width,
+          layers,
+          heads,
+          inner,
+          hcs_groups,
+          hcm_groups,
+          hcl_groups,
+          max_seqlen,
+          rope_base,
+          rope_scale,
+          interpolated,
+          precision,
+          weight_dtype,
+          hcm_dtype,
+          exact_support,
+          exact_evidence,
+          std::move(hcs),
+          std::move(hcm),
+          std::move(hcl),
           std::move(attention)};
 }
 
@@ -37,37 +53,32 @@ const std::vector<OfficialModelSpec> &official_model_specs() {
   using S = OfficialExactSupport;
   using W = OfficialProjectionWeightDType;
   static const std::vector<OfficialModelSpec> specs{
-      spec("evo2_1b_base", 1920, 25, 15, 5120, 128, 128, 1920, 8192,
-           10000.0, 1.0, false, P::kE4M3Software, W::kBF16, H::kBF16,
-           S::kValidated, "model-size-validation/2026-08-04/evo2_1b_base",
+      spec("evo2_1b_base", 1920, 25, 15, 5120, 128, 128, 1920, 8192, 10000.0,
+           1.0, false, P::kE4M3Software, W::kBF16, H::kBF16, S::kValidated,
+           "model-size-validation/2026-08-04/evo2_1b_base",
            {0, 4, 7, 11, 14, 18, 21}, {1, 5, 8, 12, 15, 19, 22},
            {2, 6, 9, 13, 16, 20, 23}, {3, 10, 17, 24}),
-      spec("evo2_7b", 4096, 32, 32, 11264, 256, 256, 4096, 1048576,
-           10000.0, 128.0, true, P::kBF16, W::kBF16, H::kBF16,
-           S::kValidated, "model-size-validation/2026-08-04/evo2_7b",
-           {0, 4, 7, 11, 14, 18, 21, 25, 28},
-           {1, 5, 8, 12, 15, 19, 22, 26, 29},
+      spec("evo2_7b", 4096, 32, 32, 11264, 256, 256, 4096, 1048576, 10000.0,
+           128.0, true, P::kBF16, W::kBF16, H::kBF16, S::kValidated,
+           "model-size-validation/2026-08-04/evo2_7b",
+           {0, 4, 7, 11, 14, 18, 21, 25, 28}, {1, 5, 8, 12, 15, 19, 22, 26, 29},
            {2, 6, 9, 13, 16, 20, 23, 27, 30}, {3, 10, 17, 24, 31}),
-      spec("evo2_7b_base", 4096, 32, 32, 11008, 256, 256, 4096, 32768,
-           10000.0, 1.0, false, P::kBF16, W::kBF16, H::kBF16,
-           S::kUnsupported, {},
-           {0, 4, 7, 11, 14, 18, 21, 25, 28},
-           {1, 5, 8, 12, 15, 19, 22, 26, 29},
+      spec("evo2_7b_base", 4096, 32, 32, 11008, 256, 256, 4096, 32768, 10000.0,
+           1.0, false, P::kBF16, W::kBF16, H::kBF16, S::kUnsupported, {},
+           {0, 4, 7, 11, 14, 18, 21, 25, 28}, {1, 5, 8, 12, 15, 19, 22, 26, 29},
            {2, 6, 9, 13, 16, 20, 23, 27, 30}, {3, 10, 17, 24, 31}),
-      spec("evo2_7b_262k", 4096, 32, 32, 11008, 256, 256, 4096, 262144,
-           10000.0, 32.0, true, P::kBF16, W::kBF16, H::kBF16,
-           S::kUnsupported, {},
-           {0, 4, 7, 11, 14, 18, 21, 25, 28},
-           {1, 5, 8, 12, 15, 19, 22, 26, 29},
+      spec("evo2_7b_262k", 4096, 32, 32, 11008, 256, 256, 4096, 262144, 10000.0,
+           32.0, true, P::kBF16, W::kBF16, H::kBF16, S::kUnsupported, {},
+           {0, 4, 7, 11, 14, 18, 21, 25, 28}, {1, 5, 8, 12, 15, 19, 22, 26, 29},
            {2, 6, 9, 13, 16, 20, 23, 27, 30}, {3, 10, 17, 24, 31}),
-      spec("evo2_20b", 8192, 24, 64, 22528, 512, 512, 8192, 1048576,
-           1000000.0, 128.0, true, P::kE4M3Software, W::kF32, H::kBF16,
-           S::kValidated, "model-size-validation/2026-08-04/evo2_20b",
+      spec("evo2_20b", 8192, 24, 64, 22528, 512, 512, 8192, 1048576, 1000000.0,
+           128.0, true, P::kE4M3Software, W::kF32, H::kBF16, S::kValidated,
+           "model-size-validation/2026-08-04/evo2_20b",
            {0, 4, 7, 11, 14, 18, 21}, {1, 5, 8, 12, 15, 19, 22},
            {2, 6, 9, 13, 16, 20, 23}, {3, 10, 17}),
-      spec("evo2_40b", 8192, 50, 64, 22528, 512, 512, 8192, 1048576,
-           1000000.0, 128.0, true, P::kE4M3Software, W::kBF16, H::kBF16,
-           S::kValidated, "model-size-validation/2026-08-04/evo2_40b",
+      spec("evo2_40b", 8192, 50, 64, 22528, 512, 512, 8192, 1048576, 1000000.0,
+           128.0, true, P::kE4M3Software, W::kBF16, H::kBF16, S::kValidated,
+           "model-size-validation/2026-08-04/evo2_40b",
            {0, 4, 7, 11, 14, 18, 21, 25, 28, 32, 36, 39, 43, 46},
            {1, 5, 8, 12, 15, 19, 22, 26, 29, 33, 37, 40, 44, 47},
            {2, 6, 9, 13, 16, 20, 23, 27, 30, 34, 38, 41, 45, 48},
@@ -130,16 +141,16 @@ Status require_official_exact_support(const std::string_view model_id) {
 const std::vector<OfficialEsmcModelSpec> &official_esmc_model_specs() {
   static const std::vector<OfficialEsmcModelSpec> specs{
       {"esmc_300m", "biohub/ESMC-300M",
-       "a59b831785f907e96e6a246b1d142bfb76df31ee", "esmc-300m-2024-12",
-       64, 960, 30, 15, 2560, 2048, OfficialExactSupport::kValidated,
+       "a59b831785f907e96e6a246b1d142bfb76df31ee", "esmc-300m-2024-12", 64, 960,
+       30, 15, 2560, 2048, OfficialExactSupport::kValidated,
        "esmc-official-oracle/2026-08-12/esmc_300m"},
       {"esmc_600m", "biohub/ESMC-600M",
-       "a7e82012c83126b9eedb055fea9fa84b6c02f094", "esmc-600m-2024-12",
-       64, 1152, 36, 18, 3072, 2048, OfficialExactSupport::kValidated,
+       "a7e82012c83126b9eedb055fea9fa84b6c02f094", "esmc-600m-2024-12", 64,
+       1152, 36, 18, 3072, 2048, OfficialExactSupport::kValidated,
        "esmc-official-oracle/2026-08-12/esmc_600m"},
-      {"esmc_6b", "biohub/ESMC-6B",
-       "45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a", "esmc-6b-2024-12",
-       64, 2560, 80, 40, 6912, 2048, OfficialExactSupport::kValidated,
+      {"esmc_6b", "biohub/ESMC-6B", "45b0fa5d7fb06faefbd5e3b89bdcef35d564e79a",
+       "esmc-6b-2024-12", 64, 2560, 80, 40, 6912, 2048,
+       OfficialExactSupport::kValidated,
        "esmc-official-oracle/2026-08-12/esmc_6b"},
   };
   return specs;
@@ -165,37 +176,94 @@ const std::vector<ArchitectureSpec> &architecture_specs() {
        ArchitectureTokenizer::kByteIdentity,
        kArchitectureBackendCpu | kArchitectureBackendCuda |
            kArchitectureBackendMps,
-       all_capabilities,
-       false},
+       all_capabilities, false},
       {"StripedHyena2Test", "evo2-runtime-v1", "evo2-safetensors-v1",
        ArchitectureImplementation::kStripedHyena2,
        ArchitectureTokenizer::kByteIdentity,
        kArchitectureBackendCpu | kArchitectureBackendCuda |
            kArchitectureBackendMps,
-       all_capabilities,
-       true},
+       all_capabilities, true},
       {"HyenaDNA", "hyenadna-runtime-v1", "hyenadna-safetensors-v1",
        ArchitectureImplementation::kHyenaDna,
        ArchitectureTokenizer::kHyenaDnaCharacter,
-       kArchitectureBackendCpu | kArchitectureBackendMps,
-       all_capabilities, false},
+       kArchitectureBackendCpu | kArchitectureBackendMps, all_capabilities,
+       false},
       {"HyenaDNATest", "hyenadna-runtime-v1", "hyenadna-safetensors-v1",
        ArchitectureImplementation::kHyenaDna,
        ArchitectureTokenizer::kHyenaDnaCharacter,
-       kArchitectureBackendCpu | kArchitectureBackendMps,
-       all_capabilities, true},
+       kArchitectureBackendCpu | kArchitectureBackendMps, all_capabilities,
+       true},
       {"ESMC", "esmc-runtime-v1", "esmc-safetensors-v1",
-       ArchitectureImplementation::kEsmc,
-       ArchitectureTokenizer::kEsmcProtein,
+       ArchitectureImplementation::kEsmc, ArchitectureTokenizer::kEsmcProtein,
        kArchitectureBackendCpu | kArchitectureBackendCuda |
            kArchitectureBackendMps,
        kArchitectureEmbed | kArchitectureLogits, false},
       {"ESMCTest", "esmc-runtime-v1", "esmc-safetensors-v1",
-       ArchitectureImplementation::kEsmc,
-       ArchitectureTokenizer::kEsmcProtein,
+       ArchitectureImplementation::kEsmc, ArchitectureTokenizer::kEsmcProtein,
        kArchitectureBackendCpu | kArchitectureBackendCuda |
            kArchitectureBackendMps,
        kArchitectureEmbed | kArchitectureLogits, true},
+      {"GenebTransformerDecoder", "geneb-decoder-runtime-v1",
+       "geneb-decoder-safetensors-v1",
+       ArchitectureImplementation::kGenebTransformerDecoder,
+       ArchitectureTokenizer::kArtifact, kArchitectureBackendCpu,
+       kArchitectureEmbed | kArchitectureServe, false},
+      {"GenebOlmoDecoder", "geneb-olmo-runtime-v1", "geneb-olmo-safetensors-v1",
+       ArchitectureImplementation::kGenebOlmoDecoder,
+       ArchitectureTokenizer::kArtifact, kArchitectureBackendCpu,
+       kArchitectureEmbed | kArchitectureServe, false},
+      {"GenebEsmEncoder", "geneb-esm-runtime-v1", "geneb-esm-safetensors-v1",
+       ArchitectureImplementation::kGenebEsmEncoder,
+       ArchitectureTokenizer::kArtifact, kArchitectureBackendCpu,
+       kArchitectureEmbed | kArchitectureServe, false},
+      {"GenebBertEncoder", "geneb-bert-runtime-v1", "geneb-bert-safetensors-v1",
+       ArchitectureImplementation::kGenebBertEncoder,
+       ArchitectureTokenizer::kArtifact, kArchitectureBackendCpu,
+       kArchitectureEmbed | kArchitectureServe, false},
+      {"GenebGpt2Decoder", "geneb-gpt2-runtime-v1", "geneb-gpt2-safetensors-v1",
+       ArchitectureImplementation::kGenebGpt2Decoder,
+       ArchitectureTokenizer::kArtifact, kArchitectureBackendCpu,
+       kArchitectureEmbed | kArchitectureServe, false},
+      {"GenebDnaGptDecoder", "geneb-dna-gpt-runtime-v1",
+       "geneb-dna-gpt-torch-pth-v1",
+       ArchitectureImplementation::kGenebDnaGptDecoder,
+       ArchitectureTokenizer::kArtifact, kArchitectureBackendCpu,
+       kArchitectureEmbed | kArchitectureServe, false},
+      {"GenebCustomEncoder", "geneb-custom-encoder-runtime-v1",
+       "geneb-custom-encoder-safetensors-v1",
+       ArchitectureImplementation::kGenebCustomEncoder,
+       ArchitectureTokenizer::kArtifact, kArchitectureBackendCpu,
+       kArchitectureEmbed | kArchitectureServe, false},
+      {"GenebMambaEncoder", "geneb-mamba-runtime-v1",
+       "geneb-mamba-safetensors-v1",
+       ArchitectureImplementation::kGenebMambaEncoder,
+       ArchitectureTokenizer::kArtifact, kArchitectureBackendCpu,
+       kArchitectureEmbed | kArchitectureServe, false},
+      {"GenebHyenaDnaDecoder", "geneb-hyenadna-runtime-v1",
+       "geneb-hyenadna-safetensors-v1",
+       ArchitectureImplementation::kGenebHyenaDnaDecoder,
+       ArchitectureTokenizer::kArtifact, kArchitectureBackendCpu,
+       kArchitectureEmbed | kArchitectureServe, false},
+      {"GenebStripedHyenaV1", "geneb-evo1-runtime-v1",
+       "geneb-evo1-safetensors-v1",
+       ArchitectureImplementation::kGenebStripedHyenaV1,
+       ArchitectureTokenizer::kArtifact, kArchitectureBackendCpu,
+       kArchitectureEmbed | kArchitectureServe, false},
+      {"GenebJanusDnaEncoder", "geneb-janusdna-runtime-v1",
+       "geneb-janusdna-lightning-v1",
+       ArchitectureImplementation::kGenebJanusDnaEncoder,
+       ArchitectureTokenizer::kArtifact, kArchitectureBackendCpu,
+       kArchitectureEmbed | kArchitectureServe, false},
+      {"GenebSequenceCnnEncoder", "geneb-sequence-cnn-runtime-v1",
+       "geneb-sequence-cnn-pytorch-v1",
+       ArchitectureImplementation::kGenebSequenceCnnEncoder,
+       ArchitectureTokenizer::kByteIdentity, kArchitectureBackendCpu,
+       kArchitectureEmbed | kArchitectureServe, false},
+      {"GenebRoformerEncoder", "geneb-roformer-runtime-v1",
+       "geneb-roformer-pytorch-v1",
+       ArchitectureImplementation::kGenebRoformerEncoder,
+       ArchitectureTokenizer::kArtifact, kArchitectureBackendCpu,
+       kArchitectureEmbed | kArchitectureServe, false},
   };
   return specs;
 }
@@ -204,9 +272,8 @@ const ArchitectureSpec *
 find_architecture(const std::string_view architecture) noexcept {
   const auto &specs = architecture_specs();
   const auto found = std::find_if(
-      specs.begin(), specs.end(), [architecture](const auto &item) {
-        return item.id == architecture;
-      });
+      specs.begin(), specs.end(),
+      [architecture](const auto &item) { return item.id == architecture; });
   return found == specs.end() ? nullptr : &*found;
 }
 
@@ -220,6 +287,11 @@ find_artifact_profile(const std::string_view profile) noexcept {
   return found == specs.end() ? nullptr : &*found;
 }
 
+bool architecture_requires_artifact_tokenizer(
+    const ArchitectureSpec &architecture) noexcept {
+  return architecture.tokenizer == ArchitectureTokenizer::kArtifact;
+}
+
 const char *architecture_implementation_name(
     const ArchitectureImplementation implementation) noexcept {
   switch (implementation) {
@@ -231,25 +303,69 @@ const char *architecture_implementation_name(
     return "hyenadna";
   case ArchitectureImplementation::kEsmc:
     return "esmc";
+  case ArchitectureImplementation::kGenebTransformerDecoder:
+    return "geneb-transformer-decoder";
+  case ArchitectureImplementation::kGenebOlmoDecoder:
+    return "geneb-olmo-decoder";
+  case ArchitectureImplementation::kGenebEsmEncoder:
+    return "geneb-esm-encoder";
+  case ArchitectureImplementation::kGenebBertEncoder:
+    return "geneb-bert-encoder";
+  case ArchitectureImplementation::kGenebGpt2Decoder:
+    return "geneb-gpt2-decoder";
+  case ArchitectureImplementation::kGenebDnaGptDecoder:
+    return "geneb-dna-gpt-decoder";
+  case ArchitectureImplementation::kGenebCustomEncoder:
+    return "geneb-custom-encoder";
+  case ArchitectureImplementation::kGenebMambaEncoder:
+    return "geneb-mamba-encoder";
+  case ArchitectureImplementation::kGenebHyenaDnaDecoder:
+    return "geneb-hyenadna-decoder";
+  case ArchitectureImplementation::kGenebStripedHyenaV1:
+    return "geneb-striped-hyena-v1";
+  case ArchitectureImplementation::kGenebJanusDnaEncoder:
+    return "geneb-janusdna-encoder";
+  case ArchitectureImplementation::kGenebSequenceCnnEncoder:
+    return "geneb-sequence-cnn-encoder";
+  case ArchitectureImplementation::kGenebRoformerEncoder:
+    return "geneb-roformer-encoder";
   }
   return "unknown";
 }
 
-const ArchitectureBackendFactorySpec *find_architecture_backend_factory(
-    const ArchitectureSpec &architecture,
-    const ArchitectureBackend backend) noexcept {
+const ArchitectureBackendFactorySpec *
+find_architecture_backend_factory(const ArchitectureSpec &architecture,
+                                  const ArchitectureBackend backend) noexcept {
   static const std::vector<ArchitectureBackendFactorySpec> factories{
-      {ArchitectureImplementation::kStripedHyena2,
-       kArchitectureBackendCpu},
-      {ArchitectureImplementation::kStripedHyena2,
-       kArchitectureBackendCuda},
-      {ArchitectureImplementation::kStripedHyena2,
-       kArchitectureBackendMps},
+      {ArchitectureImplementation::kStripedHyena2, kArchitectureBackendCpu},
+      {ArchitectureImplementation::kStripedHyena2, kArchitectureBackendCuda},
+      {ArchitectureImplementation::kStripedHyena2, kArchitectureBackendMps},
       {ArchitectureImplementation::kHyenaDna, kArchitectureBackendCpu},
       {ArchitectureImplementation::kHyenaDna, kArchitectureBackendMps},
       {ArchitectureImplementation::kEsmc, kArchitectureBackendCpu},
       {ArchitectureImplementation::kEsmc, kArchitectureBackendCuda},
       {ArchitectureImplementation::kEsmc, kArchitectureBackendMps},
+      {ArchitectureImplementation::kGenebTransformerDecoder,
+       kArchitectureBackendCpu},
+      {ArchitectureImplementation::kGenebOlmoDecoder, kArchitectureBackendCpu},
+      {ArchitectureImplementation::kGenebEsmEncoder, kArchitectureBackendCpu},
+      {ArchitectureImplementation::kGenebBertEncoder, kArchitectureBackendCpu},
+      {ArchitectureImplementation::kGenebGpt2Decoder, kArchitectureBackendCpu},
+      {ArchitectureImplementation::kGenebDnaGptDecoder,
+       kArchitectureBackendCpu},
+      {ArchitectureImplementation::kGenebCustomEncoder,
+       kArchitectureBackendCpu},
+      {ArchitectureImplementation::kGenebMambaEncoder, kArchitectureBackendCpu},
+      {ArchitectureImplementation::kGenebHyenaDnaDecoder,
+       kArchitectureBackendCpu},
+      {ArchitectureImplementation::kGenebStripedHyenaV1,
+       kArchitectureBackendCpu},
+      {ArchitectureImplementation::kGenebJanusDnaEncoder,
+       kArchitectureBackendCpu},
+      {ArchitectureImplementation::kGenebSequenceCnnEncoder,
+       kArchitectureBackendCpu},
+      {ArchitectureImplementation::kGenebRoformerEncoder,
+       kArchitectureBackendCpu},
   };
   const auto backend_mask = static_cast<unsigned>(backend);
   if ((backend != kArchitectureBackendCpu &&
@@ -258,13 +374,12 @@ const ArchitectureBackendFactorySpec *find_architecture_backend_factory(
       (architecture.backends & backend_mask) == 0U) {
     return nullptr;
   }
-  const auto found =
-      std::find_if(factories.begin(), factories.end(),
-                   [&architecture, backend](const auto &factory) {
-                     return factory.implementation ==
-                                architecture.implementation &&
-                            factory.backend == backend;
-                   });
+  const auto found = std::find_if(
+      factories.begin(), factories.end(),
+      [&architecture, backend](const auto &factory) {
+        return factory.implementation == architecture.implementation &&
+               factory.backend == backend;
+      });
   return found == factories.end() ? nullptr : &*found;
 }
 

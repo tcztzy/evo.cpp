@@ -6,6 +6,16 @@ embeddings, and strand-aware variant scoring over HTTP/1.1. ESMC v1 is a
 logits/embedding CLI and C API path; server startup returns typed unsupported.
 The production process is C++17; Python is not in the runtime dependency graph.
 Requests never switch architecture, backend, or profile implicitly.
+The CPU-only `GenebTransformerDecoder`, `GenebOlmoDecoder`,
+`GenebEsmEncoder`, `GenebBertEncoder`, `GenebGpt2Decoder`, and
+`GenebDnaGptDecoder`, `GenebCustomEncoder`, and `GenebMambaEncoder`
+plus `GenebHyenaDnaDecoder`, `GenebStripedHyenaV1`, and
+`GenebJanusDnaEncoder`, `GenebSequenceCnnEncoder`, and
+`GenebRoformerEncoder` architectures expose only the
+`/v1/embeddings` route.
+Their generation, scoring, variant, and logits routes remain typed
+unsupported, and each GENEB request must select a catalog-backed embedding
+preset.
 
 ## Start the server
 

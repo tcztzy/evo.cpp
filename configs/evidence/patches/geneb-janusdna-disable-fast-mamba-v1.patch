@@ -1,0 +1,13 @@
+diff --git a/embedding_pipeline/extractors/janusdna.py b/embedding_pipeline/extractors/janusdna.py
+--- a/embedding_pipeline/extractors/janusdna.py
++++ b/embedding_pipeline/extractors/janusdna.py
+@@ -26,8 +26,9 @@ class JanusDNAExtractor(BaseEmbeddingExtractor):
+         raw = json.loads(self.path_to_config.read_text())
+         cfg = raw["config"]
+ 
+         cfg["bidirectional"] = str(cfg["bidirectional"]).strip().lower().strip(",") == "true"
++        cfg["use_mamba_kernels"] = False
+ 
+ 
+ 
+         self.config = JanusDNAConfig(**cfg)

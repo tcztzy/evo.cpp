@@ -8,8 +8,9 @@ import copy
 import json
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable, Dict, List, Tuple
+from urllib.parse import urlsplit
 
 
 Mutation = Tuple[str, Callable[[Dict[str, Any]], None]]
@@ -93,16 +94,24 @@ def mutate_batching(catalog: Dict[str, Any]) -> None:
     catalog["suite"]["reference_batching"]["batch_size"] = 4
 
 
+def mutate_raw_safety_cap(catalog: Dict[str, Any]) -> None:
+    catalog["suite"]["raw_safety_cap_bytes"] = 0
+
+
 def mutate_alias_collision(catalog: Dict[str, Any]) -> None:
     runtime_id = catalog["models"][0]["runtime_id"]
     catalog["aliases"]["models"][runtime_id] = runtime_id
 
 
 def mutate_false_support(catalog: Dict[str, Any]) -> None:
-    support = catalog["models"][0]["runtime_support"]
-    support["status"] = "supported"
-    support["artifact_profile"] = "unverified-runtime-v1"
-    support["reason"] = None
+    model = catalog["models"][0]
+    model["oracle"]["status"] = "missing"
+    model["oracle"]["environment_lock"] = None
+    model["oracle"]["input_digest"] = None
+    model["oracle"]["tolerances"] = None
+    model["oracle"]["evidence"] = None
+    model["backends"]["cpu"] = {"status": "not-promoted", "evidence": None}
+    model["promotion_state"] = "cataloged"
 
 
 def mutate_normalization_hash(catalog: Dict[str, Any]) -> None:
@@ -125,6 +134,11 @@ def mutate_hf_revision(catalog: Dict[str, Any]) -> None:
 
 def mutate_false_reference_eligibility(catalog: Dict[str, Any]) -> None:
     catalog["models"][0]["benchmark_provenance"]["reference_status"] = "eligible"
+    catalog["models"][0]["oracle"]["status"] = "missing"
+    catalog["models"][0]["oracle"]["environment_lock"] = None
+    catalog["models"][0]["oracle"]["input_digest"] = None
+    catalog["models"][0]["oracle"]["tolerances"] = None
+    catalog["models"][0]["oracle"]["evidence"] = None
 
 
 def mutate_submission_hash(catalog: Dict[str, Any]) -> None:
@@ -147,6 +161,21 @@ def mutate_required_file_path(catalog: Dict[str, Any]) -> None:
         item for item in catalog["models"] if item["source"]["required_files"]
     )
     model["source"]["required_files"][0]["path"] = "../checkpoint.bin"
+
+
+def mutate_tokenizer_asset_hash(catalog: Dict[str, Any]) -> None:
+    model = next(item for item in catalog["models"] if item["tokenizer"]["assets"])
+    model["tokenizer"]["assets"][0]["sha256"] = "0" * 64
+
+
+def mutate_tokenizer_asset_role(catalog: Dict[str, Any]) -> None:
+    model = next(item for item in catalog["models"] if item["tokenizer"]["assets"])
+    model["tokenizer"]["assets"][0]["role"] = "compiled-runtime"
+
+
+def mutate_tokenizer_asset_path(catalog: Dict[str, Any]) -> None:
+    model = next(item for item in catalog["models"] if item["tokenizer"]["assets"])
+    model["tokenizer"]["assets"][0]["path"] = "../tokenizer.json"
 
 
 def check_python38_syntax(path: Path) -> None:
@@ -190,6 +219,8 @@ def check_documentation(source_dir: Path) -> None:
         "ensure_ascii=False",
         "manual-source",
         "Python 3.8",
+        "tools/run_geneb.py",
+        "100×3×3",
     ):
         if required not in document:
             raise AssertionError("docs/geneb.md omitted: " + required)
@@ -197,6 +228,131 @@ def check_documentation(source_dir: Path) -> None:
         readme = (source_dir / readme_name).read_text(encoding="utf-8")
         if "docs/geneb.md" not in readme:
             raise AssertionError(readme_name + " omitted the GENEB contract link")
+
+
+def check_portable_evidence_value(
+    value: Any,
+    evidence_path: Path,
+    pointer: str,
+) -> None:
+    if isinstance(value, str):
+        if (
+            urlsplit(value).scheme.lower() == "file"
+            or PurePosixPath(value).is_absolute()
+            or PureWindowsPath(value).is_absolute()
+        ):
+            raise AssertionError(
+                "{} {} contains a non-portable local path: {}".format(
+                    evidence_path, pointer, value
+                )
+            )
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            check_portable_evidence_value(
+                item,
+                evidence_path,
+                "{}[{}]".format(pointer, index),
+            )
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            check_portable_evidence_value(
+                item,
+                evidence_path,
+                "{}.{}".format(pointer, key),
+            )
+
+
+def check_portable_evidence(source_dir: Path) -> None:
+    evidence_root = source_dir / "configs" / "evidence"
+    for evidence_path in sorted(evidence_root.rglob("*.json")):
+        value = json.loads(evidence_path.read_text(encoding="utf-8"))
+        check_portable_evidence_value(
+            value,
+            evidence_path.relative_to(source_dir),
+            "$",
+        )
+
+
+def check_audited_source_decisions(catalog: Dict[str, Any]) -> None:
+    by_name = {model["paper_name"]: model for model in catalog["models"]}
+    lucaone = by_name["LucaOne"]
+    lucaone_decisions = " ".join(lucaone["provenance"]["decisions"])
+    if (
+        lucaone["tokenizer"]["kind"] != "character"
+        or "gene modality" not in lucaone_decisions
+        or "protein/multi-sequence" not in lucaone_decisions
+    ):
+        raise AssertionError(
+            "LucaOne must preserve the audited gene character-tokenizer boundary"
+        )
+    dnabert_s = by_name["DNABERT-S"]
+    if (
+        dnabert_s["architecture"] != "mosaic-bert-encoder"
+        or dnabert_s["tokenizer"]["kind"] != "bpe"
+        or dnabert_s["benchmark_provenance"]["upstream_status"] != "broken"
+        or not dnabert_s["provenance"]["known_defects"]
+    ):
+        raise AssertionError(
+            "DNABERT-S must preserve the audited Mosaic/BPE reference defect decision"
+        )
+    grover = by_name["GROVER"]
+    grover_decisions = " ".join(grover["provenance"]["decisions"])
+    if "id 609" not in grover_decisions or not grover["provenance"]["known_defects"]:
+        raise AssertionError(
+            "GROVER must preserve the audited unreachable-token removal decision"
+        )
+    genomics_fm = by_name["Genomics-FM"]
+    genomics_decisions = " ".join(genomics_fm["provenance"]["decisions"])
+    genomics_defects = " ".join(genomics_fm["provenance"]["known_defects"])
+    if (
+        genomics_fm["tokenizer"]["kind"] != "bpe"
+        or "root BPE tokenizer" not in genomics_decisions
+        or "absolute position embeddings" not in genomics_decisions
+        or "device.index" not in genomics_defects
+        or "GPU" not in genomics_decisions
+    ):
+        raise AssertionError(
+            "Genomics-FM must preserve the audited GPU/BPE/APE reference decision"
+        )
+
+
+def check_t39_backend_boundary(catalog: Dict[str, Any]) -> None:
+    for model in catalog["models"]:
+        paper_name = model["paper_name"]
+        cpu = model["backends"]["cpu"]
+        if cpu == {"status": "not-promoted", "evidence": None}:
+            if model["runtime_support"]["status"] == "supported":
+                raise AssertionError(
+                    "{} cannot claim runtime support before CPU promotion".format(
+                        paper_name
+                    )
+                )
+        elif cpu.get("status") == "promoted" and isinstance(cpu.get("evidence"), dict):
+            if (
+                model["runtime_support"]["status"] != "supported"
+                or model["oracle"]["status"] != "passed"
+                or model["promotion_state"] != "runtime-supported"
+            ):
+                raise AssertionError(
+                    "{} CPU promotion lacks supported runtime/oracle state".format(
+                        paper_name
+                    )
+                )
+        else:
+            raise AssertionError(
+                "{} CPU must be unpromoted or carry canonical T39 evidence".format(
+                    paper_name
+                )
+            )
+        for backend in ("cuda", "mps"):
+            value = model["backends"][backend]
+            if value != {"status": "unsupported", "evidence": None}:
+                raise AssertionError(
+                    "{} {} must be typed unsupported without a registered factory"
+                    .format(paper_name, backend)
+                )
 
 
 def main() -> int:
@@ -219,8 +375,12 @@ def main() -> int:
         raise AssertionError("canonical summary omitted the 40-model valid gate")
     if len(summary["models"]) != 40:
         raise AssertionError("canonical summary must contain 40 evidence records")
-    if summary["runtime_support_counts"].get("supported", 0) != 0:
-        raise AssertionError("catalog-only milestone must not claim supported runtimes")
+    supported = sum(
+        model["runtime_support"]["status"] == "supported"
+        for model in catalog["models"]
+    )
+    if summary["runtime_support_counts"].get("supported", 0) != supported:
+        raise AssertionError("validator summary supported count differs from catalog")
     if summary["reference_provenance_counts"].get("eligible", 0) != 0:
         raise AssertionError("catalog-only milestone must not claim reference eligibility")
     for model in summary["models"]:
@@ -238,6 +398,8 @@ def main() -> int:
     repeated = run_validator(validator, catalog_path, source_dir, True)
     if repeated.stdout != canonical.stdout:
         raise AssertionError("validator summary is not deterministic")
+    check_audited_source_decisions(catalog)
+    check_t39_backend_boundary(catalog)
 
     mutations = [
         ("duplicate-model", mutate_duplicate_model),
@@ -246,6 +408,7 @@ def main() -> int:
         ("model-id", mutate_model_id),
         ("params", mutate_params),
         ("batching", mutate_batching),
+        ("raw-safety-cap", mutate_raw_safety_cap),
         ("alias-collision", mutate_alias_collision),
         ("false-support", mutate_false_support),
         ("normalization-hash", mutate_normalization_hash),
@@ -256,6 +419,9 @@ def main() -> int:
         ("submission-hash", mutate_submission_hash),
         ("nested-transform", mutate_nested_transform),
         ("required-file-path", mutate_required_file_path),
+        ("tokenizer-asset-hash", mutate_tokenizer_asset_hash),
+        ("tokenizer-asset-role", mutate_tokenizer_asset_role),
+        ("tokenizer-asset-path", mutate_tokenizer_asset_path),
     ]  # type: List[Mutation]
     for label, mutate in mutations:
         candidate = copy.deepcopy(catalog)
@@ -273,6 +439,7 @@ def main() -> int:
     check_python38_syntax(validator)
     check_python38_syntax(Path(__file__))
     check_documentation(source_dir)
+    check_portable_evidence(source_dir)
     print("GENEB catalog contract passed")
     return 0
 

@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "format": "geneb-evo1-converter-v1",
+  "models": [
+    {
+      "runtime_id": "geneb-evo-1-131k",
+      "geneb_model_id": "evo-1-131k-base",
+      "paper_name": "Evo-1-131k",
+      "catalog_architecture": "stripedhyena-v1",
+      "repo": "togethercomputer/evo-1-131k-base",
+      "requested_revision": "1.1_fix",
+      "revision": "c206aab77ae5967a069c4200ecb1858588528c9d",
+      "checkpoint_manifest_sha256": "8021ede2367eeb16b6a37a27f41024efd7cede2e5b76d0cc50746ddde81cf18a",
+      "tokenizer": {
+        "compiler_manifest": "tokenizers/geneb-evo1-byte-v1.json",
+        "compiler_manifest_sha256": "c6793d5a5bc25945f9b8b892cde3ff366569d8f697d1258c6ec5b0f0738a8f3d"
+      },
+      "source_files": {
+        "cache.py": {"size": 1378, "sha256": "4aeaaf482d1da04ee9c31d47fe85bdce8e9c9e03a5cd3e183843e902c9114b73"},
+        "config.json": {"size": 1896, "sha256": "8d5c77f3a67a9e4a0c6abc3771a81aa8300fb0efb60e4ec534b34d3b71c949d2"},
+        "configuration_hyena.py": {"size": 3134, "sha256": "5be99310371546c6a28d0287f6b9d6149a1c827341adf818ec8d0fc8bb45b277"},
+        "engine.py": {"size": 13450, "sha256": "8fe4cd97ec6b6be43807fe2d33ec16b53d3ff831e5d33c25802e701041221639"},
+        "layers.py": {"size": 5387, "sha256": "52c7909406acccd07d872f839cd22f3f494c8555ac96d51ce7eb2629cc8a98da"},
+        "model-00001-of-00003.safetensors": {"size": 4980059464, "sha256": "c4241bfbca221240a21ecdc2e927326ed5a603f93b74826ab13b82a3e9a0b087"},
+        "model-00002-of-00003.safetensors": {"size": 4929849248, "sha256": "554e7dff40a84e3ba81e98b856d0df5a8014ec4e19c2c9f0790ced34efddda03"},
+        "model-00003-of-00003.safetensors": {"size": 3003304856, "sha256": "2b573d0b24dc978ddf96b9c8bbe6f4f4ba2ddd718aeda8a7f9160cc2a1cae950"},
+        "model.py": {"size": 19474, "sha256": "6a03a9c28bd7e282cb253d051ae7ec39159d14d3a1b2272913c8ff1747f3d87a"},
+        "model.safetensors.index.json": {"size": 34860, "sha256": "f23c7372cf792218f7a4bd7433d00561555aedcba58410cc79ffae52b824c045"},
+        "modeling_hyena.py": {"size": 5549, "sha256": "adcbcdc7690057b8d109b9bd520bee05a534d88af4cb8ba59426e78900a8cee0"},
+        "positional_embeddings.py": {"size": 4944, "sha256": "fc22bdb7447ae3c0adea17c00442c3ec040f0dbb61e54c4486d14bbc5217c3ae"},
+        "special_tokens_map.json": {"size": 3, "sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"},
+        "tokenizer.py": {"size": 4397, "sha256": "15e37ca8a1994a1bb4a9ac526d746808ef77a1b68e26ea9fe8c03f823d25c7be"},
+        "tokenizer_config.json": {"size": 299, "sha256": "52fdc041aadead5cc38e72ba7db3e64965526cd974f5f9aa1185a3d9b7aca32c"},
+        "utils.py": {"size": 2870, "sha256": "c757a53aeab1e0c0292f9b117cd982121bd980f7d72823930f5ed4938c9eb64b"}
+      },
+      "conversion_assets": [
+        "config.json",
+        "model-00001-of-00003.safetensors",
+        "model-00002-of-00003.safetensors",
+        "model-00003-of-00003.safetensors",
+        "model.safetensors.index.json",
+        "tokenizer_config.json"
+      ],
+      "topology": {
+        "vocab_size": 512,
+        "hidden_size": 4096,
+        "num_layers": 32,
+        "num_attention_heads": 32,
+        "inner_width": 10928,
+        "state_width": 8,
+        "short_filter_width": 3,
+        "max_seqlen": 131072,
+        "norm_epsilon": 0.000001,
+        "rope_theta": 10000.0,
+        "rope_scaling_factor": 16.0,
+        "attention_layers": [8, 16, 24]
+      }
+    }
+  ]
+}

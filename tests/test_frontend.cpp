@@ -10,6 +10,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -332,6 +333,16 @@ void test_sequence_reader() {
 }
 
 void test_sampler() {
+  static_assert(std::is_same_v<evo::TokenId, std::uint32_t>,
+                "TokenId is the uint32 public ABI type");
+  constexpr std::size_t kLargeVocabulary = 115000;
+  constexpr evo::TokenId kLargeToken = 114999;
+  check(evo::token_id_in_vocabulary(kLargeToken, kLargeVocabulary) &&
+            !evo::token_id_in_vocabulary(
+                static_cast<evo::TokenId>(kLargeVocabulary),
+                kLargeVocabulary),
+        "backend token validation preserves IDs above uint16 range");
+
   std::vector<float> logits(evo::kEvo2TokenizerVocabSize, -10.0F);
   logits[7] = 4.0F;
   logits[9] = 4.0F;
@@ -346,6 +357,12 @@ void test_sampler() {
   status = greedy.sample(small_logits, &token);
   check(status.ok() && token == 10,
         "sampler accepts a registered non-Evo vocabulary");
+
+  std::vector<float> large_logits(kLargeVocabulary, -10.0F);
+  large_logits[kLargeToken] = 4.0F;
+  status = greedy.sample(large_logits, &token);
+  check(status.ok() && token == kLargeToken,
+        "sampler preserves token 114999 in a 115000-entry vocabulary");
 
   evo::Sampler first{{1.0F, 8, 0.95F, 42}};
   evo::Sampler second{{1.0F, 8, 0.95F, 42}};
@@ -491,7 +508,8 @@ void test_cli() {
   check(status.ok(),
         std::string{"valid generation CLI parses: "} + status.message());
   check(options.mode == evo::RunMode::kGenerate && options.prompt == "ACGT" &&
-            options.generated_tokens == 8 && options.context_size == 128,
+            options.generated_tokens == 8 && options.context_size == 128 &&
+            options.context_size_explicit,
         "generation CLI values are retained");
   check(options.gpu_ids == std::vector<int>({0, 1, 2, 3}) &&
             options.sampling.top_k == 32 && options.sampling.seed == 99,
@@ -506,6 +524,8 @@ void test_cli() {
                   "2", "--output-format", "fasta", "--name", "candidate",
                   "--backend", "cpu"},
                  &options);
+  check(!options.context_size_explicit,
+        "default context remains distinguishable from explicit --ctx");
   check(status.ok() && options.mode == evo::RunMode::kGenerate &&
             options.generation_output_format ==
                 evo::GenerationOutputFormat::kFasta &&
@@ -648,6 +668,27 @@ void test_cli() {
             options.embed_layer == 17 &&
             options.embedding_pooling == evo::EmbeddingPooling::kMean,
         "embedding subcommand retains input, layer, pooling, and output");
+  status = parse({"evo", "embed", "-m", "model.safetensors", "--input",
+                  "input.fa", "--output", "embeddings", "--preset", "geneb",
+                  "--ctx", "4096", "--backend", "cpu"},
+                 &options);
+  check(status.ok() && options.mode == evo::RunMode::kEmbed &&
+            options.embed_preset == "geneb" && options.embed_layer == 0 &&
+            options.embedding_pooling == evo::EmbeddingPooling::kNone,
+        "GENEB embedding preset is retained without legacy controls");
+  status = parse({"evo", "embed", "-m", "model.safetensors", "--input",
+                  "input.fa", "--output", "embeddings", "--preset",
+                  "geneb-v4-reference", "--layer", "1", "--backend", "cpu"},
+                 &options);
+  check(!status.ok() && status.message().find("mutually exclusive") !=
+                            std::string::npos,
+        "GENEB preset rejects an explicit embedding layer");
+  status = parse({"evo", "embed", "-m", "model.safetensors", "--input",
+                  "input.fa", "--output", "embeddings", "--preset", "latest",
+                  "--backend", "cpu"},
+                 &options);
+  check(!status.ok() && status.message().find("--preset") != std::string::npos,
+        "embedding rejects an unknown preset");
   status = parse({"evo", "embed", "-m", "model.safetensors", "--input",
                   "input.fa", "--output", "embeddings", "--layer", "17",
                   "--pooling", "median", "--gpu", "0"},
@@ -813,6 +854,13 @@ void test_cli() {
             options.server_max_sequence_bytes == 2048 &&
             options.server_max_embedding_values == 65536,
         "serve retains explicit network, batching, and resource limits");
+  status = parse({"evo", "serve", "-m", "model.safetensors", "--ctx", "4",
+                  "--backend", "cpu", "--max-request-bytes", "256",
+                  "--max-sequence-bytes", "24"},
+                 &options);
+  check(status.ok() && options.server_max_request_bytes == 256 &&
+            options.server_max_sequence_bytes == 24,
+        "server raw byte limit is independent from token context capacity");
   status = parse({"evo", "serve", "-m", "model.safetensors", "--ctx", "16",
                   "--gpu", "0", "--profile", "fast-q8-kv"},
                  &options);
@@ -828,9 +876,8 @@ void test_cli() {
   status = parse({"evo", "serve", "-m", "model.safetensors", "--ctx", "8",
                   "--gpu", "0", "--max-sequence-bytes", "9"},
                  &options);
-  check(!status.ok() &&
-            status.message().find("must not exceed --ctx") != std::string::npos,
-        "serve rejects a sequence limit larger than context capacity");
+  check(status.ok() && options.server_max_sequence_bytes == 9,
+        "serve permits a raw sequence limit larger than token context");
   status = parse({"evo", "serve", "-m", "model.safetensors", "--gpu", "0",
                   "--max-queue", "2", "--max-batch", "3"},
                  &options);

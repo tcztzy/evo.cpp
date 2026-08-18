@@ -39,7 +39,9 @@ def project_version(source_dir: Path) -> str:
     return match.group(1)
 
 
-def runtime_contract(registry_path: Path) -> tuple[list[str], list[str]]:
+def runtime_contract(
+    registry_path: Path,
+) -> tuple[list[str], list[str], list[dict[str, object]]]:
     try:
         profiles_by_id = load_artifact_profiles(registry_path)
     except ProfileRegistryError as error:
@@ -50,12 +52,24 @@ def runtime_contract(registry_path: Path) -> tuple[list[str], list[str]]:
         raise ValueError("model registry has no runtime_architectures")
     architectures: list[str] = []
     profiles: list[str] = []
+    matrix: list[dict[str, object]] = []
+    allowed_backends = ("cpu", "cuda", "mps")
+    allowed_capabilities = (
+        "generate",
+        "score",
+        "embed",
+        "variant",
+        "serve",
+        "logits",
+    )
     for entry in entries:
         if not isinstance(entry, dict):
             raise ValueError("runtime architecture descriptor must be an object")
         architecture = entry.get("id")
         profile = entry.get("artifact_profile")
         runtime_abi = entry.get("runtime_abi")
+        backends = entry.get("backends")
+        capabilities = entry.get("capabilities")
         if not all(
             isinstance(value, str) and value
             for value in (architecture, profile, runtime_abi)
@@ -65,10 +79,41 @@ def runtime_contract(registry_path: Path) -> tuple[list[str], list[str]]:
             raise ValueError(f"duplicate runtime architecture {architecture!r}")
         if profile not in profiles_by_id:
             raise ValueError(f"unknown artifact profile {profile!r}")
+        if profiles_by_id[profile]["runtime_abi"] != runtime_abi:
+            raise ValueError(
+                f"runtime architecture {architecture!r} ABI differs from its profile"
+            )
+        if (
+            not isinstance(backends, list)
+            or not backends
+            or backends
+            != [value for value in allowed_backends if value in backends]
+        ):
+            raise ValueError(
+                f"runtime architecture {architecture!r} has invalid backends"
+            )
+        if (
+            not isinstance(capabilities, list)
+            or not capabilities
+            or capabilities
+            != [value for value in allowed_capabilities if value in capabilities]
+        ):
+            raise ValueError(
+                f"runtime architecture {architecture!r} has invalid capabilities"
+            )
         architectures.append(architecture)
         if profile not in profiles:
             profiles.append(profile)
-    return architectures, profiles
+        matrix.append(
+            {
+                "id": architecture,
+                "artifact_profile": profile,
+                "runtime_abi": runtime_abi,
+                "backends": backends,
+                "capabilities": capabilities,
+            }
+        )
+    return architectures, profiles, matrix
 
 
 def parse_args() -> argparse.Namespace:
@@ -106,7 +151,9 @@ def main() -> int:
         registry = source_dir / "configs" / "model-registry.json"
         if not registry.is_file():
             raise ValueError("source tree does not contain the model registry")
-        registered_architectures, runtime_profiles = runtime_contract(registry)
+        registered_architectures, runtime_profiles, architecture_matrix = (
+            runtime_contract(registry)
+        )
         metadata = {
             "schema_version": 2,
             "artifact_kind": "runtime-binary",
@@ -122,6 +169,7 @@ def main() -> int:
             "cuda_version": args.cuda_version,
             "build_image": args.build_image,
             "registered_architectures": registered_architectures,
+            "architecture_matrix": architecture_matrix,
             "runtime_profiles": runtime_profiles,
             "execution_profiles": ["exact", "fast-q8-kv", "cpu-f32"],
             "model_registry": {

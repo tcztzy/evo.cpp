@@ -1,8 +1,15 @@
 # Artifact acquisition and releases
 
 `evo.cpp` keeps model weights outside Git. It distinguishes upstream source
-checkpoints from the registered `evo2-runtime-v1`, `hyenadna-runtime-v1`, and
-`esmc-runtime-v1` artifacts so source files are never mistaken for
+checkpoints from the registered `evo2-runtime-v1`, `hyenadna-runtime-v1`,
+`esmc-runtime-v1`, `geneb-decoder-runtime-v1`, `geneb-olmo-runtime-v1`, and
+`geneb-esm-runtime-v1`, `geneb-bert-runtime-v1`,
+`geneb-gpt2-runtime-v1`, `geneb-dna-gpt-runtime-v1`, and
+`geneb-custom-encoder-runtime-v1`, `geneb-mamba-runtime-v1`,
+`geneb-hyenadna-runtime-v1`, `geneb-evo1-runtime-v1`, and
+`geneb-janusdna-runtime-v1`、`geneb-sequence-cnn-runtime-v1`，以及
+`geneb-roformer-runtime-v1`
+artifacts so source files are never mistaken for
 inference-ready models.
 
 ## Fetch an official source checkpoint
@@ -108,7 +115,7 @@ fetch helper, but never model weights.
 
 | Asset | Backend and architecture | Intended host | Status |
 |---|---|---|---|
-| `evo-VERSION-linux-x86_64-cuda12.8.tar.gz` | CUDA exact/fast, CPU, hybrid; StripedHyena2, HyenaDNA, and ESMC | Linux x86-64, CUDA 12.8, sm80 for gated exact execution | Produced by tagged release workflow |
+| `evo-VERSION-linux-x86_64-cuda12.8.tar.gz` | CUDA exact/fast, CPU, hybrid; StripedHyena2, HyenaDNA, ESMC, and CPU GenebTransformerDecoder/GenebOlmoDecoder/GenebEsmEncoder/GenebBertEncoder/GenebGpt2Decoder/GenebDnaGptDecoder/GenebCustomEncoder/GenebMambaEncoder/GenebHyenaDnaDecoder/GenebStripedHyenaV1/GenebJanusDnaEncoder/GenebSequenceCnnEncoder/GenebRoformerEncoder | Linux x86-64, CUDA 12.8, sm80 for gated exact execution | Produced by tagged release workflow |
 | Source tag | CPU portable build; MPS on macOS arm64 | Linux and macOS C++17 environments in CI | Supported build path |
 | macOS, Windows, other CUDA, HIP, Vulkan, SYCL archive | — | — | Not published |
 
@@ -119,12 +126,20 @@ paths it contains. Exact and approximate support boundaries remain those in
 
 The canonical metadata sidecar uses `schema_version: 2`. It records the
 archive's size/SHA256, tag and commit, platform, backend, CUDA and build-image
-identity, `registered_architectures`, `runtime_profiles`, execution profiles,
-and the installed model-registry SHA256. It also states
+identity, `registered_architectures`, the additive per-architecture
+`architecture_matrix` (artifact profile, runtime ABI, backends, and public
+capabilities), `runtime_profiles`, execution profiles, and the installed
+model-registry SHA256. It also states
 `contains_model_weights: false`; runtime binaries and model artifacts are
 distributed and verified separately. Architecture/profile lists are generated
 from the registry's `runtime_architectures` descriptors rather than maintained
 as a release-only allowlist.
+
+The CUDA-named Linux archive includes portable CPU GENEB implementations, but
+the name does not promote those architectures to CUDA. The matrix records CPU
+only for every current GENEB row; explicit GENEB CUDA/MPS requests remain
+typed unsupported until a real kernel and backend-specific evidence are both
+registered.
 
 Each release carries:
 

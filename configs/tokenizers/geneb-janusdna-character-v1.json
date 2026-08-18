@@ -1,0 +1,14 @@
+{
+  "format": "evo-tokenizer-compiler-v1",
+  "source": "custom",
+  "kind": "single-nucleotide",
+  "files": [
+    {
+      "role": "spec",
+      "name": "geneb-janusdna-character-source-v1.json",
+      "size": 1146,
+      "sha256": "53e26baa8bb48741f050880e06b026f70dd25bfc12ea29f2aa278dfe3182cb45"
+    }
+  ],
+  "options": {}
+}

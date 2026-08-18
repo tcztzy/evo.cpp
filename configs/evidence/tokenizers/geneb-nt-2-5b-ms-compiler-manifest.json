@@ -1,0 +1,56 @@
+{
+  "format": "evo-tokenizer-compiler-v1",
+  "source": "vocab-text",
+  "kind": "longest-match",
+  "files": [
+    {
+      "role": "vocab",
+      "name": "vocab.txt",
+      "size": 28718,
+      "sha256": "f1b544e27897936b50bbd925850fa8a08b421c33bb9c26e3711c140c061d0d4c"
+    }
+  ],
+  "options": {
+    "normalization": [],
+    "pre_tokenizer": {
+      "kind": "none"
+    },
+    "model": {
+      "unknown_policy": "unk",
+      "match_special_literals": true
+    },
+    "post_processor": {
+      "prefix_ids": [3],
+      "suffix_ids": [],
+      "padding": {
+        "side": "right",
+        "pad_id": 1
+      }
+    },
+    "special_tokens": {
+      "unk": 0,
+      "pad": 1,
+      "bos": null,
+      "eos": null,
+      "cls": 3,
+      "sep": null,
+      "mask": 2
+    },
+    "audited_vocab_boundary": {
+      "source_size": 4107,
+      "compiled_size": 4105,
+      "excluded_suffix": [
+        {
+          "id": 4105,
+          "piece": "<eos>",
+          "input_policy": "reject"
+        },
+        {
+          "id": 4106,
+          "piece": "<bos>",
+          "input_policy": "reject"
+        }
+      ]
+    }
+  }
+}

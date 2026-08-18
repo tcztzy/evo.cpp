@@ -1,0 +1,344 @@
+{
+  "schema_version": 1,
+  "format": "geneb-mamba-converter-v1",
+  "implementation_contracts": {
+    "caduceus-mamba1": "pinned-caduceus-remote-code-selective-scan-v1",
+    "eccdna-mamba2": "mamba-ssm-2.2.4@95d8aba8a8c75aedcaa6143713b11e745e7cd0d9;sdist-sha256=e4114c69302796c91b71e90032c2d974f611608fab331582a80de6eaf075efb9"
+  },
+  "models": [
+    {
+      "runtime_id": "geneb-eccdna-mamba",
+      "geneb_model_id": "eccdnamamba_weights",
+      "paper_name": "eccDNAMamba",
+      "catalog_architecture": "bidirectional-mamba2-masked-lm",
+      "repo": "eccDNAMamba/eccDNAMamba-1M",
+      "revision": "36d95a3f783fa93640ce9e070ebde3f0ebed175d",
+      "source": {
+        "format": "safetensors",
+        "weights_name": "model.safetensors",
+        "weights_size": 2149753112,
+        "weights_sha256": "cbb1c8cd8038c8984637000bea3a135b68b9e9ce97cb7f3bd6fedc24d4888cb9"
+      },
+      "config_sha256": "19a61e4b6033ce0b8b5e990ea74476ca02e2cb9fd7f8c777372db0a32669710d",
+      "remote_code": {
+        "modeling_BiMambaForMaskedLM.py": "6f2c8941d4087493d4685ba35954c1209945c8fba771acba2d7f71546e949aa6"
+      },
+      "config_required": {
+        "architectures": [
+          "BiMambaForMaskedLM"
+        ],
+        "d_intermediate": 0,
+        "d_model": 768,
+        "expand": 2,
+        "fused_add_norm": true,
+        "model_type": "mamba2",
+        "n_layer": 24,
+        "residual_in_fp32": true,
+        "rms_norm": true,
+        "ssm_cfg": {
+          "layer": "Mamba2"
+        },
+        "torch_dtype": "float32",
+        "vocab_size": 4096
+      },
+      "tokenizer": {
+        "compiler_manifest_sha256": "c1997fd71b10f21ee6820c5b03657da4823d1805425bdf6405acd9d1b3430eb9",
+        "compiled_asset_sha256": "e1b558c339110f8f074a62c2e5badbb328ec13fcacf7592a0ede7a6712e8209c",
+        "compiled_asset_size": 185132,
+        "kind": "bpe",
+        "emitted_vocab_size": 4096,
+        "add_special_tokens": true,
+        "padding_side": "right"
+      },
+      "topology": {
+        "variant": "eccdna-mamba2",
+        "vocab_size": 4096,
+        "width": 768,
+        "output_width": 768,
+        "num_layers": 24,
+        "max_seqlen": 0,
+        "advertised_training_length": 0,
+        "inner_width": 1536,
+        "state_width": 128,
+        "conv_width": 4,
+        "time_step_rank": 0,
+        "mlp_width": 3072,
+        "head_width": 64,
+        "heads": 24,
+        "groups": 1,
+        "norm_epsilon": 0.00001,
+        "rcps": false,
+        "complement_map": []
+      }
+    },
+    {
+      "runtime_id": "geneb-plant-caduceus",
+      "geneb_model_id": "PlantCaduceus_l32",
+      "paper_name": "PlantCaduceus",
+      "catalog_architecture": "caduceus-rc-bidirectional",
+      "repo": "kuleshov-group/PlantCaduceus_l32",
+      "revision": "e624c13c3d35415348b854c87a218893b23564f7",
+      "source": {
+        "format": "pytorch-bin",
+        "weights_name": "pytorch_model.bin",
+        "weights_size": 901671450,
+        "weights_sha256": "308d9125a0e2a350252c902c27c308bbcf56a1d8198f399f9e7c26d9b552ec10"
+      },
+      "config_sha256": "c3cb3d4ef77160a053835823a11dcf8a4b2a7913ce103369731587693255eee1",
+      "remote_code": {
+        "configuration_caduceus.py": "f6d9785a13b3f62eef8d0911954d69cf2e60ac26e83ddc3975f8710c7d6864f9",
+        "modeling_caduceus.py": "7fd8b55a1c7b1ac30fe2e33534d568d7f76c5e228deb2875cfbdeb9eec194f8e",
+        "modeling_rcps.py": "38e8e3dc8f7583a9fee9c2b69369db8bf4b340c8db92208dd02500bf53ac7da5"
+      },
+      "config_required": {
+        "architectures": [
+          "Caduceus"
+        ],
+        "bidirectional": true,
+        "bidirectional_strategy": "add",
+        "bidirectional_weight_tie": true,
+        "d_model": 1024,
+        "fused_add_norm": true,
+        "model_type": "caduceus",
+        "n_layer": 32,
+        "norm_epsilon": 0.00001,
+        "rcps": true,
+        "residual_in_fp32": true,
+        "rms_norm": true,
+        "ssm_cfg": {
+          "bias": false,
+          "conv_bias": true,
+          "d_conv": 4,
+          "d_state": 16,
+          "dt_init": "random",
+          "dt_init_floor": 0.0001,
+          "dt_max": 0.1,
+          "dt_min": 0.001,
+          "dt_rank": "auto",
+          "dt_scale": 1.0,
+          "expand": 2,
+          "use_fast_path": true
+        },
+        "torch_dtype": "float32",
+        "vocab_size": 8
+      },
+      "tokenizer": {
+        "compiler_manifest_sha256": "348b2a93e9c035dba994cf3944a29d28ab193c1ae2539ab1e1048d2a907a7b69",
+        "compiled_asset_sha256": "87ffd8fbda108a491a652200aecebecb4a5bcaa39875927b3733708cb765f7e2",
+        "compiled_asset_size": 502,
+        "kind": "bpe",
+        "emitted_vocab_size": 7,
+        "add_special_tokens": false,
+        "padding_side": "right"
+      },
+      "topology": {
+        "variant": "caduceus-mamba1",
+        "vocab_size": 8,
+        "width": 1024,
+        "output_width": 2048,
+        "num_layers": 32,
+        "max_seqlen": 0,
+        "advertised_training_length": 512,
+        "inner_width": 2048,
+        "state_width": 16,
+        "conv_width": 4,
+        "time_step_rank": 64,
+        "mlp_width": 0,
+        "head_width": 0,
+        "heads": 0,
+        "groups": 0,
+        "norm_epsilon": 0.00001,
+        "rcps": true,
+        "complement_map": [
+          0,
+          1,
+          2,
+          6,
+          5,
+          4,
+          3,
+          7
+        ]
+      }
+    },
+    {
+      "runtime_id": "geneb-caduceus-ps-131k",
+      "geneb_model_id": "caduceus-ps_seqlen-131k_d_model-256_n_layer-16",
+      "paper_name": "Caduceus-PS-131k",
+      "catalog_architecture": "caduceus-rc-equivariant-bidirectional",
+      "repo": "kuleshov-group/caduceus-ps_seqlen-131k_d_model-256_n_layer-16",
+      "revision": "d89eeb853136ea64da7feb3d0c8e909771b17ae6",
+      "source": {
+        "format": "safetensors",
+        "weights_name": "model.safetensors",
+        "weights_size": 30937760,
+        "weights_sha256": "a3e6976fe90460ff5d90d371b457d0263dc65e156ea5651b4a452e98228daef2"
+      },
+      "config_sha256": "d0f8eaf9d62370ffae2d41c92d00b9424fae31c823baf21111602dabc35eef45",
+      "remote_code": {
+        "configuration_caduceus.py": "f6d9785a13b3f62eef8d0911954d69cf2e60ac26e83ddc3975f8710c7d6864f9",
+        "modeling_caduceus.py": "9c79343c590721395af3d4323eb3992a2d01684e683f9f24db4acb9d9e56f655",
+        "modeling_rcps.py": "38e8e3dc8f7583a9fee9c2b69369db8bf4b340c8db92208dd02500bf53ac7da5"
+      },
+      "config_required": {
+        "architectures": [
+          "CaduceusForMaskedLM"
+        ],
+        "bidirectional": true,
+        "bidirectional_strategy": "add",
+        "bidirectional_weight_tie": true,
+        "d_model": 256,
+        "fused_add_norm": true,
+        "model_type": "caduceus",
+        "n_layer": 16,
+        "norm_epsilon": 0.00001,
+        "rcps": true,
+        "residual_in_fp32": false,
+        "rms_norm": true,
+        "ssm_cfg": {
+          "bias": false,
+          "conv_bias": true,
+          "d_conv": 4,
+          "d_state": 16,
+          "dt_init": "random",
+          "dt_init_floor": 0.0001,
+          "dt_max": 0.1,
+          "dt_min": 0.001,
+          "dt_rank": "auto",
+          "dt_scale": 1.0,
+          "expand": 2,
+          "use_fast_path": true
+        },
+        "torch_dtype": "float32",
+        "vocab_size": 16
+      },
+      "tokenizer": {
+        "compiler_manifest_sha256": "c1f5412a23d0c2d4dd0ffe0267facee05baa08607f9e8ee02af26d0297923314",
+        "compiled_asset_sha256": "d8901a6c9bf8e65683fb1016fcdb500e5de4942e3e5ae7262abd67517e2b2efb",
+        "compiled_asset_size": 659,
+        "kind": "single-nucleotide",
+        "emitted_vocab_size": 12,
+        "add_special_tokens": false,
+        "padding_side": "left"
+      },
+      "topology": {
+        "variant": "caduceus-mamba1",
+        "vocab_size": 16,
+        "width": 256,
+        "output_width": 512,
+        "num_layers": 16,
+        "max_seqlen": 131072,
+        "advertised_training_length": 131072,
+        "inner_width": 512,
+        "state_width": 16,
+        "conv_width": 4,
+        "time_step_rank": 16,
+        "mlp_width": 0,
+        "head_width": 0,
+        "heads": 0,
+        "groups": 0,
+        "norm_epsilon": 0.00001,
+        "rcps": true,
+        "complement_map": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          10,
+          9,
+          8,
+          7,
+          11,
+          12,
+          13,
+          14,
+          15
+        ]
+      }
+    },
+    {
+      "runtime_id": "geneb-caduceus-ph-1k",
+      "geneb_model_id": "caduceus-ph_seqlen-1k_d_model-256_n_layer-4_lr-8e-3",
+      "paper_name": "Caduceus-PH-1k",
+      "catalog_architecture": "caduceus-rc-bidirectional",
+      "repo": "kuleshov-group/caduceus-ph_seqlen-1k_d_model-256_n_layer-4_lr-8e-3",
+      "revision": "9865108985311772704c2ece0bac082153a6167b",
+      "source": {
+        "format": "safetensors",
+        "weights_name": "model.safetensors",
+        "weights_size": 7746792,
+        "weights_sha256": "7180a75f6cb08029309eda31d85b45623c7f095cc83f0f797c5a34b64f1f70de"
+      },
+      "config_sha256": "4bcbb5df87ce19bf281acf5081d1ca7071bbe0c71f91429c8e7cd646105a5d09",
+      "remote_code": {
+        "configuration_caduceus.py": "f6d9785a13b3f62eef8d0911954d69cf2e60ac26e83ddc3975f8710c7d6864f9",
+        "modeling_caduceus.py": "9c79343c590721395af3d4323eb3992a2d01684e683f9f24db4acb9d9e56f655",
+        "modeling_rcps.py": "38e8e3dc8f7583a9fee9c2b69369db8bf4b340c8db92208dd02500bf53ac7da5"
+      },
+      "config_required": {
+        "architectures": [
+          "CaduceusForMaskedLM"
+        ],
+        "bidirectional": true,
+        "bidirectional_strategy": "add",
+        "bidirectional_weight_tie": true,
+        "d_model": 256,
+        "fused_add_norm": true,
+        "model_type": "caduceus",
+        "n_layer": 4,
+        "norm_epsilon": 0.00001,
+        "rcps": false,
+        "residual_in_fp32": false,
+        "rms_norm": true,
+        "ssm_cfg": {
+          "bias": false,
+          "conv_bias": true,
+          "d_conv": 4,
+          "d_state": 16,
+          "dt_init": "random",
+          "dt_init_floor": 0.0001,
+          "dt_max": 0.1,
+          "dt_min": 0.001,
+          "dt_rank": "auto",
+          "dt_scale": 1.0,
+          "expand": 2,
+          "use_fast_path": true
+        },
+        "torch_dtype": "float32",
+        "vocab_size": 16
+      },
+      "tokenizer": {
+        "compiler_manifest_sha256": "c1f5412a23d0c2d4dd0ffe0267facee05baa08607f9e8ee02af26d0297923314",
+        "compiled_asset_sha256": "d8901a6c9bf8e65683fb1016fcdb500e5de4942e3e5ae7262abd67517e2b2efb",
+        "compiled_asset_size": 659,
+        "kind": "single-nucleotide",
+        "emitted_vocab_size": 12,
+        "add_special_tokens": false,
+        "padding_side": "left"
+      },
+      "topology": {
+        "variant": "caduceus-mamba1",
+        "vocab_size": 16,
+        "width": 256,
+        "output_width": 256,
+        "num_layers": 4,
+        "max_seqlen": 1024,
+        "advertised_training_length": 1024,
+        "inner_width": 512,
+        "state_width": 16,
+        "conv_width": 4,
+        "time_step_rank": 16,
+        "mlp_width": 0,
+        "head_width": 0,
+        "heads": 0,
+        "groups": 0,
+        "norm_epsilon": 0.00001,
+        "rcps": false,
+        "complement_map": []
+      }
+    }
+  ]
+}

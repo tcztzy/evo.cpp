@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "kind": "geneb-evo1-pinned-upstream-normalized-gpu-free-patch",
+  "runtime_id": "geneb-evo-1-131k",
+  "revision": "c206aab77ae5967a069c4200ecb1858588528c9d",
+  "clean_upstream_status": "broken",
+  "reference_status": "blocked",
+  "normalized_oracle_profile": "pinned-upstream-normalized-gpu-free",
+  "attention_layers": [8, 16, 24],
+  "semantic_basis": {
+    "flash_attn_version": "2.5.5",
+    "geneb_environment_path": "embedding_pipeline/utility_modules/EVO_project/evo/semantic_mining/semantic_mining.yml",
+    "geneb_environment_size": 3121,
+    "geneb_environment_sha256": "b5f3e3bec6ca98bacd32824c43157b365edc8909cf1dc59745f77933b2fd347e",
+    "mha_source_path": "flash_attn/modules/mha.py",
+    "mha_source_size": 43075,
+    "mha_source_sha256": "ff1dd03f9cc058175e670a300c9f90ab873a6b51cd8e2a3a076084e47ec79d80",
+    "rotary_source_path": "flash_attn/layers/rotary.py",
+    "rotary_source_size": 18874,
+    "rotary_source_sha256": "4660edb88a5b158f9da8b0132b068f4e3b95b307062602f6d7f2ef1f09f6bb0f"
+  },
+  "operations": [
+    {
+      "path": "model.py",
+      "original_size": 19474,
+      "original_sha256": "6a03a9c28bd7e282cb253d051ae7ec39159d14d3a1b2272913c8ff1747f3d87a",
+      "old_bytes_size": 249,
+      "old_bytes_sha256": "9d1f5bd5d86910a677e51387005fdb2dbdef385abab8abe35b00a9708c4f7a2b",
+      "new_bytes_size": 84,
+      "new_bytes_sha256": "2a5923c9a184a56311ed92be2b5894554f469f2b03e4f67622a15d12a3c9ab1e",
+      "patched_size": 19309,
+      "patched_sha256": "f9de7ce115b773da2d5133cb2a6a0dbd373e66e5dd8ff65035feb918096b553f"
+    },
+    {
+      "path": "positional_embeddings.py",
+      "original_size": 4944,
+      "original_sha256": "fc22bdb7447ae3c0adea17c00442c3ec040f0dbb61e54c4486d14bbc5217c3ae",
+      "old_bytes_size": 92,
+      "old_bytes_sha256": "1a5f1601d0ce77baa3634810c77f74c2f9336a52d1c3c951d83c66afebb48043",
+      "new_bytes_size": 52,
+      "new_bytes_sha256": "a1626b963c9ae8d26623e7a13798d7847e2786e07f5a5f74256a9c2c5f016eaa",
+      "patched_size": 4904,
+      "patched_sha256": "c8ccb412afed4723ffd9fb9ab06b8dc51a4f2010ddec57e92fb61b79e58c3266"
+    }
+  ],
+  "added_file": {
+    "source_path": "configs/evidence/oracles/geneb-evo-1-131k/evo1_portable_mha.py",
+    "destination_path": "evo1_portable_mha.py",
+    "size": 9752,
+    "sha256": "7538743b25b7381330723108e53353912ff06ab3c6c0a643ab4caa473bd9c51e"
+  },
+  "operator": {
+    "device": "cpu",
+    "dtype": "float32",
+    "qkv_layout": "batch-sequence-three-head-head-dimension",
+    "qkv_parameter_names": ["Wqkv.weight", "Wqkv.bias"],
+    "output_parameter_names": ["out_proj.weight", "out_proj.bias"],
+    "rotary_parameter_name": "rotary_emb.inv_freq",
+    "rotary_layout": "non-interleaved-first-half-second-half",
+    "rotary_base": 10000.0,
+    "rotary_linear_scaling": 16.0,
+    "head_count": 32,
+    "head_dimension": 128,
+    "score_scale": "multiply-key-by-1/sqrt(head-dimension)-before-einsum",
+    "mask": "dense-causal-fill-negative-10000",
+    "softmax": "torch-softmax-float32",
+    "dropout": 0.0
+  },
+  "forbidden_changes": [
+    "hyena-layer-math",
+    "rmsnorm",
+    "mlp",
+    "embedding",
+    "unembedding",
+    "checkpoint-parameter-names",
+    "checkpoint-parameter-payloads",
+    "native-runtime-import"
+  ]
+}

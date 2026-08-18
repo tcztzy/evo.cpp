@@ -1,0 +1,14 @@
+{
+  "format": "evo-tokenizer-compiler-v1",
+  "source": "custom",
+  "kind": "character",
+  "files": [
+    {
+      "role": "spec",
+      "name": "geneb-lucaone-gene-v1.json",
+      "size": 2015,
+      "sha256": "1e8c9916b01ee2b99a90d5046c3cbfa886b5830fcbfdec1b60e8f4e0751595ee"
+    }
+  ],
+  "options": {}
+}

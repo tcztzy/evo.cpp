@@ -284,6 +284,26 @@ private:
     std::string error;
   };
 
+  struct EmbeddingExState final {
+    const CancellationToken *cancel{nullptr};
+    std::size_t limit{0};
+    std::vector<double> values;
+    std::string resolved_preset;
+    std::string hidden_tap;
+    std::string pooling;
+    std::size_t layer{0};
+    std::size_t original_length{0};
+    std::size_t effective_length{0};
+    std::size_t crop_left{0};
+    std::size_t crop_right{0};
+    std::size_t pad_left{0};
+    std::size_t pad_right{0};
+    std::size_t token_count{0};
+    std::size_t rows{0};
+    std::size_t columns{0};
+    std::string error;
+  };
+
   static evo_status capture_logits(const float *const logits,
                                    const std::size_t rows,
                                    const std::size_t columns, const std::size_t,
@@ -392,6 +412,48 @@ private:
       }
     }
     state->rows += rows;
+    return EVO_STATUS_OK;
+  }
+
+  static evo_status capture_embeddings_ex(
+      const float *const embedding, const std::size_t rows,
+      const std::size_t columns, const std::size_t,
+      const evo_embedding_result_info *const info, void *const user_data) {
+    auto *const state = static_cast<EmbeddingExState *>(user_data);
+    if (state == nullptr || embedding == nullptr || info == nullptr ||
+        info->struct_size < sizeof(evo_embedding_result_info) || rows == 0 ||
+        columns == 0 || info->rows != rows || info->columns != columns ||
+        info->resolved_preset == nullptr || info->hidden_tap == nullptr ||
+        info->pooling == nullptr) {
+      return EVO_STATUS_INTERNAL;
+    }
+    if (state->cancel != nullptr && state->cancel->cancelled())
+      return EVO_STATUS_INVALID_ARGUMENT;
+    if (rows > state->limit / columns) {
+      state->error = "embedding response exceeds configured value limit";
+      return EVO_STATUS_INVALID_ARGUMENT;
+    }
+    state->values.reserve(rows * columns);
+    for (std::size_t index = 0; index < rows * columns; ++index) {
+      if (!std::isfinite(embedding[index])) {
+        state->error = "model returned a non-finite embedding";
+        return EVO_STATUS_INTERNAL;
+      }
+      state->values.push_back(embedding[index]);
+    }
+    state->resolved_preset = info->resolved_preset;
+    state->hidden_tap = info->hidden_tap;
+    state->pooling = info->pooling;
+    state->layer = info->layer;
+    state->original_length = info->original_length;
+    state->effective_length = info->effective_length;
+    state->crop_left = info->crop_left;
+    state->crop_right = info->crop_right;
+    state->pad_left = info->pad_left;
+    state->pad_right = info->pad_right;
+    state->token_count = info->token_count;
+    state->rows = info->rows;
+    state->columns = info->columns;
     return EVO_STATUS_OK;
   }
 
@@ -635,7 +697,8 @@ private:
 
   ServerResponse embeddings(const JsonValue &root,
                             const CancellationToken &cancel) const {
-    auto status = require_object(root, {"sequence", "layer", "pooling"});
+    auto status =
+        require_object(root, {"sequence", "layer", "pooling", "preset"});
     if (!status.ok())
       return validation_error(status);
     std::string sequence;
@@ -645,6 +708,86 @@ private:
     if (sequence.size() > maximum_sequence_)
       return error_response(413, "request_too_large",
                             "sequence exceeds server limit");
+    const bool preset_requested = root.find("preset") != nullptr;
+    if (preset_requested) {
+      if (root.find("layer") != nullptr || root.find("pooling") != nullptr) {
+        return error_response(
+            400, "invalid_argument",
+            "preset is mutually exclusive with layer and pooling");
+      }
+      std::string preset;
+      status = required_string(root, "preset", &preset);
+      if (!status.ok())
+        return validation_error(status);
+      if (preset != "geneb-v4-reference" &&
+          preset != "geneb-v4-normalized") {
+        return error_response(
+            400, "invalid_argument",
+            "preset must be geneb-v4-reference or geneb-v4-normalized");
+      }
+      if (embedding_width_ == 0 ||
+          embedding_width_ > maximum_embedding_values_) {
+        return error_response(413, "response_too_large",
+                              "embedding exceeds configured value limit");
+      }
+      ContextPtr context{nullptr, &evo_context_free};
+      evo_status c_status = make_context(&context);
+      if (c_status != EVO_STATUS_OK)
+        return c_error(c_status, "failed to create request context");
+      BatchPtr batch{nullptr, &evo_batch_free};
+      c_status = make_batch(sequence, &batch);
+      if (c_status != EVO_STATUS_OK)
+        return c_error(c_status, "failed to create embedding batch");
+      evo_embedding_options options = evo_embedding_default_options();
+      options.preset = preset.c_str();
+      EmbeddingExState state;
+      state.cancel = &cancel;
+      state.limit = maximum_embedding_values_;
+      c_status = evo_context_embed_ex(context.get(), batch.get(), &options,
+                                      capture_embeddings_ex, &state);
+      if (c_status != EVO_STATUS_OK) {
+        return cancelled_or_c_error(c_status, cancel, state.error,
+                                    "embedding inference failed");
+      }
+      std::string body{"{\"model\":"};
+      append_json_string(&body, model_id_);
+      body.append(",\"profile\":");
+      append_json_string(&body, inference_profile_name(inference_profile_));
+      body.append(",\"preset\":");
+      append_json_string(&body, state.resolved_preset);
+      body.append(",\"hidden_tap\":");
+      append_json_string(&body, state.hidden_tap);
+      body.append(",\"layer\":");
+      body.append(std::to_string(state.layer));
+      body.append(",\"pooling\":");
+      append_json_string(&body, state.pooling);
+      body.append(",\"input\":{\"original_length\":");
+      body.append(std::to_string(state.original_length));
+      body.append(",\"effective_length\":");
+      body.append(std::to_string(state.effective_length));
+      body.append(",\"crop_left\":");
+      body.append(std::to_string(state.crop_left));
+      body.append(",\"crop_right\":");
+      body.append(std::to_string(state.crop_right));
+      body.append(",\"pad_left\":");
+      body.append(std::to_string(state.pad_left));
+      body.append(",\"pad_right\":");
+      body.append(std::to_string(state.pad_right));
+      body.append(",\"token_count\":");
+      body.append(std::to_string(state.token_count));
+      body.append("},\"shape\":[");
+      body.append(std::to_string(state.rows));
+      body.push_back(',');
+      body.append(std::to_string(state.columns));
+      body.append("],\"embedding\":[");
+      for (std::size_t index = 0; index < state.values.size(); ++index) {
+        if (index != 0)
+          body.push_back(',');
+        append_number(&body, state.values[index]);
+      }
+      body.append("]}");
+      return {200, "application/json", std::move(body)};
+    }
     std::size_t layer = 0;
     status = required_size(root, "layer", 0,
                            layer_count_ == 0 ? 0 : layer_count_ - 1, &layer);
@@ -1339,17 +1482,25 @@ Status run_server(const CliOptions &options, const bool allow_test_fixture) {
   if (load_status != EVO_STATUS_OK)
     return status_from_c(load_status, "server model load: ");
   if (evo_model_vocab_size(model.get()) == 0 ||
-      evo_model_vocab_size(model.get()) >
-          static_cast<std::size_t>(std::numeric_limits<TokenId>::max()) + 1U) {
+      !token_vocabulary_size_supported(evo_model_vocab_size(model.get()))) {
     return {ErrorCode::kModelFormat,
             "server model vocabulary does not fit the public token type"};
   }
   const std::size_t model_context = evo_model_max_context(model.get());
-  if (model_context != 0 && options.context_size > model_context)
+  const bool fixed_shape_sequence_cnn =
+      std::string_view{evo_model_architecture(model.get())} ==
+      "GenebSequenceCnnEncoder";
+  const std::size_t context_size =
+      !options.context_size_explicit && model_context != 0
+          ? (fixed_shape_sequence_cnn
+                 ? model_context
+                 : std::min(options.context_size, model_context))
+          : options.context_size;
+  if (model_context != 0 && context_size > model_context)
     return {ErrorCode::kInvalidArgument,
             "server context exceeds the model maximum"};
   Runtime runtime{
-      std::move(model), options.context_size, options.server_max_sequence_bytes,
+      std::move(model), context_size, options.server_max_sequence_bytes,
       options.server_max_embedding_values, options.inference_profile};
   DynamicScheduler scheduler{
       options.server_max_queue, options.server_max_batch,

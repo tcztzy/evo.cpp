@@ -1,9 +1,21 @@
 # Checkpoint conversion
 
 生产 runtime 读取严格注册的 `evo2-runtime-v1`、`hyenadna-runtime-v1` 与
-`esmc-runtime-v1` Safetensors。Arc `.pt` 与 BioNeMo DCP 使用隔离的 PyTorch
+`esmc-runtime-v1` Safetensors，以及 CPU embedding 用的
+`geneb-decoder-runtime-v1`、`geneb-olmo-runtime-v1`、`geneb-esm-runtime-v1`、
+`geneb-bert-runtime-v1`、`geneb-gpt2-runtime-v1`、
+`geneb-dna-gpt-runtime-v1`、`geneb-custom-encoder-runtime-v1` 与
+`geneb-mamba-runtime-v1`、`geneb-hyenadna-runtime-v1` 与
+`geneb-evo1-runtime-v1`、`geneb-janusdna-runtime-v1`、
+`geneb-sequence-cnn-runtime-v1`，以及 `geneb-roformer-runtime-v1`
+Safetensors。Arc `.pt`、BioNeMo DCP 与 DNA-GPT 源 `.pth` 使用隔离的 PyTorch
 转换环境；HyenaDNA/ESMC converter 不依赖 PyTorch。任何产品推理路径都不加载
 Python、PyTorch 或 libtorch。
+
+GENEB decoder converter 只在 BioFM profile 写入可选
+`decoder.attention_kernel=torch-cpu-flash-bf16-portable`；其他 profile 省略该键
+并使用 eager 语义。Runtime 对未知值、非 BF16 activation 或 sliding-window
+组合 fail closed，因此该选择不能由模型名或后端自动推断。
 
 Evo 2/ESMC 的 model ID、revision、checksum、source/runtime manifest 以
 [`configs/model-registry.json`](../configs/model-registry.json) 为机器可读来源。
@@ -102,6 +114,35 @@ sha256sum -c MODEL.safetensors.sha256
 
 仓库只保存 source lock、转换代码和格式/profile 测试，不保存 checkpoint、
 转换结果或易失的本地绝对路径。
+
+## Tokenizer asset
+
+非内建 tokenizer 使用独立、可审计的离线编译步骤。输入 manifest 描述 tokenizer
+来源和可表示语义；source receipt 为每个 `tokenizer.json`、`vocab.txt` 或自定义
+spec 固定 size/SHA-256：
+
+```sh
+python3 tools/convert_tokenizer_asset.py \
+  --manifest tokenizer-compiler-manifest.json \
+  --receipt tokenizer-source-receipt.json \
+  --output tokenizer.evo.json \
+  --descriptor tokenizer-descriptor.json \
+  --asset-path assets/tokenizer.evo.json
+```
+
+输出 descriptor 包含 converter/manifest/receipt contract provenance，以及可直接写入模型
+artifact metadata 的 `tokenizer.profile/path/sha256/size` 四项。模型 converter 只
+复制这四项，不把 tokenizer converter 的通用 `converter.*` 键混入模型自身的
+provenance namespace。`source_receipt_contract_sha256` 在验证真实 locator 后只
+hash schema/kind 与每个文件的 role/name/size/content SHA，因此 cache 绝对根不
+影响 descriptor 或模型 artifact。writer 使用 canonical JSON + trailing newline 与同目录
+atomic publish；已有输出除非显式 `--force` 不会覆盖。
+
+当前 compiler 支持严格子集的 Hugging Face BPE、WordPiece、`use_regex=false` 的
+byte-BPE、vocab-text k-mer，以及显式 character/single-nucleotide、mixed/BioToken
+longest-match 和 k-mer+BPE spec。不能精确表示的 normalizer、pre-tokenizer、
+AddedToken 或 regex 行为会 typed fail，必须先提供显式自定义 spec 和 oracle，
+不能静默近似。
 
 ## HyenaDNA Hugging Face Safetensors
 

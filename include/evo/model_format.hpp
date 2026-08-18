@@ -4,19 +4,38 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "evo/mapped_file.hpp"
 #include "evo/status.hpp"
+#include "evo/tokenizer.hpp"
 
 namespace evo {
 
 inline constexpr std::string_view kEvo2ModelProfile = "evo2-runtime-v1";
-inline constexpr std::string_view kHyenaDnaModelProfile =
-    "hyenadna-runtime-v1";
+inline constexpr std::string_view kHyenaDnaModelProfile = "hyenadna-runtime-v1";
 inline constexpr std::string_view kEsmcModelProfile = "esmc-runtime-v1";
+inline constexpr std::string_view kGenebGpt2ModelProfile =
+    "geneb-gpt2-runtime-v1";
+inline constexpr std::string_view kGenebDnaGptModelProfile =
+    "geneb-dna-gpt-runtime-v1";
+inline constexpr std::string_view kGenebCustomEncoderModelProfile =
+    "geneb-custom-encoder-runtime-v1";
+inline constexpr std::string_view kGenebMambaModelProfile =
+    "geneb-mamba-runtime-v1";
+inline constexpr std::string_view kGenebHyenaDnaModelProfile =
+    "geneb-hyenadna-runtime-v1";
+inline constexpr std::string_view kGenebEvo1ModelProfile =
+    "geneb-evo1-runtime-v1";
+inline constexpr std::string_view kGenebJanusDnaModelProfile =
+    "geneb-janusdna-runtime-v1";
+inline constexpr std::string_view kGenebSequenceCnnModelProfile =
+    "geneb-sequence-cnn-runtime-v1";
+inline constexpr std::string_view kGenebRoformerModelProfile =
+    "geneb-roformer-runtime-v1";
 // Source-compatible alias for the original Evo 2-only public constant.
 inline constexpr std::string_view kModelProfile = kEvo2ModelProfile;
 inline constexpr std::size_t kMaximumSafetensorsHeaderSize =
@@ -73,14 +92,17 @@ public:
   [[nodiscard]] std::string_view format_name() const noexcept {
     return "SAFETENSORS";
   }
-  [[nodiscard]] std::string_view profile() const noexcept {
-    return profile_;
-  }
-  [[nodiscard]] std::size_t file_size() const noexcept {
-    return file_size_;
-  }
+  [[nodiscard]] std::string_view profile() const noexcept { return profile_; }
+  [[nodiscard]] std::size_t file_size() const noexcept { return file_size_; }
   [[nodiscard]] std::size_t shard_count() const noexcept {
     return mappings_.size();
+  }
+  [[nodiscard]] std::string_view artifact_root() const noexcept {
+    return artifact_root_;
+  }
+  [[nodiscard]] const std::optional<TokenizerAssetDescriptor> &
+  tokenizer_asset_descriptor() const noexcept {
+    return tokenizer_asset_descriptor_;
   }
   [[nodiscard]] const std::vector<MetadataEntry> &metadata() const noexcept {
     return metadata_;
@@ -101,11 +123,15 @@ public:
 private:
   [[nodiscard]] Status open_index(const std::string &path);
   [[nodiscard]] Status parse_shard(std::size_t shard_index);
+  [[nodiscard]] Status parse_converter_profile_contract();
+  [[nodiscard]] Status parse_tokenizer_asset_descriptor();
 
   std::vector<MappedFile> mappings_;
   std::vector<MetadataEntry> metadata_;
   std::vector<TensorInfo> tensors_;
   std::string profile_;
+  std::string artifact_root_;
+  std::optional<TokenizerAssetDescriptor> tokenizer_asset_descriptor_;
   std::size_t file_size_{0};
 };
 

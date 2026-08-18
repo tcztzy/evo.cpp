@@ -7,6 +7,7 @@
 #include <iostream>
 #include <limits>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "evo/cpu/model.hpp"
@@ -49,8 +50,35 @@ float maximum_error(const std::vector<float> &left,
 } // namespace
 
 int main(const int argc, char **argv) {
+  if (argc == 3 && std::string_view{argv[1]} == "--tokenizer-vector") {
+    evo::ModelFile artifact;
+    auto status = artifact.open(argv[2]);
+    check(status.ok(), "tokenizer-bound CPU fixture artifact opens: " +
+                           status.message());
+    if (!status.ok())
+      return 1;
+    evo::cpu::Model model;
+    status = model.load(artifact, true);
+    check(status.ok(), "tokenizer-bound CPU model loads: " + status.message());
+    if (!status.ok())
+      return 1;
+    std::vector<evo::TokenId> tokens;
+    status = model.encode("ACX", &tokens);
+    check(status.ok() &&
+              tokens == std::vector<evo::TokenId>({400, 401, 402}),
+          "CPU Model::encode uses the hashed artifact tokenizer");
+    std::uint8_t byte = 0;
+    status = model.decode_token(400, &byte);
+    check(!status.ok() && status.code() == evo::ErrorCode::kUnsupported,
+          "artifact tokenizer does not fall back to legacy detokenization");
+    if (failures != 0)
+      return 1;
+    std::cout << "CPU artifact tokenizer binding passed\n";
+    return 0;
+  }
   if (argc != 5) {
-    std::cerr << "usage: test_cpu_model MODEL LOGITS DECODE LAYER\n";
+    std::cerr << "usage: test_cpu_model MODEL LOGITS DECODE LAYER | "
+                 "--tokenizer-vector MODEL\n";
     return 2;
   }
   evo::ModelFile artifact;

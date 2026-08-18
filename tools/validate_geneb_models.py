@@ -316,6 +316,7 @@ def _validate_suite(value: Any) -> None:
             "extractor_commit",
             "model_meta_path",
             "model_meta_sha256",
+            "raw_safety_cap_bytes",
             "dataset",
             "reference_batching",
         },
@@ -325,6 +326,11 @@ def _validate_suite(value: Any) -> None:
     _exact(suite["extractor_commit"], EXTRACTOR_COMMIT, "suite.extractor_commit")
     _exact(suite["model_meta_path"], "benchmark/model_meta.json", "suite.model_meta_path")
     _exact(suite["model_meta_sha256"], MODEL_META_SHA256, "suite.model_meta_sha256")
+    _exact(
+        suite["raw_safety_cap_bytes"],
+        16 * 1024 * 1024,
+        "suite.raw_safety_cap_bytes",
+    )
 
     paper = _mapping(suite["paper"], "suite.paper")
     _keys(
@@ -382,7 +388,7 @@ def _validate_suite(value: Any) -> None:
     )
 
 
-def _validate_tokenizer(value: Any, path: str) -> None:
+def _validate_tokenizer(value: Any, path: str, source_dir: Path) -> None:
     tokenizer = _mapping(value, path)
     required_fields = {
         "kind",
@@ -399,7 +405,45 @@ def _validate_tokenizer(value: Any, path: str) -> None:
     _string(tokenizer["kind"], path + ".kind")
     _string(tokenizer["asset_source"], path + ".asset_source")
     if tokenizer["assets"] is not None:
-        _array(tokenizer["assets"], path + ".assets")
+        assets = _array(tokenizer["assets"], path + ".assets")
+        if not assets:
+            raise CatalogError(path + ".assets must be null or nonempty")
+        asset_paths = []  # type: List[str]
+        for index, asset_value in enumerate(assets):
+            asset_path = "{}.assets[{}]".format(path, index)
+            asset = _mapping(asset_value, asset_path)
+            _keys(asset, asset_path, {"role", "path", "size", "sha256"})
+            _exact(
+                asset["role"],
+                "compiler-manifest",
+                asset_path + ".role",
+            )
+            relative = _safe_relative(asset["path"], asset_path + ".path")
+            if not relative.startswith("configs/tokenizers/") or not relative.endswith(
+                ".json"
+            ):
+                raise CatalogError(
+                    asset_path
+                    + ".path must be a configs/tokenizers/*.json repo-relative path"
+                )
+            if relative in asset_paths:
+                raise CatalogError(path + ".assets contains duplicate paths")
+            asset_paths.append(relative)
+            expected_size = _integer(asset["size"], asset_path + ".size")
+            expected_sha = _digest(asset["sha256"], asset_path + ".sha256")
+            local_path = source_dir / relative
+            try:
+                payload = local_path.read_bytes()
+            except OSError as error:
+                raise CatalogError(
+                    "{} cannot read {}: {}".format(
+                        asset_path + ".path", relative, error
+                    )
+                )
+            if len(payload) != expected_size:
+                raise CatalogError(asset_path + ".size differs from the repository file")
+            if hashlib.sha256(payload).hexdigest() != expected_sha:
+                raise CatalogError(asset_path + ".sha256 differs from the repository file")
     _boolean(tokenizer["add_special_tokens"], path + ".add_special_tokens")
     _string(tokenizer["padding_side"], path + ".padding_side")
     _string(tokenizer["pad_to"], path + ".pad_to")
@@ -458,6 +502,7 @@ def _validate_input_transform(value: Any, path: str) -> None:
         path,
         {
             "case",
+            "strip_ascii_whitespace",
             "u_to_t",
             "invalid",
             "frame_trim",
@@ -469,6 +514,10 @@ def _validate_input_transform(value: Any, path: str) -> None:
         },
     )
     _choice(transform["case"], path + ".case", {"preserve", "upper", "lower"})
+    _boolean(
+        transform["strip_ascii_whitespace"],
+        path + ".strip_ascii_whitespace",
+    )
     _boolean(transform["u_to_t"], path + ".u_to_t")
     _string(transform["invalid"], path + ".invalid")
     _string(transform["prefix"], path + ".prefix", nullable=True)
@@ -927,7 +976,7 @@ def _validate_model(value: Any, index: int, source_dir: Path) -> Dict[str, Any]:
     params = _integer(model["params"], path + ".params")
     _string(model["family"], path + ".family")
     _string(model["architecture"], path + ".architecture")
-    _validate_tokenizer(model["tokenizer"], path + ".tokenizer")
+    _validate_tokenizer(model["tokenizer"], path + ".tokenizer", source_dir)
     _validate_context(model["context"], path + ".context")
     _validate_input_transform(model["input_transform"], path + ".input_transform")
     _validate_embedding_presets(model["embedding_presets"], path + ".embedding_presets")

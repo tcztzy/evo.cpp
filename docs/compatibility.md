@@ -1,6 +1,6 @@
 # Compatibility policy
 
-Current project version: **0.1.0**. Current C ABI: **1.4.0** with shared-library
+Current project version: **0.1.0**. Current C ABI: **1.5.0** with shared-library
 SONAME major **1**.
 
 The project is pre-1.0, so architecture coverage and experimental profiles can
@@ -43,9 +43,10 @@ rules:
 
 The current ABI history is: 1.0 core model/context/batch/sampler ownership,
 1.2 explicit execution profiles, 1.3 architecture-aware token encoding and
-decoding, and 1.4 the additive `EVO_BACKEND_MPS` / `EVO_STATUS_MPS` enum
-values. ABI documentation and contract tests must change in the same commit as
-the header.
+decoding, 1.4 the additive `EVO_BACKEND_MPS` / `EVO_STATUS_MPS` enum values,
+and 1.5 the additive preset-aware `evo_context_embed_ex()` operation and its
+versioned options/result metadata structures. ABI documentation and contract
+tests must change in the same commit as the header.
 
 ## CLI and data compatibility
 

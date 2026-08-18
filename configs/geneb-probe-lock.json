@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "id": "geneb-v4-probe-py311-v1",
+  "benchmark": {
+    "repository": "darlednik/GENEB",
+    "revision": "b54d018903e7f6b874ee45b74e275936deff4cd3",
+    "spec_path": "benchmark/benchmark_spec.json",
+    "spec_sha256": "bf3ba7136f3448735ad5d1a1635ba3775097800938d3e1b4262c33a22d519e2f",
+    "harness_path": "harness/run_GENEB.py",
+    "harness_sha256": "d374a3397990e30d4248d462d98cc7a09be84cd0474b5a00951d86cdf97030b4"
+  },
+  "dataset": {
+    "repository": "darlednik/geneb-tasks",
+    "revision": "4edd705be573e48c585c2cf79dc320f9f43c7b04",
+    "tasks": 100
+  },
+  "environment": {
+    "python": "3.11.9",
+    "numpy": "1.26.4",
+    "scipy": "1.13.1",
+    "scikit-learn": "1.5.2",
+    "joblib": "1.4.2",
+    "threadpoolctl": "3.5.0"
+  },
+  "thread_environment": {
+    "PYTHONHASHSEED": "0",
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "VECLIB_MAXIMUM_THREADS": "1",
+    "NUMEXPR_NUM_THREADS": "1",
+    "BLIS_NUM_THREADS": "1",
+    "LC_ALL": "C",
+    "TZ": "UTC"
+  },
+  "protocol": {
+    "regimes": ["full", "10shot", "1shot"],
+    "metrics": ["MCC", "Acc", "F1"],
+    "seeds": [13, 17, 42, 123, 997],
+    "few_shot_k": [1, 10],
+    "logistic_regression": {
+      "penalty": "l2",
+      "dual": false,
+      "tol": 0.0001,
+      "C": 1.0,
+      "fit_intercept": true,
+      "intercept_scaling": 1,
+      "class_weight": null,
+      "solver": "lbfgs",
+      "max_iter": 1000,
+      "multi_class": "auto",
+      "verbose": 0,
+      "warm_start": false,
+      "n_jobs": 32,
+      "l1_ratio": null
+    }
+  }
+}

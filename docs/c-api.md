@@ -23,6 +23,9 @@ and other languages with a C foreign-function interface.
   raw sequences are tokenized by the context's registered architecture.
 - ABI 1.4 adds `EVO_BACKEND_MPS` and the typed runtime failure
   `EVO_STATUS_MPS`. Existing enum values and parameter layouts are unchanged.
+- ABI 1.5 adds `evo_embedding_options`, `evo_embedding_result_info`, and
+  `evo_context_embed_ex()`. Existing `evo_context_embed()` behavior and all
+  earlier layouts remain unchanged.
 - A CUDA model handle owns one uploaded copy of the read-only weights plus the
   mapped artifact. Contexts share those immutable device allocations while
   owning independent streams, activation arenas, and recurrent/KV caches. A
@@ -86,6 +89,24 @@ output of a zero-based intermediate layer. Query
 `evo_model_embedding_width()` and `evo_model_layer_count()` before creating
 downstream tensor storage. Pooling is deliberately caller-controlled in the C
 ABI; the CLI supplies exact `none`, `mean`, and `last` policies.
+
+`evo_context_embed_ex()` adds versioned embedding options. With a null/empty
+`preset`, callers select the explicit zero-based `layer` and `pooling` policy.
+With `geneb-v4-reference`, `geneb-v4-normalized`, or the `geneb` alias, the
+artifact's pinned input transform, hidden tap, pooling, padding, and masking
+contract is used instead; `layer` must remain `SIZE_MAX` and `pooling` must be
+null. The callback receives borrowed `evo_embedding_result_info` metadata with
+the resolved preset, crop/pad accounting, effective length, token count, and
+output shape. Initialize options with `evo_embedding_default_options()`.
+
+Every currently registered GENEB architecture has a CPU factory and the
+`embed`/`serve` capability pair, but no CUDA or MPS factory. Loading one of
+those artifacts with `EVO_BACKEND_CUDA` or `EVO_BACKEND_MPS` returns
+`EVO_STATUS_UNSUPPORTED` and a missing-factory diagnostic before a model or
+context handle is published. `evo_context_embed_ex()` never migrates a GENEB
+request to CPU implicitly; a future backend becomes selectable only when its
+architecture factory, kernel, release matrix entry, and evidence are all
+registered together.
 
 For ESMC, prefill returns one `[encoded_tokens, 64]` masked-LM logit matrix in
 a single callback and embedding returns one full bidirectional hidden matrix.

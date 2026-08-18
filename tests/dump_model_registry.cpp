@@ -95,6 +95,8 @@ int main() {
     else if (architecture.tokenizer ==
              evo::ArchitectureTokenizer::kHyenaDnaCharacter)
       tokenizer = "hyenadna-character";
+    else if (architecture.tokenizer == evo::ArchitectureTokenizer::kArtifact)
+      tokenizer = "artifact";
     std::cout << "@|" << architecture.id << '|'
               << architecture.artifact_profile << '|'
               << architecture.runtime_abi << '|'
@@ -103,5 +105,16 @@ int main() {
               << '|' << tokenizer << '|'
               << architecture.backends << '|' << architecture.capabilities
               << '|' << (architecture.synthetic_fixture ? 1 : 0) << '\n';
+
+    unsigned factory_backends = 0;
+    for (const evo::ArchitectureBackend backend : {
+             evo::kArchitectureBackendCpu, evo::kArchitectureBackendCuda,
+             evo::kArchitectureBackendMps}) {
+      if (evo::find_architecture_backend_factory(architecture, backend) !=
+          nullptr) {
+        factory_backends |= backend;
+      }
+    }
+    std::cout << "&|" << architecture.id << '|' << factory_backends << '\n';
   }
 }

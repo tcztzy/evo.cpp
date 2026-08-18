@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "format": "geneb-roformer-converter-v1",
+  "implementation_contract": {
+    "source": "wds-seu/DeepGene@486343e5212361d6cd7ed03c624f430ed3d5f02e",
+    "modeling_sha256": "1849ee8eb6931d5479083eaf01ec7c2bff124555423c30c337e0bfe889fab3e4",
+    "configuration_sha256": "28672584950f4bf08975024cdf529ab9cc3aa4497ef4f9a1b3863b2e971cc68e",
+    "tokenizer_sha256": "5d178e8ce2ba55df97fff197f4b30f40133b95d7096be398c2df6b526c5d8cd3"
+  },
+  "models": [
+    {
+      "runtime_id": "geneb-deepgene",
+      "geneb_model_id": "deepgene",
+      "paper_name": "DeepGene",
+      "catalog_architecture": "deepgene-roformer-only",
+      "source_url": "https://drive.google.com/drive/folders/1gb2IqO3NdSMbydKMLGZBFAbsbKhgm0i8",
+      "source_files": [
+        {"name": "config.json", "size": 718, "sha256": "09a9d102fa421711e4da2cf1018e042d98cce189ba3ee27c49cf0851f1f626f2"},
+        {"name": "pytorch_model.bin", "size": 355268434, "sha256": "4717e43cfe1036c5abc9aedd9ed158264aa1e8183e8cbe1375d4503c373e99d6"},
+        {"name": "tokenizer.json", "size": 167908, "sha256": "5d178e8ce2ba55df97fff197f4b30f40133b95d7096be398c2df6b526c5d8cd3"}
+      ],
+      "tokenizer": {
+        "manifest": "configs/tokenizers/geneb-deepgene-bpe-v1.json",
+        "compiler_manifest_sha256": "5cc5a66863990a6bf7d50e69f6f066c698f6f7f7128ebb723ec22a533bd0be4f",
+        "compiled_asset_sha256": "37cba9152a3a75dc7c655e033dce029376a64d519e6140a585caee06aae06fc6",
+        "compiled_asset_size": 182157,
+        "kind": "bpe",
+        "emitted_vocab_size": 4096,
+        "add_special_tokens": false,
+        "manual_special_tokens": true,
+        "padding_side": "right"
+      },
+      "config_required": {
+        "architectures": ["RoFormerForMaskedLM"],
+        "attention_probs_dropout_prob": 0.1,
+        "embedding_size": 768,
+        "hidden_act": "gelu",
+        "hidden_dropout_prob": 0.1,
+        "hidden_size": 768,
+        "initializer_range": 0.02,
+        "intermediate_size": 3072,
+        "layer_norm_eps": 1e-12,
+        "max_position_embeddings": 5120,
+        "model_type": "roformer",
+        "norm_type": "layer_norm",
+        "num_attention_heads": 12,
+        "num_hidden_layers": 12,
+        "pad_token_id": 3,
+        "pooler_activation": "tanh",
+        "rotary_value": false,
+        "torch_dtype": "float32",
+        "transformers_version": "4.29.2",
+        "type_vocab_size": 2,
+        "use_bias": true,
+        "use_cache": true,
+        "vocab_size": 4096
+      },
+      "source_contract": {
+        "tensor_count": 203,
+        "f32_count": 203,
+        "canonical_f32_count": 196,
+        "canonical_bytes": 352813056,
+        "canonical_digest": "1808edcfd8f0bf05a8cbfaf73c4d9855e30f739a9518238085423cc6436e8368",
+        "alias_pairs": 2,
+        "drop_policy": "validate and drop seven cls.predictions.* tensors; retain exact roformer.* namespace"
+      },
+      "topology": {
+        "vocab_size": 4096,
+        "tokenizer_vocab_size": 4096,
+        "hidden_size": 768,
+        "num_layers": 12,
+        "num_attention_heads": 12,
+        "head_dim": 64,
+        "inner_size": 3072,
+        "max_seqlen": 5120,
+        "type_vocab_size": 2,
+        "pad_token_id": 3,
+        "cls_token_id": 1,
+        "sep_token_id": 2,
+        "layer_norm_epsilon": 1e-12,
+        "rope_base": 10000.0,
+        "rotary_value": false,
+        "pooling": "attention-mask-mean",
+        "manual_special_order": "cls-sep-payload",
+        "pad_position_policy": "final-batch-position",
+        "weight_dtype": "F32"
+      }
+    }
+  ]
+}

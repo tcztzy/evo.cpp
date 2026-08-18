@@ -121,6 +121,7 @@ def main() -> int:
             "SHA256SUMS",
             "schema_version",
             "registered_architectures",
+            "architecture_matrix",
             "runtime_profiles",
             "contains_model_weights",
             "Release checklist",
@@ -148,6 +149,36 @@ def main() -> int:
         ("release documentation", releases),
     ):
         require(text, architecture_ids, label)
+    architecture_rows = {}
+    for line in architectures_document.splitlines():
+        if not line.startswith("| `"):
+            continue
+        columns = [column.strip() for column in line.split("|")]
+        if len(columns) == 7:
+            architecture_rows[columns[1].strip("`")] = columns
+    for entry in runtime_architectures:
+        architecture_id = entry["id"]
+        columns = architecture_rows.get(architecture_id)
+        if columns is None:
+            raise AssertionError(
+                "architecture registry omitted matrix row for " + architecture_id
+            )
+        documented_backends = columns[4].lower()
+        documented_surfaces = columns[5].lower()
+        for backend in entry["backends"]:
+            if backend not in documented_backends:
+                raise AssertionError(
+                    "architecture registry omitted {} backend for {}".format(
+                        backend, architecture_id
+                    )
+                )
+        for capability in entry["capabilities"]:
+            if capability not in documented_surfaces:
+                raise AssertionError(
+                    "architecture registry omitted {} surface for {}".format(
+                        capability, architecture_id
+                    )
+                )
     for label, text in (
         ("release documentation", releases),
         ("checkpoint conversion", conversion),

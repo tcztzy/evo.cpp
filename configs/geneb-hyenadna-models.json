@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "format": "geneb-hyenadna-converter-v1",
+  "models": [
+    {
+      "runtime_id": "geneb-hyenadna-medium-160k",
+      "geneb_model_id": "hyenadna-medium-160k-seqlen-hf",
+      "paper_name": "HyenaDNA-Medium-160k",
+      "catalog_architecture": "hyenadna",
+      "repo": "LongSafari/hyenadna-medium-160k-seqlen-hf",
+      "requested_revision": "main",
+      "revision": "7ebf71773d22c0ede2cc55cb2be15ee8c289e1ce",
+      "checkpoint_manifest_sha256": "7f32d3cc46db00f93668dbe5c473fe7d785181743506efa754321b76957e3268",
+      "tokenizer": {
+        "compiler_manifest": "tokenizers/geneb-hyenadna-character-v1.json",
+        "compiler_manifest_sha256": "2b46915c7f9820a95d4492c19328b770c28d3430bcd901fce5bfab4cd439a573"
+      },
+      "source_files": {
+        "config.json": {"size": 984, "sha256": "257651ce75a3239e9e3c76c43ce7dd0d5b78c1023aef4dbd4536564aa428f379"},
+        "configuration_hyena.py": {"size": 3093, "sha256": "29cb6cae67f5010e279d67349e688663043f0bd6791a09c36d96da8cac3668a6"},
+        "model.safetensors": {"size": 56971992, "sha256": "16685b36caf5d144da391f1b540ed47e89d79b3efd38899325492f174b8e852a"},
+        "modeling_hyena.py": {"size": 22584, "sha256": "d78029cacea2c9259f1293fdb50b60f90872089469185e27d5c769086c475607"},
+        "special_tokens_map.json": {"size": 971, "sha256": "026831cec9f2ac5e501aa9d3a8b3a93c021aebe55813574c493e40b49ad28582"},
+        "tokenization_hyena.py": {"size": 4057, "sha256": "d424da2f794958b0360e033bbf5edc9ee4e3e3126e883093621348f07761e408"},
+        "tokenizer_config.json": {"size": 1482, "sha256": "dd519d81a1891aa4cb1933e4787b60fa449ff818ab4c531953899dc538633429"}
+      },
+      "conversion_assets": [
+        "config.json",
+        "model.safetensors",
+        "tokenizer_config.json"
+      ],
+      "topology": {
+        "vocab_size": 12,
+        "embedding_rows": 16,
+        "hidden_size": 256,
+        "num_layers": 8,
+        "inner_width": 1024,
+        "filter_width": 64,
+        "positional_width": 5,
+        "short_filter_width": 3,
+        "max_seqlen": 160002,
+        "norm_epsilon": 0.00001
+      }
+    },
+    {
+      "runtime_id": "geneb-hyenadna-large-1m",
+      "geneb_model_id": "hyenadna-large-1m-seqlen-hf",
+      "paper_name": "HyenaDNA-Large-1M",
+      "catalog_architecture": "hyenadna",
+      "repo": "LongSafari/hyenadna-large-1m-seqlen-hf",
+      "requested_revision": "main",
+      "revision": "0a629abf9c7f85b4ec9aa6a1aefa3adcf1907446",
+      "checkpoint_manifest_sha256": "8d62dda67973ee571bdabdfb0316349747cdb197a7e7f13da0fbd30916ebe358",
+      "tokenizer": {
+        "compiler_manifest": "tokenizers/geneb-hyenadna-character-v1.json",
+        "compiler_manifest_sha256": "2b46915c7f9820a95d4492c19328b770c28d3430bcd901fce5bfab4cd439a573"
+      },
+      "source_files": {
+        "config.json": {"size": 982, "sha256": "e63e0dcb3bc0ff6f5207b3e0dbad48f6f0933dde42a47872cf1ab86e4b43f038"},
+        "configuration_hyena.py": {"size": 3093, "sha256": "29cb6cae67f5010e279d67349e688663043f0bd6791a09c36d96da8cac3668a6"},
+        "model.safetensors": {"size": 218252304, "sha256": "deafb53209bfafb314d14bd81108546a34d473c07ed7ab7a355674376b56ad12"},
+        "modeling_hyena.py": {"size": 22584, "sha256": "d78029cacea2c9259f1293fdb50b60f90872089469185e27d5c769086c475607"},
+        "special_tokens_map.json": {"size": 971, "sha256": "026831cec9f2ac5e501aa9d3a8b3a93c021aebe55813574c493e40b49ad28582"},
+        "tokenization_hyena.py": {"size": 4057, "sha256": "d424da2f794958b0360e033bbf5edc9ee4e3e3126e883093621348f07761e408"},
+        "tokenizer_config.json": {"size": 1483, "sha256": "7ceea744a19e155f056818b05e80195093ade809614964d8016ce2505c1485d4"}
+      },
+      "conversion_assets": [
+        "config.json",
+        "model.safetensors",
+        "tokenizer_config.json"
+      ],
+      "topology": {
+        "vocab_size": 12,
+        "embedding_rows": 16,
+        "hidden_size": 256,
+        "num_layers": 8,
+        "inner_width": 1024,
+        "filter_width": 64,
+        "positional_width": 5,
+        "short_filter_width": 3,
+        "max_seqlen": 1000002,
+        "norm_epsilon": 0.00001
+      }
+    }
+  ]
+}

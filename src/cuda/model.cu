@@ -1326,7 +1326,7 @@ struct SingleGpuModel::Impl final {
 
   [[nodiscard]] Status embed(const std::vector<TokenId> &tokens) {
     for (const TokenId token : tokens) {
-      if (static_cast<std::size_t>(token) >= config.vocab_size)
+      if (!token_id_in_vocabulary(token, config.vocab_size))
         return {ErrorCode::kInvalidArgument,
                 "token ID exceeds model vocabulary"};
     }

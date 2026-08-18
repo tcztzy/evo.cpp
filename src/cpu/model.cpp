@@ -1,10 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "evo/cpu/model.hpp"
+#include "evo/cpu/geneb_bert.hpp"
+#include "evo/cpu/geneb_custom_encoder.hpp"
+#include "evo/cpu/geneb_decoder.hpp"
+#include "evo/cpu/geneb_dna_gpt.hpp"
+#include "evo/cpu/geneb_esm.hpp"
+#include "evo/cpu/geneb_evo1.hpp"
+#include "evo/cpu/geneb_gpt2.hpp"
+#include "evo/cpu/geneb_hyenadna.hpp"
+#include "evo/cpu/geneb_janusdna.hpp"
+#include "evo/cpu/geneb_mamba.hpp"
+#include "evo/cpu/geneb_olmo.hpp"
+#include "evo/cpu/geneb_roformer.hpp"
+#include "evo/cpu/geneb_sequence_cnn.hpp"
 
-#include "esmc_internal.hpp"
-#include "hyenadna_internal.hpp"
-#include "evo/model_registry.hpp"
 #include "../linear_executor.hpp"
+#include "esmc_internal.hpp"
+#include "evo/model_registry.hpp"
+#include "hyenadna_internal.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -280,10 +293,9 @@ Status linear(const std::vector<float> &input, const std::size_t rows,
     const evo::detail::LinearTensorView weight_view{weight.data, weight.dtype,
                                                     weight.elements};
     const evo::detail::LinearTensorView bias_view =
-        bias == nullptr
-            ? evo::detail::LinearTensorView{}
-            : evo::detail::LinearTensorView{bias->data, bias->dtype,
-                                            bias->elements};
+        bias == nullptr ? evo::detail::LinearTensorView{}
+                        : evo::detail::LinearTensorView{bias->data, bias->dtype,
+                                                        bias->elements};
     return executor->linear(input.data(), rows, input_width, weight_view,
                             output_width,
                             bias == nullptr ? nullptr : &bias_view, output);
@@ -689,9 +701,9 @@ struct Context::Impl final {
     const auto width = weights->public_config.width;
     std::vector<float> hidden(rows * width);
     for (std::size_t row = 0; row < rows; ++row) {
-      if (tokens[row] >= weights->public_config.vocab_size)
-        return {ErrorCode::kInvalidArgument,
-                "token exceeds model vocabulary"};
+      if (!token_id_in_vocabulary(tokens[row],
+                                  weights->public_config.vocab_size))
+        return {ErrorCode::kInvalidArgument, "token exceeds model vocabulary"};
       for (std::size_t column = 0; column < width; ++column) {
         hidden[row * width + column] = weights->embedding.at(
             static_cast<std::size_t>(tokens[row]) * width + column);
@@ -702,17 +714,1542 @@ struct Context::Impl final {
   }
 };
 
+namespace detail {
+
+class GenebDecoderModelAdapter final {
+public:
+  Status load(const ModelFile &artifact,
+              std::shared_ptr<evo::detail::LinearExecutor> executor,
+              const bool allow_test_fixture) {
+    bool synthetic = false;
+    if (artifact.find_metadata("fixture.synthetic") != nullptr) {
+      auto status = metadata_bool(artifact, "fixture.synthetic", &synthetic);
+      if (!status.ok())
+        return status;
+      if (synthetic && !allow_test_fixture) {
+        return {ErrorCode::kUnsupported,
+                "synthetic model fixtures require explicit test permission"};
+      }
+    }
+    auto status = runtime.load_artifact(artifact, std::move(executor));
+    if (!status.ok())
+      return status;
+    const auto *const topology = runtime.topology();
+    if (topology == nullptr)
+      return {ErrorCode::kInternal, "GENEB decoder topology was not retained"};
+    public_config.architecture = std::string{kGenebDecoderArchitecture};
+    public_config.artifact_profile = std::string{artifact.profile()};
+    public_config.implementation =
+        ArchitectureImplementation::kGenebTransformerDecoder;
+    public_config.tokenizer = ArchitectureTokenizer::kArtifact;
+    public_config.test_fixture = synthetic;
+    public_config.vocab_size = topology->vocabulary_size;
+    public_config.width = topology->width;
+    public_config.layers = topology->layers;
+    public_config.max_seqlen = topology->maximum_sequence_length;
+    if (artifact.find_metadata("model.id") != nullptr) {
+      status = metadata_string(artifact, "model.id", &public_config.model_id);
+    } else {
+      status = metadata_string(artifact, "model.name", &public_config.model_id);
+    }
+    return status;
+  }
+
+  GenebDecoderModel runtime;
+  ModelConfig public_config;
+};
+
+class GenebDecoderContext final {
+public:
+  Status
+  initialize_shared(const std::shared_ptr<GenebDecoderModelAdapter> &model,
+                    const std::size_t context_capacity) {
+    if (!model || model_ || context_capacity == 0 ||
+        context_capacity > model->public_config.max_seqlen) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB decoder context capacity/model is invalid"};
+    }
+    model_ = model;
+    capacity_ = context_capacity;
+    return Status::Ok();
+  }
+
+  Status prefill_embedding(const std::vector<TokenId> &tokens,
+                           const std::size_t layer,
+                           std::vector<float> *const embedding) {
+    return prefill_embedding_masked(
+        tokens, std::vector<std::uint8_t>(tokens.size(), 1U), layer, embedding);
+  }
+
+  Status
+  prefill_embedding_masked(const std::vector<TokenId> &tokens,
+                           const std::vector<std::uint8_t> &attention_mask,
+                           const std::size_t layer,
+                           std::vector<float> *const embedding) {
+    if (!model_ || embedding == nullptr || position_ != 0 || tokens.empty() ||
+        tokens.size() > capacity_ || attention_mask.size() != tokens.size() ||
+        layer > model_->public_config.layers) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB decoder embedding requires a fresh full-sequence "
+              "context and valid layer"};
+    }
+    bool padding_started = false;
+    for (const auto value : attention_mask) {
+      if (value > 1U || (padding_started && value != 0U))
+        return {ErrorCode::kInvalidArgument,
+                "GENEB decoder attention mask must be right padded"};
+      padding_started = padding_started || value == 0U;
+    }
+    GenebDecoderForwardResult result;
+    auto status = model_->runtime.forward(tokens, 0, {layer}, &result);
+    if (!status.ok())
+      return status;
+    if (result.captures.size() != 1 ||
+        result.captures.front().values.size() !=
+            tokens.size() * model_->public_config.width) {
+      return {ErrorCode::kInternal,
+              "GENEB decoder returned an incomplete hidden state"};
+    }
+    *embedding = std::move(result.captures.front().values);
+    position_ = tokens.size();
+    return Status::Ok();
+  }
+
+  [[nodiscard]] std::size_t position() const noexcept { return position_; }
+  [[nodiscard]] std::size_t activation_capacity() const noexcept {
+    return capacity_;
+  }
+  [[nodiscard]] const ModelConfig &config() const noexcept {
+    return model_->public_config;
+  }
+  [[nodiscard]] const char *kernel_name() const noexcept {
+    return model_->runtime.linear_executor_name();
+  }
+
+private:
+  std::shared_ptr<GenebDecoderModelAdapter> model_;
+  std::size_t capacity_{0};
+  std::size_t position_{0};
+};
+
+class GenebOlmoModelAdapter final {
+public:
+  Status load(const ModelFile &artifact,
+              std::shared_ptr<evo::detail::LinearExecutor> executor,
+              const bool allow_test_fixture) {
+    bool synthetic = false;
+    if (artifact.find_metadata("fixture.synthetic") != nullptr) {
+      auto status = metadata_bool(artifact, "fixture.synthetic", &synthetic);
+      if (!status.ok())
+        return status;
+      if (synthetic && !allow_test_fixture) {
+        return {ErrorCode::kUnsupported,
+                "synthetic model fixtures require explicit test permission"};
+      }
+    }
+    auto status = runtime.load(artifact, std::move(executor));
+    if (!status.ok())
+      return status;
+    const auto *const topology = runtime.topology();
+    if (topology == nullptr)
+      return {ErrorCode::kInternal, "GENEB OLMo topology was not retained"};
+    public_config.architecture = std::string{kGenebOlmoArchitecture};
+    public_config.artifact_profile = std::string{artifact.profile()};
+    public_config.implementation =
+        ArchitectureImplementation::kGenebOlmoDecoder;
+    public_config.tokenizer = ArchitectureTokenizer::kArtifact;
+    public_config.test_fixture = synthetic;
+    public_config.vocab_size = topology->vocabulary_size;
+    public_config.width = topology->width;
+    public_config.layers = topology->layers;
+    public_config.max_seqlen = topology->maximum_sequence_length;
+    if (artifact.find_metadata("model.id") != nullptr)
+      status = metadata_string(artifact, "model.id", &public_config.model_id);
+    else
+      status = metadata_string(artifact, "model.name", &public_config.model_id);
+    return status;
+  }
+
+  GenebOlmoModel runtime;
+  ModelConfig public_config;
+};
+
+class GenebOlmoContext final {
+public:
+  Status initialize_shared(const std::shared_ptr<GenebOlmoModelAdapter> &model,
+                           const std::size_t context_capacity) {
+    if (!model || model_ || context_capacity == 0 ||
+        context_capacity > model->public_config.max_seqlen) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB OLMo context capacity/model is invalid"};
+    }
+    model_ = model;
+    capacity_ = context_capacity;
+    return Status::Ok();
+  }
+
+  Status prefill_embedding(const std::vector<TokenId> &tokens,
+                           const std::size_t layer,
+                           std::vector<float> *const embedding) {
+    return prefill_embedding_masked(
+        tokens, std::vector<std::uint8_t>(tokens.size(), 1U), layer, embedding);
+  }
+
+  Status
+  prefill_embedding_masked(const std::vector<TokenId> &tokens,
+                           const std::vector<std::uint8_t> &attention_mask,
+                           const std::size_t layer,
+                           std::vector<float> *const embedding) {
+    if (!model_ || embedding == nullptr || position_ != 0 || tokens.empty() ||
+        tokens.size() > capacity_ || attention_mask.size() != tokens.size() ||
+        layer > model_->public_config.layers) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB OLMo embedding requires a fresh full-sequence context "
+              "and valid layer"};
+    }
+    GenebOlmoForwardResult result;
+    auto status =
+        model_->runtime.forward(tokens, attention_mask, {layer}, &result);
+    if (!status.ok())
+      return status;
+    if (result.captures.size() != 1 ||
+        result.captures.front().values.size() !=
+            tokens.size() * model_->public_config.width) {
+      return {ErrorCode::kInternal,
+              "GENEB OLMo returned an incomplete hidden state"};
+    }
+    *embedding = std::move(result.captures.front().values);
+    position_ = tokens.size();
+    return Status::Ok();
+  }
+
+  [[nodiscard]] std::size_t position() const noexcept { return position_; }
+  [[nodiscard]] std::size_t activation_capacity() const noexcept {
+    return capacity_;
+  }
+  [[nodiscard]] const ModelConfig &config() const noexcept {
+    return model_->public_config;
+  }
+  [[nodiscard]] const char *kernel_name() const noexcept {
+    return model_->runtime.linear_executor_name();
+  }
+
+private:
+  std::shared_ptr<GenebOlmoModelAdapter> model_;
+  std::size_t capacity_{0};
+  std::size_t position_{0};
+};
+
+class GenebEsmModelAdapter final {
+public:
+  Status load(const ModelFile &artifact,
+              std::shared_ptr<evo::detail::LinearExecutor> executor,
+              const bool allow_test_fixture) {
+    bool synthetic = false;
+    if (artifact.find_metadata("fixture.synthetic") != nullptr) {
+      auto status = metadata_bool(artifact, "fixture.synthetic", &synthetic);
+      if (!status.ok())
+        return status;
+      if (synthetic && !allow_test_fixture) {
+        return {ErrorCode::kUnsupported,
+                "synthetic model fixtures require explicit test permission"};
+      }
+    }
+    auto status = runtime.load_artifact(artifact, std::move(executor));
+    if (!status.ok())
+      return status;
+    const auto *const topology = runtime.topology();
+    if (topology == nullptr)
+      return {ErrorCode::kInternal, "GENEB ESM topology was not retained"};
+    public_config.architecture = std::string{kGenebEsmArchitecture};
+    public_config.artifact_profile = std::string{artifact.profile()};
+    public_config.implementation = ArchitectureImplementation::kGenebEsmEncoder;
+    public_config.tokenizer = ArchitectureTokenizer::kArtifact;
+    public_config.test_fixture = synthetic;
+    public_config.vocab_size = topology->vocabulary_size;
+    public_config.width = topology->width;
+    public_config.layers = topology->layers;
+    public_config.max_seqlen = topology->maximum_sequence_length;
+    if (artifact.find_metadata("model.id") != nullptr)
+      status = metadata_string(artifact, "model.id", &public_config.model_id);
+    else
+      status = metadata_string(artifact, "model.name", &public_config.model_id);
+    return status;
+  }
+
+  GenebEsmModel runtime;
+  ModelConfig public_config;
+};
+
+class GenebEsmContext final {
+public:
+  Status initialize_shared(const std::shared_ptr<GenebEsmModelAdapter> &model,
+                           const std::size_t context_capacity) {
+    if (!model || model_ || context_capacity == 0 ||
+        context_capacity > model->public_config.max_seqlen) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB ESM context capacity/model is invalid"};
+    }
+    model_ = model;
+    capacity_ = context_capacity;
+    return Status::Ok();
+  }
+
+  Status prefill_embedding(const std::vector<TokenId> &tokens,
+                           const std::size_t layer,
+                           std::vector<float> *const embedding) {
+    std::vector<std::uint8_t> attention_mask(tokens.size(), 1U);
+    const auto *const topology = model_ ? model_->runtime.topology() : nullptr;
+    if (topology != nullptr) {
+      bool padding_started = false;
+      for (std::size_t index = 0; index < tokens.size(); ++index) {
+        if (tokens[index] == topology->pad_token_id)
+          padding_started = true;
+        if (padding_started)
+          attention_mask[index] = 0U;
+      }
+    }
+    return prefill_embedding_masked(tokens, attention_mask, layer, embedding);
+  }
+
+  Status
+  prefill_embedding_masked(const std::vector<TokenId> &tokens,
+                           const std::vector<std::uint8_t> &attention_mask,
+                           const std::size_t layer,
+                           std::vector<float> *const embedding) {
+    if (!model_ || embedding == nullptr || position_ != 0 || tokens.empty() ||
+        tokens.size() > capacity_ || attention_mask.size() != tokens.size() ||
+        layer > model_->public_config.layers) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB ESM embedding requires a fresh full-sequence context "
+              "and valid layer"};
+    }
+    GenebEsmForwardResult result;
+    auto status =
+        model_->runtime.forward(tokens, attention_mask, {layer}, &result);
+    if (!status.ok())
+      return status;
+    if (result.captures.size() != 1 ||
+        result.captures.front().values.size() !=
+            tokens.size() * model_->public_config.width) {
+      return {ErrorCode::kInternal,
+              "GENEB ESM returned an incomplete hidden state"};
+    }
+    *embedding = std::move(result.captures.front().values);
+    position_ = tokens.size();
+    return Status::Ok();
+  }
+
+  [[nodiscard]] std::size_t position() const noexcept { return position_; }
+  [[nodiscard]] std::size_t activation_capacity() const noexcept {
+    return capacity_;
+  }
+  [[nodiscard]] const ModelConfig &config() const noexcept {
+    return model_->public_config;
+  }
+  [[nodiscard]] const char *kernel_name() const noexcept {
+    return model_->runtime.linear_executor_name();
+  }
+
+private:
+  std::shared_ptr<GenebEsmModelAdapter> model_;
+  std::size_t capacity_{0};
+  std::size_t position_{0};
+};
+
+class GenebBertModelAdapter final {
+public:
+  Status load(const ModelFile &artifact,
+              std::shared_ptr<evo::detail::LinearExecutor> executor,
+              const bool allow_test_fixture) {
+    bool synthetic = false;
+    if (artifact.find_metadata("fixture.synthetic") != nullptr) {
+      auto status = metadata_bool(artifact, "fixture.synthetic", &synthetic);
+      if (!status.ok())
+        return status;
+      if (synthetic && !allow_test_fixture) {
+        return {ErrorCode::kUnsupported,
+                "synthetic model fixtures require explicit test permission"};
+      }
+    }
+    auto status = runtime.load_artifact(artifact, std::move(executor));
+    if (!status.ok())
+      return status;
+    const auto *const topology = runtime.topology();
+    if (topology == nullptr)
+      return {ErrorCode::kInternal, "GENEB BERT topology was not retained"};
+    public_config.architecture = std::string{kGenebBertArchitecture};
+    public_config.artifact_profile = std::string{artifact.profile()};
+    public_config.implementation =
+        ArchitectureImplementation::kGenebBertEncoder;
+    public_config.tokenizer = ArchitectureTokenizer::kArtifact;
+    public_config.test_fixture = synthetic;
+    public_config.vocab_size = topology->vocabulary_size;
+    public_config.width = topology->width;
+    public_config.layers = topology->layers;
+    public_config.max_seqlen = topology->maximum_sequence_length;
+    if (artifact.find_metadata("model.id") != nullptr)
+      status = metadata_string(artifact, "model.id", &public_config.model_id);
+    else
+      status = metadata_string(artifact, "model.name", &public_config.model_id);
+    return status;
+  }
+
+  GenebBertModel runtime;
+  ModelConfig public_config;
+};
+
+class GenebBertContext final {
+public:
+  Status initialize_shared(const std::shared_ptr<GenebBertModelAdapter> &model,
+                           const std::size_t context_capacity) {
+    if (!model || model_ || context_capacity == 0 ||
+        context_capacity > model->public_config.max_seqlen) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB BERT context capacity/model is invalid"};
+    }
+    model_ = model;
+    capacity_ = context_capacity;
+    return Status::Ok();
+  }
+
+  Status prefill_embedding(const std::vector<TokenId> &tokens,
+                           const std::size_t layer,
+                           std::vector<float> *const embedding) {
+    return prefill_embedding_masked(
+        tokens, std::vector<std::uint8_t>(tokens.size(), 1U), layer, embedding);
+  }
+
+  Status
+  prefill_embedding_masked(const std::vector<TokenId> &tokens,
+                           const std::vector<std::uint8_t> &attention_mask,
+                           const std::size_t layer,
+                           std::vector<float> *const embedding) {
+    if (!model_ || embedding == nullptr || position_ != 0 || tokens.empty() ||
+        tokens.size() > capacity_ || attention_mask.size() != tokens.size() ||
+        layer > model_->public_config.layers) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB BERT embedding requires a fresh full-sequence context "
+              "and valid layer"};
+    }
+    const auto *const topology = model_->runtime.topology();
+    if (topology == nullptr)
+      return {ErrorCode::kInternal, "GENEB BERT topology is unavailable"};
+    GenebBertForwardResult result;
+    Status status = Status::Ok();
+    if (topology->input_kind == GenebBertInputKind::kSoftVocabulary) {
+      if (topology->vocabulary_size != model_->public_config.vocab_size ||
+          tokens.size() > std::numeric_limits<std::size_t>::max() /
+                              topology->vocabulary_size) {
+        return {ErrorCode::kInvalidArgument,
+                "GENEB BERT soft-vocabulary dimensions overflow"};
+      }
+      std::vector<float> one_hot(tokens.size() * topology->vocabulary_size,
+                                 0.0F);
+      for (std::size_t row = 0; row < tokens.size(); ++row) {
+        if (!token_id_in_vocabulary(tokens[row], topology->vocabulary_size)) {
+          return {ErrorCode::kInvalidArgument,
+                  "GENEB BERT token exceeds soft vocabulary"};
+        }
+        if (attention_mask[row] != 0U)
+          one_hot[row * topology->vocabulary_size + tokens[row]] = 1.0F;
+      }
+      status = model_->runtime.forward_soft(one_hot, tokens.size(),
+                                            attention_mask, {layer}, &result);
+    } else {
+      status =
+          model_->runtime.forward(tokens, attention_mask, {layer}, &result);
+    }
+    if (!status.ok())
+      return status;
+    if (result.captures.size() != 1 ||
+        result.captures.front().values.size() !=
+            tokens.size() * model_->public_config.width) {
+      return {ErrorCode::kInternal,
+              "GENEB BERT returned an incomplete hidden state"};
+    }
+    *embedding = std::move(result.captures.front().values);
+    position_ = tokens.size();
+    return Status::Ok();
+  }
+
+  [[nodiscard]] std::size_t position() const noexcept { return position_; }
+  [[nodiscard]] std::size_t activation_capacity() const noexcept {
+    return capacity_;
+  }
+  [[nodiscard]] const ModelConfig &config() const noexcept {
+    return model_->public_config;
+  }
+  [[nodiscard]] const char *kernel_name() const noexcept {
+    return model_->runtime.linear_executor_name();
+  }
+
+private:
+  std::shared_ptr<GenebBertModelAdapter> model_;
+  std::size_t capacity_{0};
+  std::size_t position_{0};
+};
+
+class GenebGpt2ModelAdapter final {
+public:
+  Status load(const ModelFile &artifact, const bool allow_test_fixture) {
+    bool synthetic = false;
+    if (artifact.find_metadata("fixture.synthetic") != nullptr) {
+      auto status = metadata_bool(artifact, "fixture.synthetic", &synthetic);
+      if (!status.ok())
+        return status;
+      if (synthetic && !allow_test_fixture) {
+        return {ErrorCode::kUnsupported,
+                "synthetic model fixtures require explicit test permission"};
+      }
+    }
+    auto status = runtime.load(artifact);
+    if (!status.ok())
+      return status;
+    const auto *const topology = runtime.topology();
+    if (topology == nullptr)
+      return {ErrorCode::kInternal, "GENEB GPT-2 topology was not retained"};
+    public_config.architecture = std::string{kGenebGpt2Architecture};
+    public_config.artifact_profile = std::string{artifact.profile()};
+    public_config.implementation =
+        ArchitectureImplementation::kGenebGpt2Decoder;
+    public_config.tokenizer = ArchitectureTokenizer::kArtifact;
+    public_config.test_fixture = synthetic;
+    public_config.vocab_size = topology->vocabulary_size;
+    public_config.width = topology->width;
+    public_config.layers = topology->layers;
+    public_config.max_seqlen = topology->maximum_sequence_length;
+    if (artifact.find_metadata("model.id") != nullptr)
+      status = metadata_string(artifact, "model.id", &public_config.model_id);
+    else
+      status = metadata_string(artifact, "model.name", &public_config.model_id);
+    return status;
+  }
+
+  GenebGpt2Model runtime;
+  ModelConfig public_config;
+};
+
+class GenebGpt2Context final {
+public:
+  Status initialize_shared(const std::shared_ptr<GenebGpt2ModelAdapter> &model,
+                           const std::size_t context_capacity) {
+    if (!model || model_ || context_capacity == 0 ||
+        context_capacity > model->public_config.max_seqlen) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB GPT-2 context capacity/model is invalid"};
+    }
+    model_ = model;
+    capacity_ = context_capacity;
+    return Status::Ok();
+  }
+
+  Status prefill_embedding(const std::vector<TokenId> &tokens,
+                           const std::size_t layer,
+                           std::vector<float> *const embedding) {
+    return prefill_embedding_masked(
+        tokens, std::vector<std::uint8_t>(tokens.size(), 1U), layer, embedding);
+  }
+
+  Status
+  prefill_embedding_masked(const std::vector<TokenId> &tokens,
+                           const std::vector<std::uint8_t> &attention_mask,
+                           const std::size_t layer,
+                           std::vector<float> *const embedding) {
+    if (!model_ || embedding == nullptr || position_ != 0 || tokens.empty() ||
+        tokens.size() > capacity_ || attention_mask.size() != tokens.size() ||
+        layer > model_->public_config.layers) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB GPT-2 embedding requires a fresh full-sequence context "
+              "and valid layer"};
+    }
+    GenebGpt2ForwardResult result;
+    auto status =
+        model_->runtime.forward(tokens, attention_mask, {layer}, &result);
+    if (!status.ok())
+      return status;
+    if (result.captures.size() != 1 ||
+        result.captures.front().values.size() !=
+            tokens.size() * model_->public_config.width) {
+      return {ErrorCode::kInternal,
+              "GENEB GPT-2 returned an incomplete hidden state"};
+    }
+    *embedding = std::move(result.captures.front().values);
+    position_ = tokens.size();
+    return Status::Ok();
+  }
+
+  [[nodiscard]] std::size_t position() const noexcept { return position_; }
+  [[nodiscard]] std::size_t activation_capacity() const noexcept {
+    return capacity_;
+  }
+  [[nodiscard]] const ModelConfig &config() const noexcept {
+    return model_->public_config;
+  }
+  [[nodiscard]] const char *kernel_name() const noexcept {
+    return model_->runtime.kernel_name();
+  }
+
+private:
+  std::shared_ptr<GenebGpt2ModelAdapter> model_;
+  std::size_t capacity_{0};
+  std::size_t position_{0};
+};
+
+class GenebDnaGptModelAdapter final {
+public:
+  Status load(const ModelFile &artifact, const bool allow_test_fixture) {
+    bool synthetic = false;
+    if (artifact.find_metadata("fixture.synthetic") != nullptr) {
+      auto status = metadata_bool(artifact, "fixture.synthetic", &synthetic);
+      if (!status.ok())
+        return status;
+      if (synthetic && !allow_test_fixture) {
+        return {ErrorCode::kUnsupported,
+                "synthetic model fixtures require explicit test permission"};
+      }
+    }
+    auto status = runtime.load(artifact);
+    if (!status.ok())
+      return status;
+    const auto *const topology = runtime.topology();
+    if (topology == nullptr)
+      return {ErrorCode::kInternal, "GENEB DNA-GPT topology was not retained"};
+    public_config.architecture = std::string{kGenebDnaGptArchitecture};
+    public_config.artifact_profile = std::string{artifact.profile()};
+    public_config.implementation =
+        ArchitectureImplementation::kGenebDnaGptDecoder;
+    public_config.tokenizer = ArchitectureTokenizer::kArtifact;
+    public_config.test_fixture = synthetic;
+    public_config.vocab_size = topology->vocabulary_size;
+    public_config.width = topology->width;
+    public_config.layers = topology->layers;
+    public_config.max_seqlen = topology->maximum_sequence_length;
+    if (artifact.find_metadata("model.id") != nullptr)
+      status = metadata_string(artifact, "model.id", &public_config.model_id);
+    else
+      status = metadata_string(artifact, "model.name", &public_config.model_id);
+    return status;
+  }
+
+  GenebDnaGptModel runtime;
+  ModelConfig public_config;
+};
+
+class GenebDnaGptContext final {
+public:
+  Status
+  initialize_shared(const std::shared_ptr<GenebDnaGptModelAdapter> &model,
+                    const std::size_t context_capacity) {
+    if (!model || model_ || context_capacity == 0 ||
+        context_capacity > model->public_config.max_seqlen) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB DNA-GPT context capacity/model is invalid"};
+    }
+    model_ = model;
+    capacity_ = context_capacity;
+    return Status::Ok();
+  }
+
+  Status prefill_embedding(const std::vector<TokenId> &tokens,
+                           const std::size_t layer,
+                           std::vector<float> *const embedding) {
+    return prefill_embedding_masked(
+        tokens, std::vector<std::uint8_t>(tokens.size(), 1U), layer, embedding);
+  }
+
+  Status
+  prefill_embedding_masked(const std::vector<TokenId> &tokens,
+                           const std::vector<std::uint8_t> &attention_mask,
+                           const std::size_t layer,
+                           std::vector<float> *const embedding) {
+    if (!model_ || embedding == nullptr || position_ != 0 || tokens.empty() ||
+        tokens.size() > capacity_ || attention_mask.size() != tokens.size() ||
+        layer > model_->public_config.layers) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB DNA-GPT embedding requires a fresh full-sequence context "
+              "and valid layer"};
+    }
+    GenebDnaGptForwardResult result;
+    auto status =
+        model_->runtime.forward(tokens, attention_mask, {layer}, &result);
+    if (!status.ok())
+      return status;
+    if (result.captures.size() != 1 ||
+        result.captures.front().values.size() !=
+            tokens.size() * model_->public_config.width) {
+      return {ErrorCode::kInternal,
+              "GENEB DNA-GPT returned an incomplete hidden state"};
+    }
+    *embedding = std::move(result.captures.front().values);
+    position_ = tokens.size();
+    return Status::Ok();
+  }
+
+  [[nodiscard]] std::size_t position() const noexcept { return position_; }
+  [[nodiscard]] std::size_t activation_capacity() const noexcept {
+    return capacity_;
+  }
+  [[nodiscard]] const ModelConfig &config() const noexcept {
+    return model_->public_config;
+  }
+  [[nodiscard]] const char *kernel_name() const noexcept {
+    return model_->runtime.kernel_name();
+  }
+
+private:
+  std::shared_ptr<GenebDnaGptModelAdapter> model_;
+  std::size_t capacity_{0};
+  std::size_t position_{0};
+};
+
+class GenebCustomEncoderModelAdapter final {
+public:
+  Status load(const ModelFile &artifact,
+              std::shared_ptr<evo::detail::LinearExecutor> executor,
+              const bool allow_test_fixture) {
+    bool synthetic = false;
+    if (artifact.find_metadata("fixture.synthetic") != nullptr) {
+      auto status = metadata_bool(artifact, "fixture.synthetic", &synthetic);
+      if (!status.ok())
+        return status;
+      if (synthetic && !allow_test_fixture) {
+        return {ErrorCode::kUnsupported,
+                "synthetic model fixtures require explicit test permission"};
+      }
+    }
+    auto status = runtime.load_artifact(artifact, std::move(executor));
+    if (!status.ok())
+      return status;
+    const auto *const topology = runtime.topology();
+    if (topology == nullptr) {
+      return {ErrorCode::kInternal,
+              "GENEB custom encoder topology was not retained"};
+    }
+    public_config.architecture = std::string{kGenebCustomEncoderArchitecture};
+    public_config.artifact_profile = std::string{artifact.profile()};
+    public_config.implementation =
+        ArchitectureImplementation::kGenebCustomEncoder;
+    public_config.tokenizer = ArchitectureTokenizer::kArtifact;
+    public_config.test_fixture = synthetic;
+    public_config.vocab_size = topology->vocabulary_size;
+    public_config.width = topology->width;
+    public_config.layers = topology->layers;
+    public_config.max_seqlen = topology->maximum_sequence_length;
+    tokenizer_vocabulary_size = topology->tokenizer_vocabulary_size;
+    if (artifact.find_metadata("model.id") != nullptr)
+      status = metadata_string(artifact, "model.id", &public_config.model_id);
+    else
+      status = metadata_string(artifact, "model.name", &public_config.model_id);
+    return status;
+  }
+
+  GenebCustomEncoderModel runtime;
+  ModelConfig public_config;
+  std::size_t tokenizer_vocabulary_size{0};
+};
+
+class GenebCustomEncoderContext final {
+public:
+  Status initialize_shared(
+      const std::shared_ptr<GenebCustomEncoderModelAdapter> &model,
+      const std::size_t context_capacity) {
+    if (!model || model_ || context_capacity == 0 ||
+        context_capacity > model->public_config.max_seqlen) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB custom encoder context capacity/model is invalid"};
+    }
+    model_ = model;
+    capacity_ = context_capacity;
+    return Status::Ok();
+  }
+
+  Status prefill_embedding(const std::vector<TokenId> &tokens,
+                           const std::size_t layer,
+                           std::vector<float> *const embedding) {
+    std::vector<std::uint8_t> attention_mask(tokens.size(), 1U);
+    const auto *const topology = model_ ? model_->runtime.topology() : nullptr;
+    if (topology != nullptr) {
+      bool padding_started = false;
+      for (std::size_t index = 0; index < tokens.size(); ++index) {
+        if (tokens[index] == topology->pad_token_id)
+          padding_started = true;
+        if (padding_started)
+          attention_mask[index] = 0U;
+      }
+    }
+    return prefill_embedding_masked(tokens, attention_mask, layer, embedding);
+  }
+
+  Status
+  prefill_embedding_masked(const std::vector<TokenId> &tokens,
+                           const std::vector<std::uint8_t> &attention_mask,
+                           const std::size_t layer,
+                           std::vector<float> *const embedding) {
+    if (!model_ || embedding == nullptr || position_ != 0 || tokens.empty() ||
+        tokens.size() > capacity_ || attention_mask.size() != tokens.size() ||
+        layer > model_->public_config.layers) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB custom encoder embedding requires a fresh "
+              "full-sequence context and valid layer"};
+    }
+    GenebCustomEncoderForwardResult result;
+    auto status =
+        model_->runtime.forward(tokens, attention_mask, {layer}, &result);
+    if (!status.ok())
+      return status;
+    if (result.captures.size() != 1 ||
+        result.captures.front().values.size() !=
+            tokens.size() * model_->public_config.width) {
+      return {ErrorCode::kInternal,
+              "GENEB custom encoder returned an incomplete hidden state"};
+    }
+    *embedding = std::move(result.captures.front().values);
+    position_ = tokens.size();
+    return Status::Ok();
+  }
+
+  [[nodiscard]] std::size_t position() const noexcept { return position_; }
+  [[nodiscard]] std::size_t activation_capacity() const noexcept {
+    return capacity_;
+  }
+  [[nodiscard]] const ModelConfig &config() const noexcept {
+    return model_->public_config;
+  }
+  [[nodiscard]] const char *kernel_name() const noexcept {
+    return model_->runtime.linear_executor_name();
+  }
+
+private:
+  std::shared_ptr<GenebCustomEncoderModelAdapter> model_;
+  std::size_t capacity_{0};
+  std::size_t position_{0};
+};
+
+class GenebMambaModelAdapter final {
+public:
+  Status load(const ModelFile &artifact,
+              std::shared_ptr<evo::detail::LinearExecutor> executor,
+              const bool allow_test_fixture) {
+    bool synthetic = false;
+    if (artifact.find_metadata("fixture.synthetic") != nullptr) {
+      auto status = metadata_bool(artifact, "fixture.synthetic", &synthetic);
+      if (!status.ok())
+        return status;
+      if (synthetic && !allow_test_fixture) {
+        return {ErrorCode::kUnsupported,
+                "synthetic model fixtures require explicit test permission"};
+      }
+    }
+    auto status = runtime.load_artifact(artifact, std::move(executor));
+    if (!status.ok())
+      return status;
+    const auto *const topology = runtime.topology();
+    if (topology == nullptr) {
+      return {ErrorCode::kInternal, "GENEB Mamba topology was not retained"};
+    }
+    public_config.architecture = std::string{kGenebMambaArchitecture};
+    public_config.artifact_profile = std::string{artifact.profile()};
+    public_config.implementation =
+        ArchitectureImplementation::kGenebMambaEncoder;
+    public_config.tokenizer = ArchitectureTokenizer::kArtifact;
+    public_config.test_fixture = synthetic;
+    public_config.vocab_size = topology->vocabulary_size;
+    public_config.width = topology->output_width;
+    public_config.layers = topology->layers;
+    public_config.max_seqlen = topology->maximum_sequence_length;
+    tokenizer_vocabulary_size = topology->tokenizer_vocabulary_size;
+    if (artifact.find_metadata("model.id") != nullptr)
+      status = metadata_string(artifact, "model.id", &public_config.model_id);
+    else
+      status = metadata_string(artifact, "model.name", &public_config.model_id);
+    return status;
+  }
+
+  GenebMambaModel runtime;
+  ModelConfig public_config;
+  std::size_t tokenizer_vocabulary_size{0};
+};
+
+class GenebMambaContext final {
+public:
+  Status initialize_shared(const std::shared_ptr<GenebMambaModelAdapter> &model,
+                           const std::size_t context_capacity) {
+    if (!model || model_ || context_capacity == 0 ||
+        (model->public_config.max_seqlen != 0 &&
+         context_capacity > model->public_config.max_seqlen)) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB Mamba context capacity/model is invalid"};
+    }
+    model_ = model;
+    capacity_ = context_capacity;
+    return Status::Ok();
+  }
+
+  Status prefill_embedding(const std::vector<TokenId> &tokens,
+                           const std::size_t layer,
+                           std::vector<float> *const embedding) {
+    return prefill_embedding_masked(
+        tokens, std::vector<std::uint8_t>(tokens.size(), 1U), layer, embedding);
+  }
+
+  Status
+  prefill_embedding_masked(const std::vector<TokenId> &tokens,
+                           const std::vector<std::uint8_t> &attention_mask,
+                           const std::size_t layer,
+                           std::vector<float> *const embedding) {
+    if (!model_ || embedding == nullptr || position_ != 0 || tokens.empty() ||
+        tokens.size() > capacity_ || attention_mask.size() != tokens.size() ||
+        layer > model_->public_config.layers) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB Mamba embedding requires a fresh full-sequence context "
+              "and valid layer"};
+    }
+    GenebMambaForwardResult result;
+    auto status =
+        model_->runtime.forward(tokens, attention_mask, {layer}, &result);
+    if (!status.ok())
+      return status;
+    if (result.captures.size() != 1 ||
+        result.captures.front().values.size() !=
+            tokens.size() * model_->public_config.width) {
+      return {ErrorCode::kInternal,
+              "GENEB Mamba returned an incomplete hidden state"};
+    }
+    *embedding = std::move(result.captures.front().values);
+    position_ = tokens.size();
+    return Status::Ok();
+  }
+
+  [[nodiscard]] std::size_t position() const noexcept { return position_; }
+  [[nodiscard]] std::size_t activation_capacity() const noexcept {
+    return capacity_;
+  }
+  [[nodiscard]] const ModelConfig &config() const noexcept {
+    return model_->public_config;
+  }
+  [[nodiscard]] const char *kernel_name() const noexcept {
+    return model_->runtime.linear_executor_name();
+  }
+
+private:
+  std::shared_ptr<GenebMambaModelAdapter> model_;
+  std::size_t capacity_{0};
+  std::size_t position_{0};
+};
+
+class GenebHyenaDnaModelAdapter final {
+public:
+  Status load(const ModelFile &artifact, const bool allow_test_fixture) {
+    bool synthetic = false;
+    if (artifact.find_metadata("fixture.synthetic") != nullptr) {
+      auto status = metadata_bool(artifact, "fixture.synthetic", &synthetic);
+      if (!status.ok())
+        return status;
+      if (synthetic && !allow_test_fixture) {
+        return {ErrorCode::kUnsupported,
+                "synthetic model fixtures require explicit test permission"};
+      }
+    }
+    auto status = runtime.load(artifact);
+    if (!status.ok())
+      return status;
+    const auto *const topology = runtime.topology();
+    if (topology == nullptr) {
+      return {ErrorCode::kInternal, "GENEB HyenaDNA topology was not retained"};
+    }
+    public_config.architecture = std::string{kGenebHyenaDnaArchitecture};
+    public_config.artifact_profile = std::string{artifact.profile()};
+    public_config.implementation =
+        ArchitectureImplementation::kGenebHyenaDnaDecoder;
+    public_config.tokenizer = ArchitectureTokenizer::kArtifact;
+    public_config.test_fixture = synthetic;
+    public_config.vocab_size = topology->vocabulary_size;
+    public_config.width = topology->width;
+    public_config.layers = topology->layers;
+    public_config.max_seqlen = topology->maximum_sequence_length;
+    if (artifact.find_metadata("model.id") != nullptr)
+      status = metadata_string(artifact, "model.id", &public_config.model_id);
+    else
+      status = metadata_string(artifact, "model.name", &public_config.model_id);
+    return status;
+  }
+
+  GenebHyenaDnaModel runtime;
+  ModelConfig public_config;
+};
+
+class GenebHyenaDnaContext final {
+public:
+  Status
+  initialize_shared(const std::shared_ptr<GenebHyenaDnaModelAdapter> &model,
+                    const std::size_t context_capacity) {
+    if (!model || model_ || context_capacity == 0 ||
+        context_capacity > model->public_config.max_seqlen) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB HyenaDNA context capacity/model is invalid"};
+    }
+    model_ = model;
+    capacity_ = context_capacity;
+    return Status::Ok();
+  }
+
+  Status prefill_embedding(const std::vector<TokenId> &tokens,
+                           const std::size_t layer,
+                           std::vector<float> *const embedding) {
+    return prefill_embedding_masked(
+        tokens, std::vector<std::uint8_t>(tokens.size(), 1U), layer, embedding);
+  }
+
+  Status
+  prefill_embedding_masked(const std::vector<TokenId> &tokens,
+                           const std::vector<std::uint8_t> &attention_mask,
+                           const std::size_t layer,
+                           std::vector<float> *const embedding) {
+    if (!model_ || embedding == nullptr || position_ != 0 || tokens.empty() ||
+        tokens.size() > capacity_ || attention_mask.size() != tokens.size() ||
+        layer > model_->public_config.layers) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB HyenaDNA embedding requires a fresh full-sequence "
+              "context and valid layer"};
+    }
+    GenebHyenaDnaForwardResult result;
+    auto status =
+        model_->runtime.forward(tokens, attention_mask, {layer}, &result);
+    if (!status.ok())
+      return status;
+    if (result.captures.size() != 1 ||
+        result.captures.front().values.size() !=
+            tokens.size() * model_->public_config.width) {
+      return {ErrorCode::kInternal,
+              "GENEB HyenaDNA returned an incomplete hidden state"};
+    }
+    *embedding = std::move(result.captures.front().values);
+    position_ = tokens.size();
+    return Status::Ok();
+  }
+
+  [[nodiscard]] std::size_t position() const noexcept { return position_; }
+  [[nodiscard]] std::size_t activation_capacity() const noexcept {
+    return capacity_;
+  }
+  [[nodiscard]] const ModelConfig &config() const noexcept {
+    return model_->public_config;
+  }
+  [[nodiscard]] const char *kernel_name() const noexcept {
+    return model_->runtime.kernel_name();
+  }
+
+private:
+  std::shared_ptr<GenebHyenaDnaModelAdapter> model_;
+  std::size_t capacity_{0};
+  std::size_t position_{0};
+};
+
+class GenebEvo1ModelAdapter final {
+public:
+  Status load(const ModelFile &artifact, const bool allow_test_fixture) {
+    bool synthetic = false;
+    if (artifact.find_metadata("fixture.synthetic") != nullptr) {
+      auto status = metadata_bool(artifact, "fixture.synthetic", &synthetic);
+      if (!status.ok())
+        return status;
+      if (synthetic && !allow_test_fixture) {
+        return {ErrorCode::kUnsupported,
+                "synthetic model fixtures require explicit test permission"};
+      }
+    }
+    auto status = runtime.load(artifact);
+    if (!status.ok())
+      return status;
+    const auto *const topology = runtime.topology();
+    if (topology == nullptr) {
+      return {ErrorCode::kInternal, "GENEB Evo-1 topology was not retained"};
+    }
+    public_config.architecture = std::string{kGenebEvo1Architecture};
+    public_config.artifact_profile = std::string{artifact.profile()};
+    public_config.implementation =
+        ArchitectureImplementation::kGenebStripedHyenaV1;
+    public_config.tokenizer = ArchitectureTokenizer::kArtifact;
+    public_config.test_fixture = synthetic;
+    public_config.vocab_size = topology->vocabulary_size;
+    public_config.width = topology->width;
+    public_config.layers = topology->layers;
+    public_config.max_seqlen = topology->maximum_sequence_length;
+    if (artifact.find_metadata("model.id") != nullptr)
+      status = metadata_string(artifact, "model.id", &public_config.model_id);
+    else
+      status = metadata_string(artifact, "model.name", &public_config.model_id);
+    return status;
+  }
+
+  GenebEvo1Model runtime;
+  ModelConfig public_config;
+};
+
+class GenebEvo1Context final {
+public:
+  Status initialize_shared(const std::shared_ptr<GenebEvo1ModelAdapter> &model,
+                           const std::size_t context_capacity) {
+    if (!model || model_ || context_capacity == 0 ||
+        context_capacity > model->public_config.max_seqlen) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB Evo-1 context capacity/model is invalid"};
+    }
+    model_ = model;
+    capacity_ = context_capacity;
+    return Status::Ok();
+  }
+
+  Status prefill_embedding(const std::vector<TokenId> &tokens,
+                           const std::size_t layer,
+                           std::vector<float> *const embedding) {
+    if (!model_ || embedding == nullptr || position_ != 0 || tokens.empty() ||
+        tokens.size() > capacity_ || layer > model_->public_config.layers) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB Evo-1 embedding requires a fresh full-sequence context "
+              "and valid layer"};
+    }
+    GenebEvo1ForwardResult result;
+    auto status = model_->runtime.forward(tokens, {layer}, &result);
+    if (!status.ok())
+      return status;
+    if (result.captures.size() != 1 ||
+        result.captures.front().values.size() !=
+            tokens.size() * model_->public_config.width) {
+      return {ErrorCode::kInternal,
+              "GENEB Evo-1 returned an incomplete hidden state"};
+    }
+    *embedding = std::move(result.captures.front().values);
+    position_ = tokens.size();
+    return Status::Ok();
+  }
+
+  Status
+  prefill_embedding_masked(const std::vector<TokenId> &tokens,
+                           const std::vector<std::uint8_t> &attention_mask,
+                           const std::size_t layer,
+                           std::vector<float> *const embedding) {
+    if (attention_mask.size() != tokens.size() ||
+        std::any_of(attention_mask.begin(), attention_mask.end(),
+                    [](const std::uint8_t value) { return value != 1U; })) {
+      return {ErrorCode::kUnsupported,
+              "GENEB Evo-1 reference embedding does not accept padding"};
+    }
+    return prefill_embedding(tokens, layer, embedding);
+  }
+
+  [[nodiscard]] std::size_t position() const noexcept { return position_; }
+  [[nodiscard]] std::size_t activation_capacity() const noexcept {
+    return capacity_;
+  }
+  [[nodiscard]] const ModelConfig &config() const noexcept {
+    return model_->public_config;
+  }
+  [[nodiscard]] const char *kernel_name() const noexcept {
+    return model_->runtime.kernel_name();
+  }
+
+private:
+  std::shared_ptr<GenebEvo1ModelAdapter> model_;
+  std::size_t capacity_{0};
+  std::size_t position_{0};
+};
+
+class GenebJanusDnaModelAdapter final {
+public:
+  Status load(const ModelFile &artifact,
+              std::shared_ptr<evo::detail::LinearExecutor> executor,
+              const bool allow_test_fixture) {
+    bool synthetic = false;
+    if (artifact.find_metadata("fixture.synthetic") != nullptr) {
+      auto status = metadata_bool(artifact, "fixture.synthetic", &synthetic);
+      if (!status.ok())
+        return status;
+      if (synthetic && !allow_test_fixture) {
+        return {ErrorCode::kUnsupported,
+                "synthetic model fixtures require explicit test permission"};
+      }
+    }
+    auto status = runtime.load_artifact(artifact, std::move(executor));
+    if (!status.ok())
+      return status;
+    const auto *const topology = runtime.topology();
+    if (topology == nullptr) {
+      return {ErrorCode::kInternal, "GENEB JanusDNA topology was not retained"};
+    }
+    public_config.architecture = std::string{kGenebJanusDnaArchitecture};
+    public_config.artifact_profile = std::string{artifact.profile()};
+    public_config.implementation =
+        ArchitectureImplementation::kGenebJanusDnaEncoder;
+    public_config.tokenizer = ArchitectureTokenizer::kArtifact;
+    public_config.test_fixture = synthetic;
+    public_config.vocab_size = topology->vocabulary_size;
+    public_config.width = topology->width;
+    public_config.layers = topology->layers;
+    public_config.max_seqlen = topology->maximum_sequence_length;
+    tokenizer_vocabulary_size = topology->tokenizer_vocabulary_size;
+    if (artifact.find_metadata("model.id") != nullptr)
+      status = metadata_string(artifact, "model.id", &public_config.model_id);
+    else
+      status = metadata_string(artifact, "model.name", &public_config.model_id);
+    return status;
+  }
+
+  GenebJanusDnaModel runtime;
+  ModelConfig public_config;
+  std::size_t tokenizer_vocabulary_size{0};
+};
+
+class GenebJanusDnaContext final {
+public:
+  Status
+  initialize_shared(const std::shared_ptr<GenebJanusDnaModelAdapter> &model,
+                    const std::size_t context_capacity) {
+    if (!model || model_ || context_capacity == 0 ||
+        context_capacity > model->public_config.max_seqlen) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB JanusDNA context capacity/model is invalid"};
+    }
+    model_ = model;
+    capacity_ = context_capacity;
+    return Status::Ok();
+  }
+
+  Status prefill_embedding(const std::vector<TokenId> &tokens,
+                           const std::size_t layer,
+                           std::vector<float> *const embedding) {
+    return prefill_embedding_masked(
+        tokens, std::vector<std::uint8_t>(tokens.size(), 1U), layer, embedding);
+  }
+
+  Status
+  prefill_embedding_masked(const std::vector<TokenId> &tokens,
+                           const std::vector<std::uint8_t> &attention_mask,
+                           const std::size_t layer,
+                           std::vector<float> *const embedding) {
+    if (!model_ || embedding == nullptr || position_ != 0 || tokens.empty() ||
+        tokens.size() > capacity_ || attention_mask.size() != tokens.size() ||
+        layer > model_->public_config.layers) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB JanusDNA embedding requires a fresh full-sequence "
+              "context and valid layer"};
+    }
+    GenebJanusDnaForwardResult result;
+    auto status =
+        model_->runtime.forward(tokens, attention_mask, {layer}, &result);
+    if (!status.ok())
+      return status;
+    if (result.captures.size() != 1 ||
+        result.captures.front().values.size() !=
+            tokens.size() * model_->public_config.width) {
+      return {ErrorCode::kInternal,
+              "GENEB JanusDNA returned an incomplete hidden state"};
+    }
+    *embedding = std::move(result.captures.front().values);
+    position_ = tokens.size();
+    return Status::Ok();
+  }
+
+  [[nodiscard]] std::size_t position() const noexcept { return position_; }
+  [[nodiscard]] std::size_t activation_capacity() const noexcept {
+    return capacity_;
+  }
+  [[nodiscard]] const ModelConfig &config() const noexcept {
+    return model_->public_config;
+  }
+  [[nodiscard]] const char *kernel_name() const noexcept {
+    return model_->runtime.linear_executor_name();
+  }
+
+private:
+  std::shared_ptr<GenebJanusDnaModelAdapter> model_;
+  std::size_t capacity_{0};
+  std::size_t position_{0};
+};
+
+class GenebSequenceCnnModelAdapter final {
+public:
+  Status load(const ModelFile &artifact,
+              std::shared_ptr<evo::detail::LinearExecutor> executor,
+              const bool allow_test_fixture) {
+    bool synthetic = false;
+    if (artifact.find_metadata("fixture.synthetic") != nullptr) {
+      auto status = metadata_bool(artifact, "fixture.synthetic", &synthetic);
+      if (!status.ok())
+        return status;
+      if (synthetic && !allow_test_fixture) {
+        return {ErrorCode::kUnsupported,
+                "synthetic model fixtures require explicit test permission"};
+      }
+    }
+    auto status = runtime.load_artifact(artifact, std::move(executor));
+    if (!status.ok())
+      return status;
+    const auto *const topology = runtime.topology();
+    if (topology == nullptr) {
+      return {ErrorCode::kInternal,
+              "GENEB sequence CNN topology was not retained"};
+    }
+    public_config.architecture = std::string{kGenebSequenceCnnArchitecture};
+    public_config.artifact_profile = std::string{artifact.profile()};
+    public_config.implementation =
+        ArchitectureImplementation::kGenebSequenceCnnEncoder;
+    // The public transport is raw bytes. The runtime converts them to the
+    // frozen four-channel one-hot input internally.
+    public_config.tokenizer = ArchitectureTokenizer::kByteIdentity;
+    public_config.test_fixture = synthetic;
+    public_config.vocab_size = 256U;
+    public_config.width = topology->output_width;
+    // Public layer 0 is the returned final sequence embedding. Internal
+    // transformer depth is deliberately not exposed as hidden-state taps.
+    public_config.layers = 0U;
+    public_config.max_seqlen = topology->input_length;
+    if (artifact.find_metadata("model.id") != nullptr)
+      status = metadata_string(artifact, "model.id", &public_config.model_id);
+    else
+      status = metadata_string(artifact, "model.name", &public_config.model_id);
+    return status;
+  }
+
+  GenebSequenceCnnModel runtime;
+  ModelConfig public_config;
+};
+
+class GenebSequenceCnnContext final {
+public:
+  Status initialize_shared(
+      const std::shared_ptr<GenebSequenceCnnModelAdapter> &model,
+      const std::size_t context_capacity) {
+    if (!model || model_ || context_capacity == 0 ||
+        context_capacity > model->public_config.max_seqlen) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB sequence CNN context capacity/model is invalid"};
+    }
+    model_ = model;
+    capacity_ = context_capacity;
+    return Status::Ok();
+  }
+
+  Status prefill_embedding(const std::vector<TokenId> &tokens,
+                           const std::size_t layer,
+                           std::vector<float> *const embedding) {
+    return prefill_embedding_masked(
+        tokens, std::vector<std::uint8_t>(tokens.size(), 1U), layer,
+        embedding);
+  }
+
+  Status prefill_embedding_masked(
+      const std::vector<TokenId> &tokens,
+      const std::vector<std::uint8_t> &attention_mask,
+      const std::size_t layer, std::vector<float> *const embedding) {
+    if (!model_ || embedding == nullptr || position_ != 0 || tokens.empty() ||
+        tokens.size() > capacity_ || attention_mask.size() != tokens.size() ||
+        layer != 0U ||
+        std::any_of(attention_mask.begin(), attention_mask.end(),
+                    [](const std::uint8_t value) { return value != 1U; })) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB sequence CNN embedding requires one fresh unmasked "
+              "byte sequence at public layer zero"};
+    }
+    std::string sequence;
+    sequence.reserve(tokens.size());
+    for (const TokenId token : tokens) {
+      if (token > 255U) {
+        return {ErrorCode::kInvalidArgument,
+                "GENEB sequence CNN transport token is not a byte"};
+      }
+      sequence.push_back(static_cast<char>(token));
+    }
+    GenebSequenceCnnForwardResult result;
+    auto status = model_->runtime.forward(sequence, &result);
+    if (!status.ok())
+      return status;
+    if (result.rows == 0 || result.width != model_->public_config.width ||
+        result.rows > std::numeric_limits<std::size_t>::max() / result.width ||
+        result.final_hidden.size() != result.rows * result.width) {
+      return {ErrorCode::kInternal,
+              "GENEB sequence CNN returned an incomplete final embedding"};
+    }
+    *embedding = std::move(result.final_hidden);
+    position_ = tokens.size();
+    return Status::Ok();
+  }
+
+  [[nodiscard]] std::size_t position() const noexcept { return position_; }
+  [[nodiscard]] std::size_t activation_capacity() const noexcept {
+    return capacity_;
+  }
+  [[nodiscard]] const ModelConfig &config() const noexcept {
+    return model_->public_config;
+  }
+  [[nodiscard]] const char *kernel_name() const noexcept {
+    return model_->runtime.linear_executor_name();
+  }
+
+private:
+  std::shared_ptr<GenebSequenceCnnModelAdapter> model_;
+  std::size_t capacity_{0};
+  std::size_t position_{0};
+};
+
+class GenebRoformerModelAdapter final {
+public:
+  Status load(const ModelFile &artifact,
+              std::shared_ptr<evo::detail::LinearExecutor> executor,
+              const bool allow_test_fixture) {
+    bool synthetic = false;
+    if (artifact.find_metadata("fixture.synthetic") != nullptr) {
+      auto status = metadata_bool(artifact, "fixture.synthetic", &synthetic);
+      if (!status.ok())
+        return status;
+      if (synthetic && !allow_test_fixture) {
+        return {ErrorCode::kUnsupported,
+                "synthetic model fixtures require explicit test permission"};
+      }
+    }
+    auto status = runtime.load_artifact(artifact, std::move(executor));
+    if (!status.ok())
+      return status;
+    const auto *const topology = runtime.topology();
+    if (topology == nullptr) {
+      return {ErrorCode::kInternal,
+              "GENEB RoFormer topology was not retained"};
+    }
+    public_config.architecture = std::string{kGenebRoformerArchitecture};
+    public_config.artifact_profile = std::string{artifact.profile()};
+    public_config.implementation =
+        ArchitectureImplementation::kGenebRoformerEncoder;
+    public_config.tokenizer = ArchitectureTokenizer::kArtifact;
+    public_config.test_fixture = synthetic;
+    public_config.vocab_size = topology->vocabulary_size;
+    public_config.width = topology->width;
+    public_config.layers = topology->layers;
+    public_config.max_seqlen = topology->maximum_sequence_length;
+    tokenizer_vocabulary_size = topology->tokenizer_vocabulary_size;
+    if (artifact.find_metadata("model.id") != nullptr)
+      status = metadata_string(artifact, "model.id", &public_config.model_id);
+    else
+      status = metadata_string(artifact, "model.name", &public_config.model_id);
+    return status;
+  }
+
+  GenebRoformerModel runtime;
+  ModelConfig public_config;
+  std::size_t tokenizer_vocabulary_size{0};
+};
+
+class GenebRoformerContext final {
+public:
+  Status initialize_shared(
+      const std::shared_ptr<GenebRoformerModelAdapter> &model,
+      const std::size_t context_capacity) {
+    if (!model || model_ || context_capacity == 0 ||
+        context_capacity > model->public_config.max_seqlen) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB RoFormer context capacity/model is invalid"};
+    }
+    model_ = model;
+    capacity_ = context_capacity;
+    return Status::Ok();
+  }
+
+  Status prefill_embedding(const std::vector<TokenId> &tokens,
+                           const std::size_t layer,
+                           std::vector<float> *const embedding) {
+    return prefill_embedding_masked(
+        tokens, std::vector<std::uint8_t>(tokens.size(), 1U), layer,
+        embedding);
+  }
+
+  Status prefill_embedding_masked(
+      const std::vector<TokenId> &tokens,
+      const std::vector<std::uint8_t> &attention_mask,
+      const std::size_t layer, std::vector<float> *const embedding) {
+    if (!model_ || embedding == nullptr || position_ != 0 || tokens.empty() ||
+        tokens.size() > capacity_ || attention_mask.size() != tokens.size() ||
+        layer > model_->public_config.layers) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB RoFormer embedding requires a fresh full-sequence "
+              "context and valid layer"};
+    }
+    GenebRoformerForwardResult result;
+    auto status =
+        model_->runtime.forward(tokens, attention_mask, {layer}, &result);
+    if (!status.ok())
+      return status;
+    if (result.captures.size() != 1U ||
+        result.captures.front().layer != layer ||
+        result.captures.front().values.size() !=
+            tokens.size() * model_->public_config.width) {
+      return {ErrorCode::kInternal,
+              "GENEB RoFormer returned an incomplete hidden state"};
+    }
+    *embedding = std::move(result.captures.front().values);
+    position_ = tokens.size();
+    return Status::Ok();
+  }
+
+  [[nodiscard]] std::size_t position() const noexcept { return position_; }
+  [[nodiscard]] std::size_t activation_capacity() const noexcept {
+    return capacity_;
+  }
+  [[nodiscard]] const ModelConfig &config() const noexcept {
+    return model_->public_config;
+  }
+  [[nodiscard]] const char *kernel_name() const noexcept {
+    return model_->runtime.linear_executor_name();
+  }
+
+private:
+  std::shared_ptr<GenebRoformerModelAdapter> model_;
+  std::size_t capacity_{0};
+  std::size_t position_{0};
+};
+
+} // namespace detail
+
 Model::Model() : impl_(std::make_shared<Impl>()) {}
 Model::~Model() = default;
 Model::Model(Model &&other) noexcept
     : impl_(std::move(other.impl_)), hyena_(std::move(other.hyena_)),
       esmc_(std::move(other.esmc_)),
+      geneb_decoder_(std::move(other.geneb_decoder_)),
+      geneb_olmo_(std::move(other.geneb_olmo_)),
+      geneb_esm_(std::move(other.geneb_esm_)),
+      geneb_bert_(std::move(other.geneb_bert_)),
+      geneb_gpt2_(std::move(other.geneb_gpt2_)),
+      geneb_dna_gpt_(std::move(other.geneb_dna_gpt_)),
+      geneb_custom_(std::move(other.geneb_custom_)),
+      geneb_mamba_(std::move(other.geneb_mamba_)),
+      geneb_hyenadna_(std::move(other.geneb_hyenadna_)),
+      geneb_evo1_(std::move(other.geneb_evo1_)),
+      geneb_janusdna_(std::move(other.geneb_janusdna_)),
+      geneb_sequence_cnn_(std::move(other.geneb_sequence_cnn_)),
+      geneb_roformer_(std::move(other.geneb_roformer_)),
+      artifact_tokenizer_(std::move(other.artifact_tokenizer_)),
+      geneb_embedding_spec_(std::move(other.geneb_embedding_spec_)),
       factory_(std::exchange(other.factory_, nullptr)) {}
 Model &Model::operator=(Model &&other) noexcept {
   if (this != &other) {
     impl_ = std::move(other.impl_);
     hyena_ = std::move(other.hyena_);
     esmc_ = std::move(other.esmc_);
+    geneb_decoder_ = std::move(other.geneb_decoder_);
+    geneb_olmo_ = std::move(other.geneb_olmo_);
+    geneb_esm_ = std::move(other.geneb_esm_);
+    geneb_bert_ = std::move(other.geneb_bert_);
+    geneb_gpt2_ = std::move(other.geneb_gpt2_);
+    geneb_dna_gpt_ = std::move(other.geneb_dna_gpt_);
+    geneb_custom_ = std::move(other.geneb_custom_);
+    geneb_mamba_ = std::move(other.geneb_mamba_);
+    geneb_hyenadna_ = std::move(other.geneb_hyenadna_);
+    geneb_evo1_ = std::move(other.geneb_evo1_);
+    geneb_janusdna_ = std::move(other.geneb_janusdna_);
+    geneb_sequence_cnn_ = std::move(other.geneb_sequence_cnn_);
+    geneb_roformer_ = std::move(other.geneb_roformer_);
+    artifact_tokenizer_ = std::move(other.artifact_tokenizer_);
+    geneb_embedding_spec_ = std::move(other.geneb_embedding_spec_);
     factory_ = std::exchange(other.factory_, nullptr);
   }
   return *this;
@@ -722,12 +2259,25 @@ Status Model::load(const ModelFile &model, const bool allow_test_fixture) {
   return load_with_executor(model, {}, allow_test_fixture);
 }
 
-Status Model::load_with_executor(
-    const ModelFile &model,
-    std::shared_ptr<evo::detail::LinearExecutor> executor,
-    const bool allow_test_fixture) {
-  if (factory_ != nullptr || (!impl_ && !hyena_ && !esmc_))
+Status
+Model::load_with_executor(const ModelFile &model,
+                          std::shared_ptr<evo::detail::LinearExecutor> executor,
+                          const bool allow_test_fixture) {
+  if (factory_ != nullptr ||
+      (!impl_ && !hyena_ && !esmc_ && !geneb_decoder_ && !geneb_olmo_ &&
+       !geneb_custom_ && !geneb_hyenadna_ && !geneb_evo1_ &&
+       !geneb_janusdna_ && !geneb_sequence_cnn_ && !geneb_roformer_))
     return {ErrorCode::kInvalidArgument, "host model is already loaded"};
+  std::shared_ptr<ArtifactTokenizer> artifact_tokenizer;
+  if (model.tokenizer_asset_descriptor().has_value()) {
+    std::unique_ptr<ArtifactTokenizer> loaded;
+    auto tokenizer_status =
+        ArtifactTokenizer::Load(std::string{model.artifact_root()},
+                                *model.tokenizer_asset_descriptor(), &loaded);
+    if (!tokenizer_status.ok())
+      return tokenizer_status;
+    artifact_tokenizer = std::move(loaded);
+  }
   std::string runtime_abi;
   std::string architecture;
   auto status = metadata_string(model, "runtime.abi", &runtime_abi);
@@ -747,8 +2297,8 @@ Status Model::load_with_executor(
             "artifact profile/runtime ABI does not match architecture '" +
                 architecture + "'"};
   }
-  const auto backend = executor ? kArchitectureBackendMps
-                                : kArchitectureBackendCpu;
+  const auto backend =
+      executor ? kArchitectureBackendMps : kArchitectureBackendCpu;
   const auto *const factory =
       find_architecture_backend_factory(*registered, backend);
   if (factory == nullptr) {
@@ -756,6 +2306,34 @@ Status Model::load_with_executor(
             "no " + std::string{executor ? "MPS" : "CPU"} +
                 " backend factory is registered for architecture '" +
                 architecture + "'"};
+  }
+  std::optional<GenebEmbeddingArtifactSpec> geneb_embedding_spec;
+  switch (factory->implementation) {
+  case ArchitectureImplementation::kGenebTransformerDecoder:
+  case ArchitectureImplementation::kGenebOlmoDecoder:
+  case ArchitectureImplementation::kGenebEsmEncoder:
+  case ArchitectureImplementation::kGenebBertEncoder:
+  case ArchitectureImplementation::kGenebGpt2Decoder:
+  case ArchitectureImplementation::kGenebDnaGptDecoder:
+  case ArchitectureImplementation::kGenebCustomEncoder:
+  case ArchitectureImplementation::kGenebMambaEncoder:
+  case ArchitectureImplementation::kGenebHyenaDnaDecoder:
+  case ArchitectureImplementation::kGenebStripedHyenaV1:
+  case ArchitectureImplementation::kGenebJanusDnaEncoder:
+  case ArchitectureImplementation::kGenebSequenceCnnEncoder:
+  case ArchitectureImplementation::kGenebRoformerEncoder: {
+    GenebEmbeddingArtifactSpec compiled;
+    status = geneb_embedding_spec_from_artifact(model, &compiled);
+    if (!status.ok())
+      return status;
+    geneb_embedding_spec = std::move(compiled);
+    break;
+  }
+  case ArchitectureImplementation::kUnknown:
+  case ArchitectureImplementation::kStripedHyena2:
+  case ArchitectureImplementation::kHyenaDna:
+  case ArchitectureImplementation::kEsmc:
+    break;
   }
   switch (factory->implementation) {
   case ArchitectureImplementation::kUnknown:
@@ -766,8 +2344,13 @@ Status Model::load_with_executor(
     status = candidate->load(model, allow_test_fixture, std::move(executor));
     if (!status.ok())
       return status;
+    if (artifact_tokenizer &&
+        artifact_tokenizer->vocabulary_size() != candidate->config().vocab_size)
+      return {ErrorCode::kModelFormat,
+              "tokenizer vocabulary size differs from model vocabulary"};
     impl_.reset();
     hyena_ = std::move(candidate);
+    artifact_tokenizer_ = std::move(artifact_tokenizer);
     factory_ = factory;
     return Status::Ok();
   }
@@ -776,8 +2359,289 @@ Status Model::load_with_executor(
     status = candidate->load(model, allow_test_fixture, std::move(executor));
     if (!status.ok())
       return status;
+    if (artifact_tokenizer &&
+        artifact_tokenizer->vocabulary_size() != candidate->config().vocab_size)
+      return {ErrorCode::kModelFormat,
+              "tokenizer vocabulary size differs from model vocabulary"};
     impl_.reset();
     esmc_ = std::move(candidate);
+    artifact_tokenizer_ = std::move(artifact_tokenizer);
+    factory_ = factory;
+    return Status::Ok();
+  }
+  case ArchitectureImplementation::kGenebTransformerDecoder: {
+    if (!artifact_tokenizer) {
+      return {ErrorCode::kModelFormat,
+              "GENEB decoder artifact is missing its tokenizer descriptor"};
+    }
+    auto candidate = std::make_shared<detail::GenebDecoderModelAdapter>();
+    status = candidate->load(model, std::move(executor), allow_test_fixture);
+    if (!status.ok())
+      return status;
+    if (artifact_tokenizer->vocabulary_size() !=
+        candidate->public_config.vocab_size) {
+      return {ErrorCode::kModelFormat,
+              "tokenizer vocabulary size differs from model vocabulary"};
+    }
+    impl_.reset();
+    geneb_decoder_ = std::move(candidate);
+    artifact_tokenizer_ = std::move(artifact_tokenizer);
+    geneb_embedding_spec_ = std::move(geneb_embedding_spec);
+    factory_ = factory;
+    return Status::Ok();
+  }
+  case ArchitectureImplementation::kGenebOlmoDecoder: {
+    if (!artifact_tokenizer) {
+      return {ErrorCode::kModelFormat,
+              "GENEB OLMo artifact is missing its tokenizer descriptor"};
+    }
+    auto candidate = std::make_shared<detail::GenebOlmoModelAdapter>();
+    status = candidate->load(model, std::move(executor), allow_test_fixture);
+    if (!status.ok())
+      return status;
+    if (artifact_tokenizer->vocabulary_size() !=
+        candidate->public_config.vocab_size) {
+      return {ErrorCode::kModelFormat,
+              "tokenizer vocabulary size differs from model vocabulary"};
+    }
+    impl_.reset();
+    geneb_olmo_ = std::move(candidate);
+    artifact_tokenizer_ = std::move(artifact_tokenizer);
+    geneb_embedding_spec_ = std::move(geneb_embedding_spec);
+    factory_ = factory;
+    return Status::Ok();
+  }
+  case ArchitectureImplementation::kGenebEsmEncoder: {
+    if (!artifact_tokenizer) {
+      return {ErrorCode::kModelFormat,
+              "GENEB ESM artifact is missing its tokenizer descriptor"};
+    }
+    auto candidate = std::make_shared<detail::GenebEsmModelAdapter>();
+    status = candidate->load(model, std::move(executor), allow_test_fixture);
+    if (!status.ok())
+      return status;
+    if (artifact_tokenizer->vocabulary_size() !=
+        candidate->public_config.vocab_size) {
+      return {ErrorCode::kModelFormat,
+              "tokenizer vocabulary size differs from model vocabulary"};
+    }
+    impl_.reset();
+    geneb_esm_ = std::move(candidate);
+    artifact_tokenizer_ = std::move(artifact_tokenizer);
+    geneb_embedding_spec_ = std::move(geneb_embedding_spec);
+    factory_ = factory;
+    return Status::Ok();
+  }
+  case ArchitectureImplementation::kGenebBertEncoder: {
+    if (!artifact_tokenizer) {
+      return {ErrorCode::kModelFormat,
+              "GENEB BERT artifact is missing its tokenizer descriptor"};
+    }
+    auto candidate = std::make_shared<detail::GenebBertModelAdapter>();
+    status = candidate->load(model, std::move(executor), allow_test_fixture);
+    if (!status.ok())
+      return status;
+    if (artifact_tokenizer->vocabulary_size() !=
+        candidate->public_config.vocab_size) {
+      return {ErrorCode::kModelFormat,
+              "tokenizer vocabulary size differs from model vocabulary"};
+    }
+    impl_.reset();
+    geneb_bert_ = std::move(candidate);
+    artifact_tokenizer_ = std::move(artifact_tokenizer);
+    geneb_embedding_spec_ = std::move(geneb_embedding_spec);
+    factory_ = factory;
+    return Status::Ok();
+  }
+  case ArchitectureImplementation::kGenebGpt2Decoder: {
+    if (!artifact_tokenizer) {
+      return {ErrorCode::kModelFormat,
+              "GENEB GPT-2 artifact is missing its tokenizer descriptor"};
+    }
+    auto candidate = std::make_shared<detail::GenebGpt2ModelAdapter>();
+    status = candidate->load(model, allow_test_fixture);
+    if (!status.ok())
+      return status;
+    if (artifact_tokenizer->vocabulary_size() !=
+        candidate->public_config.vocab_size) {
+      return {ErrorCode::kModelFormat,
+              "tokenizer vocabulary size differs from model vocabulary"};
+    }
+    impl_.reset();
+    geneb_gpt2_ = std::move(candidate);
+    artifact_tokenizer_ = std::move(artifact_tokenizer);
+    geneb_embedding_spec_ = std::move(geneb_embedding_spec);
+    factory_ = factory;
+    return Status::Ok();
+  }
+  case ArchitectureImplementation::kGenebDnaGptDecoder: {
+    if (!artifact_tokenizer) {
+      return {ErrorCode::kModelFormat,
+              "GENEB DNA-GPT artifact is missing its tokenizer descriptor"};
+    }
+    auto candidate = std::make_shared<detail::GenebDnaGptModelAdapter>();
+    status = candidate->load(model, allow_test_fixture);
+    if (!status.ok())
+      return status;
+    if (artifact_tokenizer->vocabulary_size() !=
+        candidate->public_config.vocab_size) {
+      return {ErrorCode::kModelFormat,
+              "tokenizer vocabulary size differs from model vocabulary"};
+    }
+    impl_.reset();
+    geneb_dna_gpt_ = std::move(candidate);
+    artifact_tokenizer_ = std::move(artifact_tokenizer);
+    geneb_embedding_spec_ = std::move(geneb_embedding_spec);
+    factory_ = factory;
+    return Status::Ok();
+  }
+  case ArchitectureImplementation::kGenebCustomEncoder: {
+    if (!artifact_tokenizer) {
+      return {ErrorCode::kModelFormat,
+              "GENEB custom encoder artifact is missing its tokenizer "
+              "descriptor"};
+    }
+    auto candidate = std::make_shared<detail::GenebCustomEncoderModelAdapter>();
+    status = candidate->load(model, std::move(executor), allow_test_fixture);
+    if (!status.ok())
+      return status;
+    if (artifact_tokenizer->vocabulary_size() !=
+        candidate->tokenizer_vocabulary_size) {
+      return {ErrorCode::kModelFormat,
+              "tokenizer vocabulary size differs from custom encoder "
+              "tokenizer vocabulary"};
+    }
+    impl_.reset();
+    geneb_custom_ = std::move(candidate);
+    artifact_tokenizer_ = std::move(artifact_tokenizer);
+    geneb_embedding_spec_ = std::move(geneb_embedding_spec);
+    factory_ = factory;
+    return Status::Ok();
+  }
+  case ArchitectureImplementation::kGenebMambaEncoder: {
+    if (!artifact_tokenizer) {
+      return {ErrorCode::kModelFormat,
+              "GENEB Mamba artifact is missing its tokenizer descriptor"};
+    }
+    auto candidate = std::make_shared<detail::GenebMambaModelAdapter>();
+    status = candidate->load(model, std::move(executor), allow_test_fixture);
+    if (!status.ok())
+      return status;
+    if (artifact_tokenizer->vocabulary_size() !=
+        candidate->tokenizer_vocabulary_size) {
+      return {ErrorCode::kModelFormat,
+              "tokenizer vocabulary size differs from GENEB Mamba "
+              "tokenizer vocabulary"};
+    }
+    impl_.reset();
+    geneb_mamba_ = std::move(candidate);
+    artifact_tokenizer_ = std::move(artifact_tokenizer);
+    geneb_embedding_spec_ = std::move(geneb_embedding_spec);
+    factory_ = factory;
+    return Status::Ok();
+  }
+  case ArchitectureImplementation::kGenebHyenaDnaDecoder: {
+    if (!artifact_tokenizer) {
+      return {ErrorCode::kModelFormat,
+              "GENEB HyenaDNA artifact is missing its tokenizer descriptor"};
+    }
+    auto candidate = std::make_shared<detail::GenebHyenaDnaModelAdapter>();
+    status = candidate->load(model, allow_test_fixture);
+    if (!status.ok())
+      return status;
+    if (artifact_tokenizer->vocabulary_size() !=
+        candidate->public_config.vocab_size) {
+      return {ErrorCode::kModelFormat,
+              "tokenizer vocabulary size differs from GENEB HyenaDNA "
+              "vocabulary"};
+    }
+    impl_.reset();
+    geneb_hyenadna_ = std::move(candidate);
+    artifact_tokenizer_ = std::move(artifact_tokenizer);
+    geneb_embedding_spec_ = std::move(geneb_embedding_spec);
+    factory_ = factory;
+    return Status::Ok();
+  }
+  case ArchitectureImplementation::kGenebStripedHyenaV1: {
+    if (!artifact_tokenizer) {
+      return {ErrorCode::kModelFormat,
+              "GENEB Evo-1 artifact is missing its tokenizer descriptor"};
+    }
+    auto candidate = std::make_shared<detail::GenebEvo1ModelAdapter>();
+    status = candidate->load(model, allow_test_fixture);
+    if (!status.ok())
+      return status;
+    if (artifact_tokenizer->vocabulary_size() !=
+        candidate->public_config.vocab_size) {
+      return {ErrorCode::kModelFormat,
+              "tokenizer vocabulary size differs from GENEB Evo-1 "
+              "vocabulary"};
+    }
+    impl_.reset();
+    geneb_evo1_ = std::move(candidate);
+    artifact_tokenizer_ = std::move(artifact_tokenizer);
+    geneb_embedding_spec_ = std::move(geneb_embedding_spec);
+    factory_ = factory;
+    return Status::Ok();
+  }
+  case ArchitectureImplementation::kGenebJanusDnaEncoder: {
+    if (!artifact_tokenizer) {
+      return {ErrorCode::kModelFormat,
+              "GENEB JanusDNA artifact is missing its tokenizer descriptor"};
+    }
+    auto candidate = std::make_shared<detail::GenebJanusDnaModelAdapter>();
+    status = candidate->load(model, std::move(executor), allow_test_fixture);
+    if (!status.ok())
+      return status;
+    if (artifact_tokenizer->vocabulary_size() !=
+        candidate->tokenizer_vocabulary_size) {
+      return {ErrorCode::kModelFormat,
+              "tokenizer vocabulary size differs from GENEB JanusDNA "
+              "tokenizer vocabulary"};
+    }
+    impl_.reset();
+    geneb_janusdna_ = std::move(candidate);
+    artifact_tokenizer_ = std::move(artifact_tokenizer);
+    geneb_embedding_spec_ = std::move(geneb_embedding_spec);
+    factory_ = factory;
+    return Status::Ok();
+  }
+  case ArchitectureImplementation::kGenebSequenceCnnEncoder: {
+    if (artifact_tokenizer) {
+      return {ErrorCode::kModelFormat,
+              "GENEB sequence CNN must use the registered byte transport "
+              "instead of an artifact tokenizer"};
+    }
+    auto candidate =
+        std::make_shared<detail::GenebSequenceCnnModelAdapter>();
+    status = candidate->load(model, std::move(executor), allow_test_fixture);
+    if (!status.ok())
+      return status;
+    impl_.reset();
+    geneb_sequence_cnn_ = std::move(candidate);
+    geneb_embedding_spec_ = std::move(geneb_embedding_spec);
+    factory_ = factory;
+    return Status::Ok();
+  }
+  case ArchitectureImplementation::kGenebRoformerEncoder: {
+    if (!artifact_tokenizer) {
+      return {ErrorCode::kModelFormat,
+              "GENEB RoFormer artifact is missing its tokenizer descriptor"};
+    }
+    auto candidate = std::make_shared<detail::GenebRoformerModelAdapter>();
+    status = candidate->load(model, std::move(executor), allow_test_fixture);
+    if (!status.ok())
+      return status;
+    if (artifact_tokenizer->vocabulary_size() !=
+        candidate->tokenizer_vocabulary_size) {
+      return {ErrorCode::kModelFormat,
+              "tokenizer vocabulary size differs from GENEB RoFormer "
+              "tokenizer vocabulary"};
+    }
+    impl_.reset();
+    geneb_roformer_ = std::move(candidate);
+    artifact_tokenizer_ = std::move(artifact_tokenizer);
+    geneb_embedding_spec_ = std::move(geneb_embedding_spec);
     factory_ = factory;
     return Status::Ok();
   }
@@ -999,7 +2863,12 @@ Status Model::load_with_executor(
       return status;
   }
   candidate->file = &model;
+  if (artifact_tokenizer && artifact_tokenizer->vocabulary_size() !=
+                                candidate->public_config.vocab_size)
+    return {ErrorCode::kModelFormat,
+            "tokenizer vocabulary size differs from model vocabulary"};
   impl_ = std::move(candidate);
+  artifact_tokenizer_ = std::move(artifact_tokenizer);
   factory_ = factory;
   return Status::Ok();
 }
@@ -1020,6 +2889,32 @@ const ModelConfig &Model::config() const noexcept {
     return hyena_->config();
   case ArchitectureImplementation::kEsmc:
     return esmc_->config();
+  case ArchitectureImplementation::kGenebTransformerDecoder:
+    return geneb_decoder_->public_config;
+  case ArchitectureImplementation::kGenebOlmoDecoder:
+    return geneb_olmo_->public_config;
+  case ArchitectureImplementation::kGenebEsmEncoder:
+    return geneb_esm_->public_config;
+  case ArchitectureImplementation::kGenebBertEncoder:
+    return geneb_bert_->public_config;
+  case ArchitectureImplementation::kGenebGpt2Decoder:
+    return geneb_gpt2_->public_config;
+  case ArchitectureImplementation::kGenebDnaGptDecoder:
+    return geneb_dna_gpt_->public_config;
+  case ArchitectureImplementation::kGenebCustomEncoder:
+    return geneb_custom_->public_config;
+  case ArchitectureImplementation::kGenebMambaEncoder:
+    return geneb_mamba_->public_config;
+  case ArchitectureImplementation::kGenebHyenaDnaDecoder:
+    return geneb_hyenadna_->public_config;
+  case ArchitectureImplementation::kGenebStripedHyenaV1:
+    return geneb_evo1_->public_config;
+  case ArchitectureImplementation::kGenebJanusDnaEncoder:
+    return geneb_janusdna_->public_config;
+  case ArchitectureImplementation::kGenebSequenceCnnEncoder:
+    return geneb_sequence_cnn_->public_config;
+  case ArchitectureImplementation::kGenebRoformerEncoder:
+    return geneb_roformer_->public_config;
   }
   static const ModelConfig unsupported;
   return unsupported;
@@ -1036,18 +2931,109 @@ const char *Model::kernel_name() const noexcept {
     return hyena_->kernel_name();
   case ArchitectureImplementation::kEsmc:
     return esmc_->kernel_name();
+  case ArchitectureImplementation::kGenebTransformerDecoder:
+    return geneb_decoder_->runtime.linear_executor_name();
+  case ArchitectureImplementation::kGenebOlmoDecoder:
+    return geneb_olmo_->runtime.linear_executor_name();
+  case ArchitectureImplementation::kGenebEsmEncoder:
+    return geneb_esm_->runtime.linear_executor_name();
+  case ArchitectureImplementation::kGenebBertEncoder:
+    return geneb_bert_->runtime.linear_executor_name();
+  case ArchitectureImplementation::kGenebGpt2Decoder:
+    return geneb_gpt2_->runtime.kernel_name();
+  case ArchitectureImplementation::kGenebDnaGptDecoder:
+    return geneb_dna_gpt_->runtime.kernel_name();
+  case ArchitectureImplementation::kGenebCustomEncoder:
+    return geneb_custom_->runtime.linear_executor_name();
+  case ArchitectureImplementation::kGenebMambaEncoder:
+    return geneb_mamba_->runtime.linear_executor_name();
+  case ArchitectureImplementation::kGenebHyenaDnaDecoder:
+    return geneb_hyenadna_->runtime.kernel_name();
+  case ArchitectureImplementation::kGenebStripedHyenaV1:
+    return geneb_evo1_->runtime.kernel_name();
+  case ArchitectureImplementation::kGenebJanusDnaEncoder:
+    return geneb_janusdna_->runtime.linear_executor_name();
+  case ArchitectureImplementation::kGenebSequenceCnnEncoder:
+    return geneb_sequence_cnn_->runtime.linear_executor_name();
+  case ArchitectureImplementation::kGenebRoformerEncoder:
+    return geneb_roformer_->runtime.linear_executor_name();
   }
   return "unsupported-architecture";
 }
 
 Status Model::encode(const std::string_view sequence,
                      std::vector<TokenId> *const tokens) const {
+  if (artifact_tokenizer_)
+    return artifact_tokenizer_->encode(sequence, {}, tokens);
   return encode_sequence(config().tokenizer, sequence, tokens);
 }
 
 Status Model::decode_token(const TokenId token,
                            std::uint8_t *const byte) const {
+  if (artifact_tokenizer_)
+    return {ErrorCode::kUnsupported,
+            "artifact tokenizer detokenization is not supported"};
   return decode_sequence_token(config().tokenizer, token, byte);
+}
+
+const GenebEmbeddingArtifactSpec *Model::geneb_embedding_spec() const noexcept {
+  return geneb_embedding_spec_ ? &*geneb_embedding_spec_ : nullptr;
+}
+
+Status Model::prepare_geneb_embedding_input(
+    const std::string_view sequence,
+    GenebPreparedEmbeddingInput *const output) const {
+  if (!geneb_embedding_spec_) {
+    return {ErrorCode::kUnsupported,
+            "GENEB preset requires verified artifact metadata"};
+  }
+  if (artifact_tokenizer_) {
+    return evo::prepare_geneb_embedding_input(sequence, *geneb_embedding_spec_,
+                                              *artifact_tokenizer_, output);
+  }
+  if (config().implementation !=
+          ArchitectureImplementation::kGenebSequenceCnnEncoder ||
+      config().tokenizer != ArchitectureTokenizer::kByteIdentity ||
+      output == nullptr) {
+    return {ErrorCode::kUnsupported,
+            "GENEB preset requires a verified artifact tokenizer"};
+  }
+  GenebPreparedEmbeddingInput prepared;
+  auto status = transform_geneb_input(sequence,
+                                      geneb_embedding_spec_->input_transform,
+                                      &prepared.transform);
+  if (!status.ok())
+    return status;
+  if (prepared.transform.special_token_policy !=
+          GenebSpecialTokenPolicy::kNone ||
+      !prepared.transform.prefix.empty()) {
+    return {ErrorCode::kModelFormat,
+            "GENEB sequence CNN byte transport cannot add special tokens"};
+  }
+  status = encode_sequence(ArchitectureTokenizer::kByteIdentity,
+                           prepared.transform.sequence, &prepared.tokens);
+  if (!status.ok())
+    return status;
+  status = plan_geneb_token_length(prepared.tokens.size(),
+                                   geneb_embedding_spec_->input_transform,
+                                   &prepared.token_plan);
+  if (!status.ok())
+    return status;
+  if (prepared.token_plan.deferred_to_model_preset ||
+      prepared.token_plan.retained_token_count != prepared.tokens.size() ||
+      prepared.token_plan.pad_left != 0U ||
+      prepared.token_plan.pad_right != 0U) {
+    return {ErrorCode::kModelFormat,
+            "GENEB sequence CNN base transform unexpectedly requires a token "
+            "length policy"};
+  }
+  prepared.attention_mask.assign(prepared.tokens.size(), 1U);
+  if (prepared.tokens.empty()) {
+    return {ErrorCode::kInvalidArgument,
+            "GENEB preprocessing produced an empty sequence"};
+  }
+  *output = std::move(prepared);
+  return Status::Ok();
 }
 
 Context::Context() : impl_(std::make_unique<Impl>()) {}
@@ -1055,12 +3041,38 @@ Context::~Context() = default;
 Context::Context(Context &&other) noexcept
     : impl_(std::move(other.impl_)), hyena_(std::move(other.hyena_)),
       esmc_(std::move(other.esmc_)),
+      geneb_decoder_(std::move(other.geneb_decoder_)),
+      geneb_olmo_(std::move(other.geneb_olmo_)),
+      geneb_esm_(std::move(other.geneb_esm_)),
+      geneb_bert_(std::move(other.geneb_bert_)),
+      geneb_gpt2_(std::move(other.geneb_gpt2_)),
+      geneb_dna_gpt_(std::move(other.geneb_dna_gpt_)),
+      geneb_custom_(std::move(other.geneb_custom_)),
+      geneb_mamba_(std::move(other.geneb_mamba_)),
+      geneb_hyenadna_(std::move(other.geneb_hyenadna_)),
+      geneb_evo1_(std::move(other.geneb_evo1_)),
+      geneb_janusdna_(std::move(other.geneb_janusdna_)),
+      geneb_sequence_cnn_(std::move(other.geneb_sequence_cnn_)),
+      geneb_roformer_(std::move(other.geneb_roformer_)),
       factory_(std::exchange(other.factory_, nullptr)) {}
 Context &Context::operator=(Context &&other) noexcept {
   if (this != &other) {
     impl_ = std::move(other.impl_);
     hyena_ = std::move(other.hyena_);
     esmc_ = std::move(other.esmc_);
+    geneb_decoder_ = std::move(other.geneb_decoder_);
+    geneb_olmo_ = std::move(other.geneb_olmo_);
+    geneb_esm_ = std::move(other.geneb_esm_);
+    geneb_bert_ = std::move(other.geneb_bert_);
+    geneb_gpt2_ = std::move(other.geneb_gpt2_);
+    geneb_dna_gpt_ = std::move(other.geneb_dna_gpt_);
+    geneb_custom_ = std::move(other.geneb_custom_);
+    geneb_mamba_ = std::move(other.geneb_mamba_);
+    geneb_hyenadna_ = std::move(other.geneb_hyenadna_);
+    geneb_evo1_ = std::move(other.geneb_evo1_);
+    geneb_janusdna_ = std::move(other.geneb_janusdna_);
+    geneb_sequence_cnn_ = std::move(other.geneb_sequence_cnn_);
+    geneb_roformer_ = std::move(other.geneb_roformer_);
     factory_ = std::exchange(other.factory_, nullptr);
   }
   return *this;
@@ -1092,6 +3104,38 @@ Status Context::initialize_shared(const Model &model,
     factory_ = model.factory_;
     return Status::Ok();
   }
+  case ArchitectureImplementation::kGenebSequenceCnnEncoder: {
+    if (!impl_ || !model.geneb_sequence_cnn_ || layer_begin != 0) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB sequence CNN contexts do not support suffix-layer "
+              "placement"};
+    }
+    auto candidate = std::make_unique<detail::GenebSequenceCnnContext>();
+    const auto status = candidate->initialize_shared(
+        model.geneb_sequence_cnn_, context_capacity);
+    if (!status.ok())
+      return status;
+    impl_.reset();
+    geneb_sequence_cnn_ = std::move(candidate);
+    factory_ = model.factory_;
+    return Status::Ok();
+  }
+  case ArchitectureImplementation::kGenebRoformerEncoder: {
+    if (!impl_ || !model.geneb_roformer_ || layer_begin != 0) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB RoFormer contexts do not support suffix-layer "
+              "placement"};
+    }
+    auto candidate = std::make_unique<detail::GenebRoformerContext>();
+    const auto status =
+        candidate->initialize_shared(model.geneb_roformer_, context_capacity);
+    if (!status.ok())
+      return status;
+    impl_.reset();
+    geneb_roformer_ = std::move(candidate);
+    factory_ = model.factory_;
+    return Status::Ok();
+  }
   case ArchitectureImplementation::kEsmc: {
     if (!impl_ || !model.esmc_ || layer_begin != 0)
       return {ErrorCode::kInvalidArgument,
@@ -1103,6 +3147,174 @@ Status Context::initialize_shared(const Model &model,
       return status;
     impl_.reset();
     esmc_ = std::move(candidate);
+    factory_ = model.factory_;
+    return Status::Ok();
+  }
+  case ArchitectureImplementation::kGenebTransformerDecoder: {
+    if (!impl_ || !model.geneb_decoder_ || layer_begin != 0) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB decoder contexts do not support suffix-layer placement"};
+    }
+    auto candidate = std::make_unique<detail::GenebDecoderContext>();
+    const auto status =
+        candidate->initialize_shared(model.geneb_decoder_, context_capacity);
+    if (!status.ok())
+      return status;
+    impl_.reset();
+    geneb_decoder_ = std::move(candidate);
+    factory_ = model.factory_;
+    return Status::Ok();
+  }
+  case ArchitectureImplementation::kGenebOlmoDecoder: {
+    if (!impl_ || !model.geneb_olmo_ || layer_begin != 0) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB OLMo contexts do not support suffix-layer placement"};
+    }
+    auto candidate = std::make_unique<detail::GenebOlmoContext>();
+    const auto status =
+        candidate->initialize_shared(model.geneb_olmo_, context_capacity);
+    if (!status.ok())
+      return status;
+    impl_.reset();
+    geneb_olmo_ = std::move(candidate);
+    factory_ = model.factory_;
+    return Status::Ok();
+  }
+  case ArchitectureImplementation::kGenebEsmEncoder: {
+    if (!impl_ || !model.geneb_esm_ || layer_begin != 0) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB ESM contexts do not support suffix-layer placement"};
+    }
+    auto candidate = std::make_unique<detail::GenebEsmContext>();
+    const auto status =
+        candidate->initialize_shared(model.geneb_esm_, context_capacity);
+    if (!status.ok())
+      return status;
+    impl_.reset();
+    geneb_esm_ = std::move(candidate);
+    factory_ = model.factory_;
+    return Status::Ok();
+  }
+  case ArchitectureImplementation::kGenebBertEncoder: {
+    if (!impl_ || !model.geneb_bert_ || layer_begin != 0) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB BERT contexts do not support suffix-layer placement"};
+    }
+    auto candidate = std::make_unique<detail::GenebBertContext>();
+    const auto status =
+        candidate->initialize_shared(model.geneb_bert_, context_capacity);
+    if (!status.ok())
+      return status;
+    impl_.reset();
+    geneb_bert_ = std::move(candidate);
+    factory_ = model.factory_;
+    return Status::Ok();
+  }
+  case ArchitectureImplementation::kGenebGpt2Decoder: {
+    if (!impl_ || !model.geneb_gpt2_ || layer_begin != 0) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB GPT-2 contexts do not support suffix-layer placement"};
+    }
+    auto candidate = std::make_unique<detail::GenebGpt2Context>();
+    const auto status =
+        candidate->initialize_shared(model.geneb_gpt2_, context_capacity);
+    if (!status.ok())
+      return status;
+    impl_.reset();
+    geneb_gpt2_ = std::move(candidate);
+    factory_ = model.factory_;
+    return Status::Ok();
+  }
+  case ArchitectureImplementation::kGenebDnaGptDecoder: {
+    if (!impl_ || !model.geneb_dna_gpt_ || layer_begin != 0) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB DNA-GPT contexts do not support suffix-layer placement"};
+    }
+    auto candidate = std::make_unique<detail::GenebDnaGptContext>();
+    const auto status =
+        candidate->initialize_shared(model.geneb_dna_gpt_, context_capacity);
+    if (!status.ok())
+      return status;
+    impl_.reset();
+    geneb_dna_gpt_ = std::move(candidate);
+    factory_ = model.factory_;
+    return Status::Ok();
+  }
+  case ArchitectureImplementation::kGenebCustomEncoder: {
+    if (!impl_ || !model.geneb_custom_ || layer_begin != 0) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB custom encoder contexts do not support suffix-layer "
+              "placement"};
+    }
+    auto candidate = std::make_unique<detail::GenebCustomEncoderContext>();
+    const auto status =
+        candidate->initialize_shared(model.geneb_custom_, context_capacity);
+    if (!status.ok())
+      return status;
+    impl_.reset();
+    geneb_custom_ = std::move(candidate);
+    factory_ = model.factory_;
+    return Status::Ok();
+  }
+  case ArchitectureImplementation::kGenebMambaEncoder: {
+    if (!impl_ || !model.geneb_mamba_ || layer_begin != 0) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB Mamba contexts do not support suffix-layer placement"};
+    }
+    auto candidate = std::make_unique<detail::GenebMambaContext>();
+    const auto status =
+        candidate->initialize_shared(model.geneb_mamba_, context_capacity);
+    if (!status.ok())
+      return status;
+    impl_.reset();
+    geneb_mamba_ = std::move(candidate);
+    factory_ = model.factory_;
+    return Status::Ok();
+  }
+  case ArchitectureImplementation::kGenebHyenaDnaDecoder: {
+    if (!impl_ || !model.geneb_hyenadna_ || layer_begin != 0) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB HyenaDNA contexts do not support suffix-layer "
+              "placement"};
+    }
+    auto candidate = std::make_unique<detail::GenebHyenaDnaContext>();
+    const auto status =
+        candidate->initialize_shared(model.geneb_hyenadna_, context_capacity);
+    if (!status.ok())
+      return status;
+    impl_.reset();
+    geneb_hyenadna_ = std::move(candidate);
+    factory_ = model.factory_;
+    return Status::Ok();
+  }
+  case ArchitectureImplementation::kGenebStripedHyenaV1: {
+    if (!impl_ || !model.geneb_evo1_ || layer_begin != 0) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB Evo-1 contexts do not support suffix-layer placement"};
+    }
+    auto candidate = std::make_unique<detail::GenebEvo1Context>();
+    const auto status =
+        candidate->initialize_shared(model.geneb_evo1_, context_capacity);
+    if (!status.ok())
+      return status;
+    impl_.reset();
+    geneb_evo1_ = std::move(candidate);
+    factory_ = model.factory_;
+    return Status::Ok();
+  }
+  case ArchitectureImplementation::kGenebJanusDnaEncoder: {
+    if (!impl_ || !model.geneb_janusdna_ || layer_begin != 0) {
+      return {ErrorCode::kInvalidArgument,
+              "GENEB JanusDNA contexts do not support suffix-layer "
+              "placement"};
+    }
+    auto candidate = std::make_unique<detail::GenebJanusDnaContext>();
+    const auto status =
+        candidate->initialize_shared(model.geneb_janusdna_, context_capacity);
+    if (!status.ok())
+      return status;
+    impl_.reset();
+    geneb_janusdna_ = std::move(candidate);
     factory_ = model.factory_;
     return Status::Ok();
   }
@@ -1157,6 +3369,45 @@ Status Context::prefill(const std::vector<TokenId> &tokens,
     return hyena_->prefill(tokens, logits);
   case ArchitectureImplementation::kEsmc:
     return esmc_->prefill(tokens, logits);
+  case ArchitectureImplementation::kGenebTransformerDecoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB decoder embedding profile does not expose logits"};
+  case ArchitectureImplementation::kGenebOlmoDecoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB OLMo embedding profile does not expose logits"};
+  case ArchitectureImplementation::kGenebEsmEncoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB ESM embedding profile does not expose logits"};
+  case ArchitectureImplementation::kGenebBertEncoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB BERT embedding profile does not expose logits"};
+  case ArchitectureImplementation::kGenebGpt2Decoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB GPT-2 embedding profile does not expose logits"};
+  case ArchitectureImplementation::kGenebDnaGptDecoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB DNA-GPT embedding profile does not expose logits"};
+  case ArchitectureImplementation::kGenebCustomEncoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB custom encoder embedding profile does not expose logits"};
+  case ArchitectureImplementation::kGenebMambaEncoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB Mamba embedding profile does not expose logits"};
+  case ArchitectureImplementation::kGenebHyenaDnaDecoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB HyenaDNA embedding profile does not expose logits"};
+  case ArchitectureImplementation::kGenebStripedHyenaV1:
+    return {ErrorCode::kUnsupported,
+            "GENEB Evo-1 embedding profile does not expose logits"};
+  case ArchitectureImplementation::kGenebJanusDnaEncoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB JanusDNA embedding profile does not expose logits"};
+  case ArchitectureImplementation::kGenebSequenceCnnEncoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB sequence CNN embedding profile does not expose logits"};
+  case ArchitectureImplementation::kGenebRoformerEncoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB RoFormer embedding profile does not expose logits"};
   }
   return {ErrorCode::kUnsupported,
           "host context implementation is not registered"};
@@ -1177,6 +3428,45 @@ Status Context::prefill_chunk(const std::vector<TokenId> &tokens,
   case ArchitectureImplementation::kEsmc:
     return {ErrorCode::kUnsupported,
             "ESMC requires one full-sequence bidirectional prefill"};
+  case ArchitectureImplementation::kGenebTransformerDecoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB decoder requires one full-sequence embedding"};
+  case ArchitectureImplementation::kGenebOlmoDecoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB OLMo requires one full-sequence embedding"};
+  case ArchitectureImplementation::kGenebEsmEncoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB ESM requires one full-sequence embedding"};
+  case ArchitectureImplementation::kGenebBertEncoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB BERT requires one full-sequence embedding"};
+  case ArchitectureImplementation::kGenebGpt2Decoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB GPT-2 requires one full-sequence embedding"};
+  case ArchitectureImplementation::kGenebDnaGptDecoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB DNA-GPT requires one full-sequence embedding"};
+  case ArchitectureImplementation::kGenebCustomEncoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB custom encoder requires one full-sequence embedding"};
+  case ArchitectureImplementation::kGenebMambaEncoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB Mamba requires one full-sequence embedding"};
+  case ArchitectureImplementation::kGenebHyenaDnaDecoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB HyenaDNA requires one full-sequence embedding"};
+  case ArchitectureImplementation::kGenebStripedHyenaV1:
+    return {ErrorCode::kUnsupported,
+            "GENEB Evo-1 requires one full-sequence embedding"};
+  case ArchitectureImplementation::kGenebJanusDnaEncoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB JanusDNA requires one full-sequence embedding"};
+  case ArchitectureImplementation::kGenebSequenceCnnEncoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB sequence CNN requires one full-sequence embedding"};
+  case ArchitectureImplementation::kGenebRoformerEncoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB RoFormer requires one full-sequence embedding"};
   }
   return {ErrorCode::kUnsupported,
           "host context implementation is not registered"};
@@ -1196,6 +3486,45 @@ Status Context::decode(const TokenId token, std::vector<float> *const logits) {
   case ArchitectureImplementation::kEsmc:
     return {ErrorCode::kUnsupported,
             "ESMC does not support autoregressive decode"};
+  case ArchitectureImplementation::kGenebTransformerDecoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB decoder embedding profile does not support decode"};
+  case ArchitectureImplementation::kGenebOlmoDecoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB OLMo embedding profile does not support decode"};
+  case ArchitectureImplementation::kGenebEsmEncoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB ESM embedding profile does not support decode"};
+  case ArchitectureImplementation::kGenebBertEncoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB BERT embedding profile does not support decode"};
+  case ArchitectureImplementation::kGenebGpt2Decoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB GPT-2 embedding profile does not support decode"};
+  case ArchitectureImplementation::kGenebDnaGptDecoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB DNA-GPT embedding profile does not support decode"};
+  case ArchitectureImplementation::kGenebCustomEncoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB custom encoder embedding profile does not support decode"};
+  case ArchitectureImplementation::kGenebMambaEncoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB Mamba embedding profile does not support decode"};
+  case ArchitectureImplementation::kGenebHyenaDnaDecoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB HyenaDNA embedding profile does not support decode"};
+  case ArchitectureImplementation::kGenebStripedHyenaV1:
+    return {ErrorCode::kUnsupported,
+            "GENEB Evo-1 embedding profile does not support decode"};
+  case ArchitectureImplementation::kGenebJanusDnaEncoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB JanusDNA embedding profile does not support decode"};
+  case ArchitectureImplementation::kGenebSequenceCnnEncoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB sequence CNN embedding profile does not support decode"};
+  case ArchitectureImplementation::kGenebRoformerEncoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB RoFormer embedding profile does not support decode"};
   }
   return {ErrorCode::kUnsupported,
           "host context implementation is not registered"};
@@ -1215,6 +3544,97 @@ Status Context::prefill_embedding(const std::vector<TokenId> &tokens,
     return hyena_->prefill_embedding(tokens, layer, embedding);
   case ArchitectureImplementation::kEsmc:
     return esmc_->prefill_embedding(tokens, layer, embedding);
+  case ArchitectureImplementation::kGenebTransformerDecoder:
+    return geneb_decoder_->prefill_embedding(tokens, layer, embedding);
+  case ArchitectureImplementation::kGenebOlmoDecoder:
+    return geneb_olmo_->prefill_embedding(tokens, layer, embedding);
+  case ArchitectureImplementation::kGenebEsmEncoder:
+    return geneb_esm_->prefill_embedding(tokens, layer, embedding);
+  case ArchitectureImplementation::kGenebBertEncoder:
+    return geneb_bert_->prefill_embedding(tokens, layer, embedding);
+  case ArchitectureImplementation::kGenebGpt2Decoder:
+    return geneb_gpt2_->prefill_embedding(tokens, layer, embedding);
+  case ArchitectureImplementation::kGenebDnaGptDecoder:
+    return geneb_dna_gpt_->prefill_embedding(tokens, layer, embedding);
+  case ArchitectureImplementation::kGenebCustomEncoder:
+    return geneb_custom_->prefill_embedding(tokens, layer, embedding);
+  case ArchitectureImplementation::kGenebMambaEncoder:
+    return geneb_mamba_->prefill_embedding(tokens, layer, embedding);
+  case ArchitectureImplementation::kGenebHyenaDnaDecoder:
+    return geneb_hyenadna_->prefill_embedding(tokens, layer, embedding);
+  case ArchitectureImplementation::kGenebStripedHyenaV1:
+    return geneb_evo1_->prefill_embedding(tokens, layer, embedding);
+  case ArchitectureImplementation::kGenebJanusDnaEncoder:
+    return geneb_janusdna_->prefill_embedding(tokens, layer, embedding);
+  case ArchitectureImplementation::kGenebSequenceCnnEncoder:
+    return geneb_sequence_cnn_->prefill_embedding(tokens, layer, embedding);
+  case ArchitectureImplementation::kGenebRoformerEncoder:
+    return geneb_roformer_->prefill_embedding(tokens, layer, embedding);
+  }
+  return {ErrorCode::kUnsupported,
+          "host context implementation is not registered"};
+}
+
+Status Context::prefill_embedding_masked(
+    const std::vector<TokenId> &tokens,
+    const std::vector<std::uint8_t> &attention_mask, const std::size_t layer,
+    std::vector<float> *const embedding) {
+  if (factory_ == nullptr)
+    return {ErrorCode::kInvalidArgument, "host context is not initialized"};
+  if (attention_mask.size() != tokens.size())
+    return {ErrorCode::kInvalidArgument,
+            "embedding attention mask size differs from token count"};
+  switch (factory_->implementation) {
+  case ArchitectureImplementation::kUnknown:
+    break;
+  case ArchitectureImplementation::kGenebTransformerDecoder:
+    return geneb_decoder_->prefill_embedding_masked(tokens, attention_mask,
+                                                    layer, embedding);
+  case ArchitectureImplementation::kGenebOlmoDecoder:
+    return geneb_olmo_->prefill_embedding_masked(tokens, attention_mask, layer,
+                                                 embedding);
+  case ArchitectureImplementation::kGenebEsmEncoder:
+    return geneb_esm_->prefill_embedding_masked(tokens, attention_mask, layer,
+                                                embedding);
+  case ArchitectureImplementation::kGenebBertEncoder:
+    return geneb_bert_->prefill_embedding_masked(tokens, attention_mask, layer,
+                                                 embedding);
+  case ArchitectureImplementation::kGenebGpt2Decoder:
+    return geneb_gpt2_->prefill_embedding_masked(tokens, attention_mask, layer,
+                                                 embedding);
+  case ArchitectureImplementation::kGenebDnaGptDecoder:
+    return geneb_dna_gpt_->prefill_embedding_masked(tokens, attention_mask,
+                                                    layer, embedding);
+  case ArchitectureImplementation::kGenebCustomEncoder:
+    return geneb_custom_->prefill_embedding_masked(tokens, attention_mask,
+                                                   layer, embedding);
+  case ArchitectureImplementation::kGenebMambaEncoder:
+    return geneb_mamba_->prefill_embedding_masked(tokens, attention_mask, layer,
+                                                  embedding);
+  case ArchitectureImplementation::kGenebHyenaDnaDecoder:
+    return geneb_hyenadna_->prefill_embedding_masked(tokens, attention_mask,
+                                                     layer, embedding);
+  case ArchitectureImplementation::kGenebStripedHyenaV1:
+    return geneb_evo1_->prefill_embedding_masked(tokens, attention_mask, layer,
+                                                 embedding);
+  case ArchitectureImplementation::kGenebJanusDnaEncoder:
+    return geneb_janusdna_->prefill_embedding_masked(tokens, attention_mask,
+                                                     layer, embedding);
+  case ArchitectureImplementation::kGenebSequenceCnnEncoder:
+    return geneb_sequence_cnn_->prefill_embedding_masked(
+        tokens, attention_mask, layer, embedding);
+  case ArchitectureImplementation::kGenebRoformerEncoder:
+    return geneb_roformer_->prefill_embedding_masked(tokens, attention_mask,
+                                                     layer, embedding);
+  case ArchitectureImplementation::kStripedHyena2:
+  case ArchitectureImplementation::kHyenaDna:
+  case ArchitectureImplementation::kEsmc:
+    if (std::any_of(attention_mask.begin(), attention_mask.end(),
+                    [](const std::uint8_t value) { return value != 1U; })) {
+      return {ErrorCode::kUnsupported,
+              "legacy architecture does not accept an embedding mask"};
+    }
+    return prefill_embedding(tokens, layer, embedding);
   }
   return {ErrorCode::kUnsupported,
           "host context implementation is not registered"};
@@ -1235,6 +3655,45 @@ Status Context::prefill_chunk_embedding(const std::vector<TokenId> &tokens,
   case ArchitectureImplementation::kEsmc:
     return {ErrorCode::kUnsupported,
             "ESMC requires one full-sequence bidirectional embedding"};
+  case ArchitectureImplementation::kGenebTransformerDecoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB decoder requires one full-sequence embedding"};
+  case ArchitectureImplementation::kGenebOlmoDecoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB OLMo requires one full-sequence embedding"};
+  case ArchitectureImplementation::kGenebEsmEncoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB ESM requires one full-sequence embedding"};
+  case ArchitectureImplementation::kGenebBertEncoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB BERT requires one full-sequence embedding"};
+  case ArchitectureImplementation::kGenebGpt2Decoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB GPT-2 requires one full-sequence embedding"};
+  case ArchitectureImplementation::kGenebDnaGptDecoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB DNA-GPT requires one full-sequence embedding"};
+  case ArchitectureImplementation::kGenebCustomEncoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB custom encoder requires one full-sequence embedding"};
+  case ArchitectureImplementation::kGenebMambaEncoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB Mamba requires one full-sequence embedding"};
+  case ArchitectureImplementation::kGenebHyenaDnaDecoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB HyenaDNA requires one full-sequence embedding"};
+  case ArchitectureImplementation::kGenebStripedHyenaV1:
+    return {ErrorCode::kUnsupported,
+            "GENEB Evo-1 requires one full-sequence embedding"};
+  case ArchitectureImplementation::kGenebJanusDnaEncoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB JanusDNA requires one full-sequence embedding"};
+  case ArchitectureImplementation::kGenebSequenceCnnEncoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB sequence CNN requires one full-sequence embedding"};
+  case ArchitectureImplementation::kGenebRoformerEncoder:
+    return {ErrorCode::kUnsupported,
+            "GENEB RoFormer requires one full-sequence embedding"};
   }
   return {ErrorCode::kUnsupported,
           "host context implementation is not registered"};
@@ -1245,8 +3704,7 @@ Status Context::prefill_from_hidden(const std::vector<float> &hidden,
                                     std::vector<float> *const logits) {
   if (factory_ == nullptr)
     return {ErrorCode::kInvalidArgument, "host context is not initialized"};
-  if (factory_->implementation !=
-      ArchitectureImplementation::kStripedHyena2) {
+  if (factory_->implementation != ArchitectureImplementation::kStripedHyena2) {
     return {ErrorCode::kUnsupported,
             "this architecture does not support CUDA-prefix hidden input"};
   }
@@ -1260,8 +3718,7 @@ Status Context::prefill_chunk_from_hidden(const std::vector<float> &hidden,
                                           std::vector<float> *const logits) {
   if (factory_ == nullptr)
     return {ErrorCode::kInvalidArgument, "host context is not initialized"};
-  if (factory_->implementation !=
-      ArchitectureImplementation::kStripedHyena2) {
+  if (factory_->implementation != ArchitectureImplementation::kStripedHyena2) {
     return {ErrorCode::kUnsupported,
             "this architecture does not support CUDA-prefix hidden input"};
   }
@@ -1282,6 +3739,32 @@ std::size_t Context::position() const noexcept {
     return hyena_->position();
   case ArchitectureImplementation::kEsmc:
     return esmc_->position();
+  case ArchitectureImplementation::kGenebTransformerDecoder:
+    return geneb_decoder_->position();
+  case ArchitectureImplementation::kGenebOlmoDecoder:
+    return geneb_olmo_->position();
+  case ArchitectureImplementation::kGenebEsmEncoder:
+    return geneb_esm_->position();
+  case ArchitectureImplementation::kGenebBertEncoder:
+    return geneb_bert_->position();
+  case ArchitectureImplementation::kGenebGpt2Decoder:
+    return geneb_gpt2_->position();
+  case ArchitectureImplementation::kGenebDnaGptDecoder:
+    return geneb_dna_gpt_->position();
+  case ArchitectureImplementation::kGenebCustomEncoder:
+    return geneb_custom_->position();
+  case ArchitectureImplementation::kGenebMambaEncoder:
+    return geneb_mamba_->position();
+  case ArchitectureImplementation::kGenebHyenaDnaDecoder:
+    return geneb_hyenadna_->position();
+  case ArchitectureImplementation::kGenebStripedHyenaV1:
+    return geneb_evo1_->position();
+  case ArchitectureImplementation::kGenebJanusDnaEncoder:
+    return geneb_janusdna_->position();
+  case ArchitectureImplementation::kGenebSequenceCnnEncoder:
+    return geneb_sequence_cnn_->position();
+  case ArchitectureImplementation::kGenebRoformerEncoder:
+    return geneb_roformer_->position();
   }
   return 0;
 }
@@ -1297,6 +3780,32 @@ std::size_t Context::activation_capacity() const noexcept {
     return hyena_->activation_capacity();
   case ArchitectureImplementation::kEsmc:
     return esmc_->activation_capacity();
+  case ArchitectureImplementation::kGenebTransformerDecoder:
+    return geneb_decoder_->activation_capacity();
+  case ArchitectureImplementation::kGenebOlmoDecoder:
+    return geneb_olmo_->activation_capacity();
+  case ArchitectureImplementation::kGenebEsmEncoder:
+    return geneb_esm_->activation_capacity();
+  case ArchitectureImplementation::kGenebBertEncoder:
+    return geneb_bert_->activation_capacity();
+  case ArchitectureImplementation::kGenebGpt2Decoder:
+    return geneb_gpt2_->activation_capacity();
+  case ArchitectureImplementation::kGenebDnaGptDecoder:
+    return geneb_dna_gpt_->activation_capacity();
+  case ArchitectureImplementation::kGenebCustomEncoder:
+    return geneb_custom_->activation_capacity();
+  case ArchitectureImplementation::kGenebMambaEncoder:
+    return geneb_mamba_->activation_capacity();
+  case ArchitectureImplementation::kGenebHyenaDnaDecoder:
+    return geneb_hyenadna_->activation_capacity();
+  case ArchitectureImplementation::kGenebStripedHyenaV1:
+    return geneb_evo1_->activation_capacity();
+  case ArchitectureImplementation::kGenebJanusDnaEncoder:
+    return geneb_janusdna_->activation_capacity();
+  case ArchitectureImplementation::kGenebSequenceCnnEncoder:
+    return geneb_sequence_cnn_->activation_capacity();
+  case ArchitectureImplementation::kGenebRoformerEncoder:
+    return geneb_roformer_->activation_capacity();
   }
   return 0;
 }
@@ -1314,6 +3823,32 @@ const ModelConfig &Context::config() const noexcept {
     return hyena_->config();
   case ArchitectureImplementation::kEsmc:
     return esmc_->config();
+  case ArchitectureImplementation::kGenebTransformerDecoder:
+    return geneb_decoder_->config();
+  case ArchitectureImplementation::kGenebOlmoDecoder:
+    return geneb_olmo_->config();
+  case ArchitectureImplementation::kGenebEsmEncoder:
+    return geneb_esm_->config();
+  case ArchitectureImplementation::kGenebBertEncoder:
+    return geneb_bert_->config();
+  case ArchitectureImplementation::kGenebGpt2Decoder:
+    return geneb_gpt2_->config();
+  case ArchitectureImplementation::kGenebDnaGptDecoder:
+    return geneb_dna_gpt_->config();
+  case ArchitectureImplementation::kGenebCustomEncoder:
+    return geneb_custom_->config();
+  case ArchitectureImplementation::kGenebMambaEncoder:
+    return geneb_mamba_->config();
+  case ArchitectureImplementation::kGenebHyenaDnaDecoder:
+    return geneb_hyenadna_->config();
+  case ArchitectureImplementation::kGenebStripedHyenaV1:
+    return geneb_evo1_->config();
+  case ArchitectureImplementation::kGenebJanusDnaEncoder:
+    return geneb_janusdna_->config();
+  case ArchitectureImplementation::kGenebSequenceCnnEncoder:
+    return geneb_sequence_cnn_->config();
+  case ArchitectureImplementation::kGenebRoformerEncoder:
+    return geneb_roformer_->config();
   }
   static const ModelConfig unsupported;
   return unsupported;
@@ -1331,6 +3866,32 @@ const char *Context::kernel_name() const noexcept {
     return hyena_->kernel_name();
   case ArchitectureImplementation::kEsmc:
     return esmc_->kernel_name();
+  case ArchitectureImplementation::kGenebTransformerDecoder:
+    return geneb_decoder_->kernel_name();
+  case ArchitectureImplementation::kGenebOlmoDecoder:
+    return geneb_olmo_->kernel_name();
+  case ArchitectureImplementation::kGenebEsmEncoder:
+    return geneb_esm_->kernel_name();
+  case ArchitectureImplementation::kGenebBertEncoder:
+    return geneb_bert_->kernel_name();
+  case ArchitectureImplementation::kGenebGpt2Decoder:
+    return geneb_gpt2_->kernel_name();
+  case ArchitectureImplementation::kGenebDnaGptDecoder:
+    return geneb_dna_gpt_->kernel_name();
+  case ArchitectureImplementation::kGenebCustomEncoder:
+    return geneb_custom_->kernel_name();
+  case ArchitectureImplementation::kGenebMambaEncoder:
+    return geneb_mamba_->kernel_name();
+  case ArchitectureImplementation::kGenebHyenaDnaDecoder:
+    return geneb_hyenadna_->kernel_name();
+  case ArchitectureImplementation::kGenebStripedHyenaV1:
+    return geneb_evo1_->kernel_name();
+  case ArchitectureImplementation::kGenebJanusDnaEncoder:
+    return geneb_janusdna_->kernel_name();
+  case ArchitectureImplementation::kGenebSequenceCnnEncoder:
+    return geneb_sequence_cnn_->kernel_name();
+  case ArchitectureImplementation::kGenebRoformerEncoder:
+    return geneb_roformer_->kernel_name();
   }
   return "unsupported-architecture";
 }

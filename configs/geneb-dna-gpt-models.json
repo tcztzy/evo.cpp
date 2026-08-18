@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "format": "geneb-dna-gpt-converter-v1",
+  "models": [
+    {
+      "runtime_id": "geneb-dna-gpt-0-1b-h",
+      "geneb_model_id": "dna_gpt0.1b_h",
+      "paper_name": "DNA-GPT-0.1B-H",
+      "catalog_architecture": "dna-gpt-custom-decoder",
+      "source_filename": "dna_gpt0.1b_h.pth",
+      "google_drive_file_id": "15m6CH3zaMSqflOaf6ec5VPfiulg-Gh0u",
+      "source_dtype": "F32",
+      "source_manifest_sha256": "1b87fc7e30e25acde8770a9af03aeb0802dceb11353eb814e2e80a44199c8082",
+      "source_tensor_count": 84,
+      "source_tensor_bytes": 455700480,
+      "topology": {
+        "vocab_size": 15659,
+        "hidden_size": 768,
+        "num_layers": 12,
+        "num_attention_heads": 12,
+        "inner_width": 3072,
+        "max_seqlen": 4096,
+        "norm_epsilon": 0.00001
+      },
+      "tokenizer": {
+        "kind": "static-sixmer",
+        "alphabet": "NAGCT",
+        "reserved_count": 34,
+        "unk_id": 0,
+        "pad_id": 20,
+        "prefix_id": 21,
+        "prefix_literal": "<R>",
+        "compiled_asset_sha256": "95bc6b74ce123dd326671a0c36b540a835ffea149c924a7473d8f9d78c1746d4",
+        "compiled_asset_size": 458941,
+        "compiler_manifest_sha256": "b375f8a2571d5c908a70b3c89558967df61ff15a29eae911682d33d54598a32c"
+      }
+    },
+    {
+      "runtime_id": "geneb-dna-gpt-3b-m",
+      "geneb_model_id": "dna_gpt3b_m",
+      "paper_name": "DNA-GPT-3B-M",
+      "catalog_architecture": "dna-gpt-custom-decoder",
+      "source_filename": "dna_gpt3b_m.pth",
+      "google_drive_file_id": "1pQ3Ai7C-ObzKkKTRwuf6eshVneKHzYEg",
+      "source_dtype": "BF16",
+      "source_manifest_sha256": "0394af26ac57ba360bb5009a3892e2bc9a1b87d34cfc38371c5386804d65309f",
+      "source_tensor_count": 372,
+      "source_tensor_bytes": 6227845120,
+      "topology": {
+        "vocab_size": 19564,
+        "hidden_size": 2048,
+        "num_layers": 60,
+        "num_attention_heads": 64,
+        "inner_width": 8192,
+        "max_seqlen": 512,
+        "norm_epsilon": 0.00001
+      },
+      "tokenizer": {
+        "kind": "dynamic-sixmer",
+        "alphabet": "NAGCT",
+        "reserved_count": 34,
+        "unk_id": 0,
+        "pad_id": 20,
+        "prefix_id": 21,
+        "prefix_literal": "<R>",
+        "compiled_asset_sha256": "8dc2953cdf6bcc676093a5812f26bceacdf2cf92256128356d0bb6ac86f0683f",
+        "compiled_asset_size": 571216,
+        "compiler_manifest_sha256": "a68ef6e9b9343388fb762b7cb71ef38ba5f5407fb92c4217fd7da0bffc9c3649"
+      }
+    }
+  ],
+  "code_provenance": {
+    "official_repo": "TencentAILabHealthcare/DNAGPT",
+    "official_revision": "9b6c0931e3b2011ee5bbb4b988be3e19d62953ae",
+    "extractor_commit": "b465d2d6a11efbbc9a22c105e34832725ce50e05",
+    "extractor_sha256": "3c9df4316dc049d447516527b378e6a4d944a63b83f4d656099d40e648656212",
+    "gpt_py_sha256": "e07ae8f5b7bed3ef38009a68d3699a215e4bc6c0e860a77fa873779a2123a6f0",
+    "dna_gpt_py_sha256": "be7e4b7bfd249a1c56f1d2b282d756f62482e69daa81054d57d72afa414caa8f",
+    "tokenizer_py_sha256": "799bba1f99977fe9b998d5e0a765ded7b973d7929481497dc741291d575dec16"
+  }
+}

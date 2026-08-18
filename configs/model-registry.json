@@ -5,12 +5,38 @@
   "artifact_profiles": [
     {"id": "evo2-runtime-v1", "metadata_key": "evo2.profile", "runtime_abi": "evo2-safetensors-v1"},
     {"id": "hyenadna-runtime-v1", "metadata_key": "runtime.profile", "runtime_abi": "hyenadna-safetensors-v1"},
-    {"id": "esmc-runtime-v1", "metadata_key": "runtime.profile", "runtime_abi": "esmc-safetensors-v1"}
+    {"id": "esmc-runtime-v1", "metadata_key": "runtime.profile", "runtime_abi": "esmc-safetensors-v1"},
+    {"id": "geneb-decoder-runtime-v1", "metadata_key": "runtime.profile", "runtime_abi": "geneb-decoder-safetensors-v1"},
+    {"id": "geneb-olmo-runtime-v1", "metadata_key": "runtime.profile", "runtime_abi": "geneb-olmo-safetensors-v1"},
+    {"id": "geneb-esm-runtime-v1", "metadata_key": "runtime.profile", "runtime_abi": "geneb-esm-safetensors-v1"},
+    {"id": "geneb-bert-runtime-v1", "metadata_key": "runtime.profile", "runtime_abi": "geneb-bert-safetensors-v1"},
+    {"id": "geneb-gpt2-runtime-v1", "metadata_key": "runtime.profile", "runtime_abi": "geneb-gpt2-safetensors-v1"},
+    {"id": "geneb-dna-gpt-runtime-v1", "metadata_key": "runtime.profile", "runtime_abi": "geneb-dna-gpt-torch-pth-v1"},
+    {"id": "geneb-custom-encoder-runtime-v1", "metadata_key": "runtime.profile", "runtime_abi": "geneb-custom-encoder-safetensors-v1"},
+    {"id": "geneb-mamba-runtime-v1", "metadata_key": "runtime.profile", "runtime_abi": "geneb-mamba-safetensors-v1"},
+    {"id": "geneb-hyenadna-runtime-v1", "metadata_key": "runtime.profile", "runtime_abi": "geneb-hyenadna-safetensors-v1"},
+    {"id": "geneb-evo1-runtime-v1", "metadata_key": "runtime.profile", "runtime_abi": "geneb-evo1-safetensors-v1"},
+    {"id": "geneb-janusdna-runtime-v1", "metadata_key": "runtime.profile", "runtime_abi": "geneb-janusdna-lightning-v1"},
+    {"id": "geneb-sequence-cnn-runtime-v1", "metadata_key": "runtime.profile", "runtime_abi": "geneb-sequence-cnn-pytorch-v1"},
+    {"id": "geneb-roformer-runtime-v1", "metadata_key": "runtime.profile", "runtime_abi": "geneb-roformer-pytorch-v1"}
   ],
   "runtime_architectures": [
-    {"id": "StripedHyena2", "artifact_profile": "evo2-runtime-v1", "runtime_abi": "evo2-safetensors-v1"},
-    {"id": "HyenaDNA", "artifact_profile": "hyenadna-runtime-v1", "runtime_abi": "hyenadna-safetensors-v1"},
-    {"id": "ESMC", "artifact_profile": "esmc-runtime-v1", "runtime_abi": "esmc-safetensors-v1"}
+    {"id": "StripedHyena2", "artifact_profile": "evo2-runtime-v1", "runtime_abi": "evo2-safetensors-v1", "backends": ["cpu", "cuda", "mps"], "capabilities": ["generate", "score", "embed", "variant", "serve", "logits"]},
+    {"id": "HyenaDNA", "artifact_profile": "hyenadna-runtime-v1", "runtime_abi": "hyenadna-safetensors-v1", "backends": ["cpu", "mps"], "capabilities": ["generate", "score", "embed", "variant", "serve", "logits"]},
+    {"id": "ESMC", "artifact_profile": "esmc-runtime-v1", "runtime_abi": "esmc-safetensors-v1", "backends": ["cpu", "cuda", "mps"], "capabilities": ["embed", "logits"]},
+    {"id": "GenebTransformerDecoder", "artifact_profile": "geneb-decoder-runtime-v1", "runtime_abi": "geneb-decoder-safetensors-v1", "backends": ["cpu"], "capabilities": ["embed", "serve"]},
+    {"id": "GenebOlmoDecoder", "artifact_profile": "geneb-olmo-runtime-v1", "runtime_abi": "geneb-olmo-safetensors-v1", "backends": ["cpu"], "capabilities": ["embed", "serve"]},
+    {"id": "GenebEsmEncoder", "artifact_profile": "geneb-esm-runtime-v1", "runtime_abi": "geneb-esm-safetensors-v1", "backends": ["cpu"], "capabilities": ["embed", "serve"]},
+    {"id": "GenebBertEncoder", "artifact_profile": "geneb-bert-runtime-v1", "runtime_abi": "geneb-bert-safetensors-v1", "backends": ["cpu"], "capabilities": ["embed", "serve"]},
+    {"id": "GenebGpt2Decoder", "artifact_profile": "geneb-gpt2-runtime-v1", "runtime_abi": "geneb-gpt2-safetensors-v1", "backends": ["cpu"], "capabilities": ["embed", "serve"]},
+    {"id": "GenebDnaGptDecoder", "artifact_profile": "geneb-dna-gpt-runtime-v1", "runtime_abi": "geneb-dna-gpt-torch-pth-v1", "backends": ["cpu"], "capabilities": ["embed", "serve"]},
+    {"id": "GenebCustomEncoder", "artifact_profile": "geneb-custom-encoder-runtime-v1", "runtime_abi": "geneb-custom-encoder-safetensors-v1", "backends": ["cpu"], "capabilities": ["embed", "serve"]},
+    {"id": "GenebMambaEncoder", "artifact_profile": "geneb-mamba-runtime-v1", "runtime_abi": "geneb-mamba-safetensors-v1", "backends": ["cpu"], "capabilities": ["embed", "serve"]},
+    {"id": "GenebHyenaDnaDecoder", "artifact_profile": "geneb-hyenadna-runtime-v1", "runtime_abi": "geneb-hyenadna-safetensors-v1", "backends": ["cpu"], "capabilities": ["embed", "serve"]},
+    {"id": "GenebStripedHyenaV1", "artifact_profile": "geneb-evo1-runtime-v1", "runtime_abi": "geneb-evo1-safetensors-v1", "backends": ["cpu"], "capabilities": ["embed", "serve"]},
+    {"id": "GenebJanusDnaEncoder", "artifact_profile": "geneb-janusdna-runtime-v1", "runtime_abi": "geneb-janusdna-lightning-v1", "backends": ["cpu"], "capabilities": ["embed", "serve"]},
+    {"id": "GenebSequenceCnnEncoder", "artifact_profile": "geneb-sequence-cnn-runtime-v1", "runtime_abi": "geneb-sequence-cnn-pytorch-v1", "backends": ["cpu"], "capabilities": ["embed", "serve"]},
+    {"id": "GenebRoformerEncoder", "artifact_profile": "geneb-roformer-runtime-v1", "runtime_abi": "geneb-roformer-pytorch-v1", "backends": ["cpu"], "capabilities": ["embed", "serve"]}
   ],
   "profiles": {
     "1b_base": {

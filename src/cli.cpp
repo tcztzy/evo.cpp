@@ -100,6 +100,7 @@ std::string_view cli_usage() noexcept {
          "Usage:\n"
          "  evo --help\n"
          "  evo --version\n"
+         "  evo models --suite geneb [--json]\n"
          "  evo run -m MODEL -p DNA -n TOKENS [--output-format raw|fasta]\n"
          "  evo run -hf OWNER/REPO[@REV] -p DNA -n TOKENS\n"
          "  evo score -m MODEL --input FASTA_FASTQ_OR_TEXT\n"
@@ -115,6 +116,8 @@ std::string_view cli_usage() noexcept {
          "  evo embed -m MODEL --input FASTA_FASTQ_OR_TEXT --output DIR "
          "--layer N "
          "--pooling none|mean|last --gpu 0,1,2,3\n"
+         "  evo embed -m MODEL --input FASTA_FASTQ_OR_TEXT --output DIR "
+         "--preset geneb-v4-reference|geneb-v4-normalized|geneb\n"
          "  evo variant-score -m MODEL --sequence DNA --position POS --ref "
          "REF --alt ALT --window N --strand forward|reverse|both "
          "--normalization sum|mean --gpu 0,1,2,3\n"
@@ -217,6 +220,7 @@ Status parse_cli(const int argc, char *const argv[],
   bool seen_embed_output = false;
   bool seen_embed_layer = false;
   bool seen_embedding_pooling = false;
+  bool seen_embed_preset = false;
   bool seen_variant_sequence = false;
   bool seen_variant_vcf = false;
   bool seen_variant_reference_path = false;
@@ -391,6 +395,20 @@ Status parse_cli(const int argc, char *const argv[],
         return {ErrorCode::kInvalidArgument,
                 "--pooling must be one of none, mean, or last"};
       }
+    } else if (option == "--preset") {
+      if (seen_embed_preset)
+        return duplicate(option);
+      seen_embed_preset = true;
+      status = value_after(argc, argv, &index, option, &value);
+      if (!status.ok())
+        return status;
+      if (value != "geneb-v4-reference" &&
+          value != "geneb-v4-normalized" && value != "geneb") {
+        return {ErrorCode::kInvalidArgument,
+                "--preset must be geneb-v4-reference, "
+                "geneb-v4-normalized, or geneb"};
+      }
+      options->embed_preset = value;
     } else if (option == "--sequence") {
       if (seen_variant_sequence)
         return duplicate(option);
@@ -632,6 +650,7 @@ Status parse_cli(const int argc, char *const argv[],
         return {ErrorCode::kInvalidArgument,
                 "--ctx must be an integer in [1, 1048576]"};
       }
+      options->context_size_explicit = true;
     } else if (option == "--force-prompt-threshold") {
       if (seen_force_prompt_threshold)
         return duplicate(option);
@@ -803,6 +822,7 @@ Status parse_cli(const int argc, char *const argv[],
         options->dump_logits_path.has_value() ||
         options->dump_layer.has_value() || seen_embed_input ||
         seen_embed_output || seen_embed_layer || seen_embedding_pooling ||
+        seen_embed_preset ||
         seen_variant_sequence || seen_variant_position || seen_variant_vcf ||
         seen_variant_reference_path || seen_variant_reference ||
         seen_variant_alternate || seen_variant_window || seen_variant_strand ||
@@ -820,9 +840,9 @@ Status parse_cli(const int argc, char *const argv[],
     }
     if (!seen_server_max_sequence)
       options->server_max_sequence_bytes = options->context_size;
-    if (options->server_max_sequence_bytes > options->context_size) {
+    if (options->server_max_sequence_bytes > options->server_max_request_bytes) {
       return {ErrorCode::kInvalidArgument,
-              "--max-sequence-bytes must not exceed --ctx"};
+              "--max-sequence-bytes must not exceed --max-request-bytes"};
     }
     return Status::Ok();
   }
@@ -834,7 +854,8 @@ Status parse_cli(const int argc, char *const argv[],
         seen_force_prompt_threshold || seen_temperature || seen_top_k ||
         seen_top_p || seen_seed || options->dump_logits_path.has_value() ||
         options->dump_layer.has_value() || seen_embed_layer ||
-        seen_embedding_pooling || seen_variant_sequence || seen_variant_vcf ||
+        seen_embedding_pooling || seen_embed_preset || seen_variant_sequence ||
+        seen_variant_vcf ||
         seen_variant_reference_path || seen_variant_position ||
         seen_variant_reference || seen_variant_alternate ||
         seen_variant_window || seen_variant_strand ||
@@ -869,7 +890,8 @@ Status parse_cli(const int argc, char *const argv[],
         seen_benchmark_warmup || seen_benchmark_repetitions ||
         seen_output_format || seen_generation_name) {
       return {ErrorCode::kInvalidArgument,
-              "embed accepts --input/--output/--layer/--pooling, --ctx, "
+              "embed accepts --input/--output, either --layer/--pooling or "
+              "--preset, --ctx, "
               "--gpu, and --dump-tokens; generation/scoring options are "
               "invalid"};
     }
@@ -881,7 +903,11 @@ Status parse_cli(const int argc, char *const argv[],
       return {ErrorCode::kInvalidArgument,
               "embed requires a nonempty --output directory"};
     }
-    if (!seen_embed_layer) {
+    if (seen_embed_preset && (seen_embed_layer || seen_embedding_pooling)) {
+      return {ErrorCode::kInvalidArgument,
+              "--preset is mutually exclusive with --layer and --pooling"};
+    }
+    if (!seen_embed_preset && !seen_embed_layer) {
       return {ErrorCode::kInvalidArgument, "embed requires --layer INDEX"};
     }
     if (!seen_gpu && requires_gpu)
@@ -892,7 +918,7 @@ Status parse_cli(const int argc, char *const argv[],
     if (seen_prompt || seen_score || seen_tokens ||
         seen_force_prompt_threshold || seen_temperature || seen_top_k ||
         seen_top_p || seen_seed || seen_embed_input || seen_embed_output ||
-        seen_embed_layer || seen_embedding_pooling ||
+        seen_embed_layer || seen_embedding_pooling || seen_embed_preset ||
         options->dump_logits_path.has_value() ||
         options->dump_layer.has_value() || seen_benchmark_input ||
         seen_benchmark_warmup || seen_benchmark_repetitions ||
@@ -958,6 +984,7 @@ Status parse_cli(const int argc, char *const argv[],
         options->dump_logits_path.has_value() ||
         options->dump_layer.has_value() || seen_embed_input ||
         seen_embed_output || seen_embed_layer || seen_embedding_pooling ||
+        seen_embed_preset ||
         seen_output_format || seen_generation_name) {
       return {ErrorCode::kInvalidArgument,
               "bench accepts --input, --warmup, --repetitions, --ctx, "
@@ -976,9 +1003,10 @@ Status parse_cli(const int argc, char *const argv[],
             "--warmup and --repetitions require 'evo bench'"};
   }
   if (embed_command || logits_command || seen_embed_input ||
-      seen_embed_output || seen_embed_layer || seen_embedding_pooling) {
+      seen_embed_output || seen_embed_layer || seen_embedding_pooling ||
+      seen_embed_preset) {
     return {ErrorCode::kInvalidArgument,
-            "--input, --output, --layer, and --pooling require the matching "
+            "--input, --output, --layer, --pooling, and --preset require the matching "
             "score, bench, logits, or embed command"};
   }
   if (run_command && seen_score) {

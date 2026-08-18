@@ -55,13 +55,44 @@ if(NOT EXISTS "${EVO_INSTALL_PREFIX}/include/evo/evo.h" OR
    NOT EXISTS "${EVO_INSTALL_PREFIX}/bin/evo" OR
    NOT EXISTS "${EVO_INSTALL_PREFIX}/bin/evo-inspect" OR
    NOT EXISTS "${EVO_INSTALL_PREFIX}/bin/evo-fetch" OR
+   NOT EXISTS "${EVO_INSTALL_PREFIX}/bin/evo-run-geneb" OR
+   NOT EXISTS "${EVO_INSTALL_PREFIX}/bin/evo-geneb-checkpoint-evidence" OR
    NOT EXISTS "${EVO_INSTALL_PREFIX}/share/evo/python/evo/__init__.py" OR
    NOT EXISTS "${EVO_INSTALL_PREFIX}/share/evo/python/evo/artifact_profiles.py" OR
    NOT EXISTS "${EVO_INSTALL_PREFIX}/share/evo/configs/model-registry.json" OR
    NOT EXISTS "${EVO_INSTALL_PREFIX}/share/evo/configs/geneb-models.json" OR
+   NOT EXISTS "${EVO_INSTALL_PREFIX}/share/evo/configs/geneb-benchmark-spec.json" OR
+   NOT EXISTS "${EVO_INSTALL_PREFIX}/share/evo/configs/geneb-probe-lock.json" OR
    NOT EXISTS "${EVO_INSTALL_PREFIX}/share/evo/configs/geneb-reference-patches/enformer-seq-length.patch" OR
-   NOT EXISTS "${EVO_INSTALL_PREFIX}/share/evo/requirements-fetch.txt")
+   NOT EXISTS "${EVO_INSTALL_PREFIX}/share/evo/requirements-fetch.txt" OR
+   NOT EXISTS "${EVO_INSTALL_PREFIX}/share/evo/requirements-geneb.txt")
   message(FATAL_ERROR "install tree is missing public headers or CLI binaries")
+endif()
+
+execute_process(
+  COMMAND "${EVO_PYTHON_EXECUTABLE}"
+          "${EVO_INSTALL_PREFIX}/bin/evo-geneb-checkpoint-evidence" --help
+  RESULT_VARIABLE evidence_help_result
+  OUTPUT_VARIABLE evidence_help_output
+  ERROR_VARIABLE evidence_help_error)
+if(NOT evidence_help_result EQUAL 0 OR
+   NOT evidence_help_output MATCHES "canonical-checkpoint evidence")
+  message(FATAL_ERROR
+    "installed GENEB checkpoint evidence runner is unusable: "
+    "${evidence_help_error}${evidence_help_output}")
+endif()
+
+execute_process(
+  COMMAND "${EVO_PYTHON_EXECUTABLE}"
+          "${EVO_INSTALL_PREFIX}/bin/evo-run-geneb" --help
+  RESULT_VARIABLE geneb_help_result
+  OUTPUT_VARIABLE geneb_help_output
+  ERROR_VARIABLE geneb_help_error)
+if(NOT geneb_help_result EQUAL 0 OR
+   NOT geneb_help_output MATCHES "100-task GENEB v4")
+  message(FATAL_ERROR
+    "installed evo-run-geneb cannot locate its command contract: "
+    "${geneb_help_error}${geneb_help_output}")
 endif()
 
 execute_process(
